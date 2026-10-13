@@ -19,15 +19,16 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
-import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
-import { FetchHttpClient, HttpClient, HttpClientError } from "effect/unstable/http";
-import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
+import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
+import { FetchHttpClient, HttpClient, HttpClientError } from "effect/http";
+import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 
 import * as ServerConfig from "../config.ts";
-import * as SqlitePersistence from "../persistence/Layers/Sqlite.ts";
-import { ProjectServiceLayerLive } from "../orchestration-v2/runtimeLayer.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -36,6 +37,7 @@ import * as WorkspaceFiles from "../project/WorkspaceFiles.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { projectMutationOperation } from "../project/ProjectMutation.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import {
   clearPersistedServerRuntimeState,
   readPersistedServerRuntimeState,
@@ -233,7 +235,7 @@ const projectCommandUuid = Crypto.Crypto.pipe(
   ),
 );
 
-const ProjectCliRuntimeLive = ProjectServiceLayerLive.pipe(
+const layerProjectCliRuntime = RuntimeLayer.layerProjectService.pipe(
   Layer.provideMerge(ProjectEnrichmentService.layer),
   Layer.provideMerge(RepositoryIdentityResolver.layer),
   Layer.provideMerge(WorkspaceFolderResolver.layer),
@@ -244,6 +246,7 @@ const ProjectCliRuntimeLive = ProjectServiceLayerLive.pipe(
     ),
   ),
   Layer.provideMerge(WorkspacePaths.layer),
+  Layer.provideMerge(ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(SqlitePersistence.layerConfig),
 );
 
@@ -477,7 +480,7 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
       );
     }
 
-    const offlineRuntimeLayer = ProjectCliRuntimeLive.pipe(
+    const layerOfflineRuntime = layerProjectCliRuntime.pipe(
       Layer.provide(ServerConfig.layer(config)),
       Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
     );
@@ -491,10 +494,10 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
         mode: "offline",
       });
       yield* Console.log(output);
-    }).pipe(Effect.provide(offlineRuntimeLayer));
+    }).pipe(Effect.provide(layerOfflineRuntime));
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(EnvironmentAuth.runtimeLayer, WorkspacePaths.layer, WorkspaceFiles.layer).pipe(
+      Layer.mergeAll(EnvironmentAuth.layerRuntime, WorkspacePaths.layer, WorkspaceFiles.layer).pipe(
         Layer.provideMerge(FetchHttpClient.layer),
         Layer.provide(ServerConfig.layer(config)),
         Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),

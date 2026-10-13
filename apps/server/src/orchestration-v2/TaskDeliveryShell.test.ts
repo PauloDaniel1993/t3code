@@ -17,17 +17,14 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import type * as Statement from "effect/unstable/sql/Statement";
+import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 import TaskDeliveryIndex from "../persistence/ForkMigrations/011_TaskDeliveryIndex.ts";
-import {
-  makeSqlitePersistenceLive,
-  SqlitePersistenceMemory,
-} from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { layer, ProjectionStoreV2, threadShellFromProjection } from "./ProjectionStore.ts";
 import { taskDeliveryFromSubagents, withTaskDeliveryWatermarks } from "./TaskDeliveryShell.ts";
 
-const TestLayer = layer.pipe(Layer.provideMerge(SqlitePersistenceMemory));
+const TestLayer = layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
 const now = DateTime.makeUnsafe("2026-09-29T00:00:00Z");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const threadId = ThreadId.make("parent");
@@ -241,9 +238,9 @@ it.effect(
   "lists threads without the delivery index and restores it on the next persistence start",
   () => {
     const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-task-delivery-index-"));
-    const persistence = makeSqlitePersistenceLive(NodePath.join(tempDir, "statev2.sqlite")).pipe(
-      Layer.provide(NodeServices.layer),
-    );
+    const persistence = SqlitePersistence.layerFromPath(
+      NodePath.join(tempDir, "statev2.sqlite"),
+    ).pipe(Layer.provide(NodeServices.layer));
     const testLayer = layer.pipe(Layer.provideMerge(persistence));
     return Effect.gen(function* () {
       yield* Effect.gen(function* () {

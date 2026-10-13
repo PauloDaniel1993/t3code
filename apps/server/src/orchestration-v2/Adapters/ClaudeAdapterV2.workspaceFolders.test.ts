@@ -1,3 +1,4 @@
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -7,10 +8,10 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
-import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
-import * as IdAllocator from "../IdAllocator.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
-import { makeProviderFailure } from "../ProviderFailure.ts";
+import { buildWorkspaceFolderInventory } from "@t3tools/provider-core/server/workspaceFolderInventory";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import {
   makeClaudeWorkspaceFolderHarness,
@@ -78,6 +79,8 @@ const makeHarness = Effect.fnUntraced(function* () {
           messages: Stream.fromQueue(messages),
           offer: () => Effect.void,
           setModel: () => Effect.void,
+          setPermissionMode: () => Effect.void,
+          stopTask: () => Effect.void,
           interrupt: Effect.void,
           close: Effect.sync(() => {
             process.closed = true;
@@ -98,7 +101,7 @@ const makeHarness = Effect.fnUntraced(function* () {
   return { ...harness, queries, finish };
 });
 
-const testLayer = Layer.merge(NodeServices.layer, IdAllocator.layer);
+const testLayer = Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer);
 
 describe("Claude workspace folders", () => {
   it.each([false, true])("keeps cwd, folders and attachments with resume=%s", (resume) => {

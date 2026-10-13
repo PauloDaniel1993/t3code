@@ -149,6 +149,10 @@ const withCoordinator = <A, E, R>(
               Effect.gen(function* () {
                 const driver = yield* GitVcsDriver.GitVcsDriver;
                 return Layer.mock(GitWorkflow.GitWorkflowService)({
+                  hasCommit: ({ cwd, refName }) =>
+                    branchExists(cwd, refName.replace(/^refs\/heads\//, "")).pipe(
+                      Effect.provideService(GitVcsDriver.GitVcsDriver, driver),
+                    ),
                   remoteExists: driver.remoteExists,
                   fetchRemote: driver.fetchRemote,
                   remoteBranchExists: driver.remoteBranchExists,
@@ -1776,4 +1780,29 @@ it.effect("removes a set's editor workspace file and its emptied session directo
     // The repositories and their branches stay.
     assert.isTrue(yield* branchExists(web.root, "done"));
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect(
+  "temporary names flatten independently in each checkout whose t3 branch blocks the namespace",
+  () =>
+    Effect.gen(function* () {
+      const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
+      yield* git(web.root, ["branch", "t3"]);
+      const set = yield* withCoordinator(
+        createSet({
+          workspaceFolders: workspaceFolders.slice(0, 2),
+          baseRef: api.branch,
+          branch: "t3/abcdef12",
+        }),
+      );
+      assert.deepEqual(
+        set.members.map((member) => [member.repositoryRoot, member.branch]),
+        [
+          [api.root, "t3/abcdef12"],
+          [web.root, "t3-abcdef12"],
+        ],
+      );
+      assert.isTrue(yield* branchExists(api.root, "t3/abcdef12"));
+      assert.isTrue(yield* branchExists(web.root, "t3-abcdef12"));
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );

@@ -6,7 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import { workspaceBranchState } from "@t3tools/client-runtime/state/vcs";
 import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useMemo } from "react";
 import { useRetainedValue } from "../components/Sidebar.logic";
 import { vcsEnvironment } from "./vcs";

@@ -21,20 +21,20 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "../Adapters/CodexAdapterV2.ts";
 import { ProjectionStoreV2 } from "../ProjectionStore.ts";
 import {
   ProviderAdapterProtocolError,
   type ProviderAdapterV2Event,
-  type ProviderAdapterV2Shape,
-} from "../ProviderAdapter.ts";
-import { makeSingleLayer } from "../ProviderAdapterRegistry.ts";
+  type ProviderAdapterV2,
+} from "@t3tools/provider-core/server/ProviderAdapter";
+import { layerSingle } from "../ProviderAdapterRegistry.ts";
 import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "../testkit/ProviderReplayHarness.ts";
-import { checkpointWorkspace } from "../testkit/ReplayFixtureWorkspace.ts";
+import { layerWithRegistry } from "../testkit/ProviderReplayHarness.ts";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import {
   buildBoundedThreadProjection,
   decodeThreadHistoryCursor,
@@ -167,7 +167,7 @@ const replyingAdapter = {
         forkThread: () => unimplemented("forkThread"),
       };
     }),
-} satisfies ProviderAdapterV2Shape;
+} satisfies ProviderAdapterV2["Service"];
 
 const MESSAGE_COUNT = 400;
 const TASK_COUNT = 220;
@@ -268,10 +268,10 @@ it.effect(
     Effect.scoped(
       Effect.gen(function* () {
         const workspace = yield* checkpointWorkspace("imported-thread-history-paging");
-        const runtime = makeOrchestratorV2ReplayLayerWithRegistry(
+        const runtime = layerWithRegistry(
           { name: "imported-thread-history-paging", runtimePolicyOverride: { cwd: workspace } },
-          makeSingleLayer(replyingAdapter),
-          { databaseLayer: SqlitePersistenceMemory },
+          layerSingle(replyingAdapter),
+          { databaseLayer: SqlitePersistence.layerMemory },
         );
         yield* Effect.gen(function* () {
           yield* importLongThreadWithTasks(workspace);

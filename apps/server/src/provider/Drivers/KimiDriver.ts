@@ -7,33 +7,31 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 
-import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import { ServerConfig } from "../../config.ts";
-import { withAgentDeviceEnvironment } from "../../mcp/McpProviderSession.ts";
-import { IdAllocatorV2 } from "../../orchestration-v2/IdAllocator.ts";
+import { withAgentDeviceEnvironment } from "@t3tools/provider-core/server/mcpSession";
+import { IdAllocatorV2 } from "@t3tools/provider-core/server/IdAllocator";
 import { makeKimiAdapterV2 } from "../../orchestration-v2/Adapters/KimiAdapterV2.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
 import { makeKimiTextGeneration } from "../../textGeneration/KimiTextGeneration.ts";
 import { makeKimiAcpRuntime, type KimiAcpRuntimeInput } from "../acp/KimiAcpSupport.ts";
-import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
+import { makeAcpNativeLoggerFactory } from "@t3tools/provider-acp/server/nativeLogging";
 import { ProviderDriverError } from "../Errors.ts";
 import { buildKimiModels } from "../KimiModels.ts";
 import { makeKimiModelCatalog } from "../KimiModelCatalog.ts";
-import {
-  buildInitialKimiProviderSnapshot,
-  checkKimiProviderStatus,
-} from "../Layers/KimiProvider.ts";
-import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
-import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import { buildInitialKimiProviderSnapshot, checkKimiProviderStatus } from "../KimiProvider.ts";
+import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
+import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
   type ProviderInstance,
-} from "../ProviderDriver.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+} from "@t3tools/provider-core/server/driver";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makeCachedProviderMaintenanceResolution,
@@ -43,13 +41,13 @@ import {
   resolveProviderMaintenanceCapabilitiesEffect,
   normalizeCommandPath,
   type ProviderMaintenanceCapabilitiesResolver,
-} from "../providerMaintenance.ts";
+} from "@t3tools/provider-core/server/maintenanceResolver";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
-} from "../providerUpdateSettings.ts";
-import { withInstanceIdentity } from "./instanceIdentity.ts";
+} from "@t3tools/provider-core/server/snapshotSettings";
+import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { makeKimiEnvironment } from "./KimiHome.ts";
 
 const decodeKimiSettings = Schema.decodeSync(KimiSettings);
@@ -84,6 +82,14 @@ const PACKAGE_MANAGED_KIMI = makePackageManagedProviderMaintenanceResolver({
     args: ["upgrade"],
     isCommandPath: isKimiNativeCommandPath,
   },
+});
+
+// Kimi only self-updates paths owned by its native installer. Package managers
+// still resolve through the shared implementation, with its native fallback disabled.
+const PACKAGE_MANAGED_KIMI_EXTERNAL = makePackageManagedProviderMaintenanceResolver({
+  provider: DRIVER_KIND,
+  npmPackageName: "@moonshot-ai/kimi-code",
+  nativeUpdate: null,
 });
 
 export const KIMI_MAINTENANCE_RESOLVER: ProviderMaintenanceCapabilitiesResolver = {
@@ -128,12 +134,16 @@ export const KIMI_MAINTENANCE_RESOLVER: ProviderMaintenanceCapabilitiesResolver 
 
     // The shared resolver proves package-manager ownership and remains
     // manual-only for every unrecognized location.
-    return PACKAGE_MANAGED_KIMI.resolve(context);
+    return (isNativeInstall ? PACKAGE_MANAGED_KIMI : PACKAGE_MANAGED_KIMI_EXTERNAL).resolve(
+      context,
+    );
   },
 };
 
 export type KimiDriverEnv =
-  | BackgroundPolicy.BackgroundPolicy
+  | ProviderHost.ProviderHost
+  | McpProviderSessions.McpProviderSessions
+  | ProviderLatestVersions.ProviderLatestVersions
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
@@ -141,8 +151,7 @@ export type KimiDriverEnv =
   | IdAllocatorV2
   | Path.Path
   | ProviderEventLoggers
-  | ServerConfig
-  | ServerSettingsService;
+  | ServerConfig;
 
 export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
   driverKind: DRIVER_KIND,
@@ -156,7 +165,9 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const httpClient = yield* HttpClient.HttpClient;
-      const serverSettings = yield* ServerSettingsService;
+      const host = yield* ProviderHost.ProviderHost;
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
       const serverConfig = yield* ServerConfig;
       const idAllocator = yield* IdAllocatorV2;
       const eventLoggers = yield* ProviderEventLoggers;
@@ -165,7 +176,7 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
       const settings = { ...config, enabled } satisfies KimiSettings;
       const processEnvironment = yield* makeKimiEnvironment(
         settings,
-        mergeProviderInstanceEnvironment(environment),
+        yield* mergeProviderInstanceEnvironment(environment),
       );
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -207,7 +218,7 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
           env: processEnvironment,
         }).pipe(provideRuntime),
       );
-      const snapshotSettings = makeProviderSnapshotSettingsSource(settings, serverSettings);
+      const snapshotSettings = yield* makeProviderSnapshotSettingsSource(settings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<KimiSettings>>({
         resolveMaintenance,
         getSettings: snapshotSettings.getSettings,
@@ -238,7 +249,13 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
                 Effect.flatMap((capabilities) =>
                   enrichProviderSnapshotWithVersionAdvisory(currentSnapshot, capabilities, {
                     enableProviderUpdateChecks: currentSettings.enableProviderUpdateChecks,
-                  }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient)),
+                  }).pipe(
+                    Effect.provideService(HttpClient.HttpClient, httpClient),
+                    Effect.provideService(
+                      ProviderLatestVersions.ProviderLatestVersions,
+                      latestVersions,
+                    ),
+                  ),
                 ),
                 Effect.flatMap((enriched) =>
                   getSnapshot.pipe(
@@ -277,12 +294,8 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
             }),
         ),
       );
-      const orchestrationAdapter = makeKimiAdapterV2({
+      const orchestrationAdapter = yield* makeKimiAdapterV2({
         instanceId,
-        crypto,
-        fileSystem,
-        idAllocator,
-        serverConfig,
         selfInvocation,
         makeRuntime,
         onSessionConfigurationUpdate: (options) => publishCatalog(options),
@@ -294,7 +307,12 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
             provider: DRIVER_KIND,
             threadId,
           }),
-      });
+      }).pipe(
+        provideRuntime,
+        Effect.provideService(IdAllocatorV2, idAllocator),
+        Effect.provideService(ProviderHost.ProviderHost, host),
+        Effect.provideService(McpProviderSessions.McpProviderSessions, mcpSessions),
+      );
       const textGeneration = yield* makeKimiTextGeneration({
         makeRuntime: (cwd) =>
           makeRuntime({

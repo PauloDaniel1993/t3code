@@ -1,5 +1,6 @@
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  AuthTerminalOperateScope,
   type EnvironmentId,
   type ProjectId,
   type ThreadId,
@@ -20,6 +21,7 @@ import { useEnvironmentPresentation } from "../../state/presentation";
 import { projectEnvironmentPresentation } from "../../state/environments";
 import { useThreadWorkspace } from "./use-thread-workspace";
 import { useProject } from "../../state/entities";
+import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { vcsEnvironment } from "../../state/vcs";
 import { ProjectWorkspaceFileSettings } from "../settings/ProjectWorkspaceFileSettings";
 import {
@@ -131,6 +133,10 @@ export function ThreadWorkspaceFolders(props: {
   const workspace = useThreadWorkspace(props.target);
   const navigation = useNavigation();
   const environment = useEnvironmentPresentation(props.target.environmentId).presentation;
+  const canOperateTerminal = useEnvironmentScope(
+    props.target.environmentId,
+    AuthTerminalOperateScope,
+  );
   const [gitExpanded, setGitExpanded] = useState(true);
   const [otherExpanded, setOtherExpanded] = useState(true);
   if (environment?.serverConfig?.workspaceFileProjects !== true) return null;
@@ -148,7 +154,12 @@ export function ThreadWorkspaceFolders(props: {
     return null;
   const repoCount = workspaceRepositoryCount(rows);
   const openTerminal = (row: WorkspaceFolderRow) => {
-    if (!row.effectivePath || !row.folder.path) return;
+    if (
+      !row.effectivePath ||
+      !row.folder.path ||
+      !readEnvironmentScope(props.target.environmentId, AuthTerminalOperateScope)
+    )
+      return;
     const terminalId = `workspace-${uuidv4()}`;
     const location = resolveTerminalOpenLocation({
       terminalLocation: null,
@@ -238,7 +249,7 @@ export function ThreadWorkspaceFolders(props: {
                         })),
                       )?.cwd
                     }
-                    onTerminal={() => openTerminal(row)}
+                    onTerminal={canOperateTerminal ? () => openTerminal(row) : undefined}
                   />
                 ))
               : null}

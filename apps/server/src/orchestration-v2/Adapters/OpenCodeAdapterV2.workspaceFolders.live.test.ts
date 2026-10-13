@@ -1,9 +1,11 @@
+import { OpenCodeSettings } from "@t3tools/provider-opencode/settings";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   MessageId,
   NodeId,
-  OpenCodeSettings,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -26,15 +28,15 @@ import * as Stream from "effect/Stream";
 import { describe } from "vite-plus/test";
 
 import * as ServerConfig from "../../config.ts";
-import * as OpenCodeServerLedger from "../../provider/OpenCodeServerLedger.ts";
-import * as OpenCodeRuntime from "../../provider/opencodeRuntime.ts";
-import * as IdAllocator from "../IdAllocator.ts";
-import { randomUuidV4 } from "../RandomUuid.ts";
+import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
+import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import {
   ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2SessionRuntime,
-} from "../ProviderAdapter.ts";
-import { makeOpenCodeAdapterV2 } from "./OpenCodeAdapterV2.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
+import { makeOpenCodeAdapterV2 } from "@t3tools/provider-opencode/testing";
 
 const quote = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const decodeSettings = Schema.decodeEffect(OpenCodeSettings);
@@ -81,13 +83,10 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
               ? { binaryPath: process.env.T3_OPENCODE_LIVE_BINARY }
               : {},
           );
-          const adapter = makeOpenCodeAdapterV2({
+          const adapter = yield* makeOpenCodeAdapterV2({
             instanceId: modelSelection.instanceId,
             settings,
             environment: {},
-            runtime,
-            idAllocator,
-            serverConfig: config,
           });
           const sourceId = ThreadId.make("thread:opencode-folders-live:source");
           const targetId = ThreadId.make("thread:opencode-folders-live:fork");
@@ -205,11 +204,13 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
           Effect.scoped,
           Effect.provide(
             Layer.mergeAll(
+              McpProviderSessions.layer,
               IdAllocator.layer,
-              OpenCodeRuntime.OpenCodeRuntimeLive.pipe(
-                Layer.provide(OpenCodeServerLedger.layerTest),
-              ),
-            ).pipe(Layer.provideMerge(NodeServices.layer)),
+              OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
+            ).pipe(
+              Layer.provideMerge(TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer))),
+              Layer.provideMerge(NodeServices.layer),
+            ),
           ),
         ),
       { timeout: 300_000 },

@@ -61,18 +61,24 @@ interface ScannerTestInput {
   readonly providerInstances?: ContractServerSettings["providerInstances"];
 }
 
-const makeScannerTestLayer = (input: ScannerTestInput) =>
+const layerScannerTest = (input: ScannerTestInput) =>
   AgentSessionScanner.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         ServerSettings.layerTest({
-          providers: {
-            claudeAgent: { homePath: input.claudeHomePath },
-            codex: { homePath: input.codexHomePath },
+          // Default slots point at the fixture homes; explicit test instances
+          // replace a slot with the same id.
+          providerInstances: {
+            [ProviderInstanceId.make("claudeAgent")]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              config: { homePath: input.claudeHomePath },
+            },
+            [ProviderInstanceId.make("codex")]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: { homePath: input.codexHomePath },
+            },
+            ...input.providerInstances,
           },
-          ...(input.providerInstances === undefined
-            ? {}
-            : { providerInstances: input.providerInstances }),
         }),
         ServerConfig.layerTest(
           input.claudeHomePath,
@@ -97,7 +103,7 @@ const runScan = (input: ScannerTestInput) =>
   Effect.gen(function* () {
     const scanner = yield* AgentSessionScanner.AgentSessionScanner;
     return yield* scanner.scan;
-  }).pipe(Effect.provide(makeScannerTestLayer(input)));
+  }).pipe(Effect.provide(layerScannerTest(input)));
 
 const runRecentThreadOutcomes = (input: ScannerTestInput & { readonly workspaceRoot: string }) =>
   Effect.gen(function* () {
@@ -106,7 +112,7 @@ const runRecentThreadOutcomes = (input: ScannerTestInput & { readonly workspaceR
       Stream.runCollect,
       Effect.map((outcomes) => Array.from(outcomes)),
     );
-  }).pipe(Effect.provide(makeScannerTestLayer(input)));
+  }).pipe(Effect.provide(layerScannerTest(input)));
 
 const runRecentThreads = (input: ScannerTestInput & { readonly workspaceRoot: string }) =>
   runRecentThreadOutcomes(input).pipe(
@@ -210,7 +216,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           }
         }).pipe(
           Effect.provide(
-            makeScannerTestLayer({
+            layerScannerTest({
               claudeHomePath,
               codexHomePath,
               configBaseDir,
@@ -320,7 +326,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           expect(storeReads.get(path.join(claudeHomePath, "projects"))).toBe(1);
         }).pipe(
           Effect.provide(
-            makeScannerTestLayer({ claudeHomePath, codexHomePath, projects: [linked, plain] }),
+            layerScannerTest({ claudeHomePath, codexHomePath, projects: [linked, plain] }),
           ),
           Effect.provideService(FileSystem.FileSystem, countingFileSystem),
         );
@@ -442,7 +448,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           }
         }).pipe(
           Effect.provide(
-            makeScannerTestLayer({
+            layerScannerTest({
               claudeHomePath,
               codexHomePath,
               configBaseDir,
@@ -834,7 +840,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
-    it.effect("uses explicit provider instance homes instead of overridden legacy homes", () =>
+    it.effect("uses explicit default-slot homes instead of the fixture homes", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
         const claudeHomePath = yield* makeTempDir("t3code-claude-legacy-");
@@ -1065,7 +1071,8 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
 
         yield* writeTranscript({
           filePath: path.join(claudeHomePath, "projects", "-relative", "session.jsonl"),
-          contents: claudeSessionLine(path.relative(path.resolve(), workspace)),
+          // relative() across Windows drives returns an absolute path.
+          contents: claudeSessionLine(path.basename(workspace)),
           mtimeMs: Date.parse("2026-01-01T00:00:00.000Z"),
         });
 
@@ -2006,7 +2013,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           expect(scan.candidates[0]?.threadCount).toBe(5);
           return yield* scanner.recentThreads(workspace).pipe(Stream.runCollect);
         }).pipe(
-          Effect.provide(makeScannerTestLayer({ claudeHomePath, codexHomePath })),
+          Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })),
           Effect.provideService(FileSystem.FileSystem, trackedFileSystem),
         );
 
@@ -2156,7 +2163,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
                 } else {
                   expect(outcomes).toEqual([{ _tag: "Skipped" }]);
                 }
-              }).pipe(Effect.provide(makeScannerTestLayer({ claudeHomePath, codexHomePath })));
+              }).pipe(Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })));
             }),
         );
       }
@@ -2227,7 +2234,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
             thread: { providerSessionId: "replaced-session" },
             source: { size: imported.source.size, mtimeMs: imported.source.mtimeMs },
           });
-        }).pipe(Effect.provide(makeScannerTestLayer({ claudeHomePath, codexHomePath })));
+        }).pipe(Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })));
       }),
     );
 
@@ -2651,7 +2658,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
             Effect.map((items) => Array.from(items)),
           );
         }).pipe(
-          Effect.provide(makeScannerTestLayer({ claudeHomePath, codexHomePath })),
+          Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })),
           Effect.provideService(FileSystem.FileSystem, simulatedFileSystem),
         );
 
@@ -2874,7 +2881,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           expect(scan.truncated).toBe(true);
           return yield* scanner.recentThreads(recentWorkspace).pipe(Stream.runCollect);
         }).pipe(
-          Effect.provide(makeScannerTestLayer(input)),
+          Effect.provide(layerScannerTest(input)),
           Effect.provideService(FileSystem.FileSystem, simulatedFileSystem),
         );
 

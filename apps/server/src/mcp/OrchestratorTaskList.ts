@@ -17,7 +17,7 @@ import * as Schema from "effect/Schema";
 
 export type TaskParentProjection = Pick<
   OrchestrationV2ThreadProjection,
-  "runs" | "subagents" | "contextTransfers"
+  "thread" | "runs" | "subagents" | "contextTransfers"
 >;
 
 export const TASK_LIST_SUMMARY_MAX_CHARS = 2_000;

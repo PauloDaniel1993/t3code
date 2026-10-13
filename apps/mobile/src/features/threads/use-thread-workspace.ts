@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { workspaceGitCheckouts } from "@t3tools/shared/workspaceFolders";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import * as Option from "effect/Option";
 import { useMemo } from "react";
 import { useProject, useThreadShell } from "../../state/entities";

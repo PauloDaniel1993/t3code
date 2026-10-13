@@ -9,6 +9,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- pure scope planning requires synchronous stable part keys.
 import * as NodeCrypto from "node:crypto";
 
 import {

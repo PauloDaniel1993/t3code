@@ -18,6 +18,8 @@ import {
 } from "@t3tools/contracts";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { allocateFolderLabels, isSamePath } from "@t3tools/shared/workspaceFolders";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -28,8 +30,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
-import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
-import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import {
@@ -44,6 +45,7 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
 import { planThreadWorkspaceUpdate } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as WorkspaceFiles from "./WorkspaceFiles.ts";
 import type * as WorkspaceFolderResolver from "./WorkspaceFolderResolver.ts";
@@ -281,20 +283,22 @@ export const make = Effect.gen(function* () {
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
   const workspaceFiles = yield* WorkspaceFiles.WorkspaceFiles;
   const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
   // Commands for one project run in order. A command also holds every root and
   // workspace file it claims or releases, roots before files, so two projects
   // can never both own one.
-  const projectLocks = yield* makeKeyedSerialExecutor<ProjectId>();
-  const workspaceLocks = yield* makeKeyedSerialExecutor<string>();
-  const workspaceFileLocks = yield* makeKeyedSerialExecutor<string>();
+  const projectLocks = yield* KeyedLock.make<ProjectId>();
+  const workspaceLocks = yield* KeyedLock.make<string>();
+  const workspaceFileLocks = yield* KeyedLock.make<string>();
   // Reading a linked project's workspace file and acting on it runs in order
   // per project, with link, relink, unlink and new bindings too, so an older
   // read never lands after a newer one or after the link changed. It is the
   // outermost lock: under it a command takes the project, root, file and
   // thread locks, so nothing may wait for it while holding one of those.
-  const workspaceFileSyncLocks = yield* makeKeyedSerialExecutor<ProjectId>();
+  const workspaceFileSyncLocks = yield* KeyedLock.make<ProjectId>();
 
   const toProject = (
     row: ProjectStore.ProjectRow,
@@ -881,7 +885,7 @@ export const make = Effect.gen(function* () {
         if (
           row.workspaceFile !== null &&
           isSamePath(
-            WorkspaceFiles.resolveWorkspaceFilePath(input.workspaceFilePath, path),
+            WorkspaceFiles.resolveWorkspaceFilePath(input.workspaceFilePath, path, home),
             row.workspaceFile,
           )
         ) {
@@ -1243,6 +1247,22 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  // A machine-disabled provider instance that a deleted project's override
+  // once turned on must not stay probed and alive forever. Nothing else
+  // removes the entry, so deletion is where it goes; best-effort because a
+  // settings write failure should not block the deletion it is cleaning up
+  // after, and a server crash before a replay never revisits this project.
+  const clearProjectSettingsOverrides = (projectId: ProjectId) =>
+    serverSettings.updateSettings({ projectSettingsOverrides: { [projectId]: null } }).pipe(
+      Effect.asVoid,
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          `Failed to clear settings overrides for deleted project ${projectId}.`,
+          cause,
+        ),
+      ),
+    );
+
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {
       const { projectId } = input;
@@ -1253,7 +1273,8 @@ export const make = Effect.gen(function* () {
         return yield* new ProjectNotFoundError({ projectId });
       }
 
-      if (existing.value.deletedAt === null) {
+      const isFirstDelete = existing.value.deletedAt === null;
+      if (isFirstDelete) {
         yield* deleteChildThreads(input);
       }
       yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
@@ -1268,6 +1289,9 @@ export const make = Effect.gen(function* () {
           ),
         ),
       );
+      if (isFirstDelete) {
+        yield* clearProjectSettingsOverrides(projectId);
+      }
       yield* projectEnrichment.invalidate([existing.value.workspaceRoot]);
       return yield* readCommitted(projectId);
     },

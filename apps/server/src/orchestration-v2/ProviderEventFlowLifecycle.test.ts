@@ -1,3 +1,5 @@
+import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { expect, it } from "@effect/vitest";
 import {
   CommandId,
@@ -30,10 +32,10 @@ import { EventSinkV2 } from "./EventSink.ts";
 import { ProviderEventIngestorV2 } from "./ProviderEventIngestor.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { RunFinalizationObserver } from "./RunFinalizationService.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
-import { layer as idLayer } from "./IdAllocator.ts";
+
+import { layer as idLayer } from "@t3tools/provider-core/server/IdAllocator";
 import { makeProviderEventFlowStage } from "./ProviderEventFlowStage.ts";
-import { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
+import { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 
@@ -71,10 +73,15 @@ it.effect(
           Layer.mergeAll(
             Layer.mock(CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
             idLayer,
-            ServerSettingsService.layerTest(),
+            McpAppModelContext.layerEmpty,
+            ServerSettings.layerTest(),
             Layer.mock(EventSinkV2)({
               write: () => Effect.succeed([]),
-              writeIfRunCurrent: () => Effect.succeed({ committed: true, storedEvents: [] }),
+              writeIfRunCurrent: (input) =>
+                Effect.sync(() => {
+                  written.push(...input.events);
+                  return { committed: true, storedEvents: [] };
+                }),
               writeWithEffects: (input) =>
                 Effect.sync(() => {
                   written.push(...input.events);

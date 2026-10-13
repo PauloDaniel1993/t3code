@@ -4,37 +4,58 @@ import { createProjectEnvironmentAtoms } from "@t3tools/client-runtime/state/pro
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { environmentSnapshotAtom } from "./shell";
-import { WS_METHODS } from "@t3tools/contracts";
-import { createWorkspaceFileQuery } from "./workspace-file-bindings";
+import { Atom } from "effect/reactivity";
+import { switchWorkspaceFileQuery, workspaceFileBindingAtom } from "./workspace-file-bindings";
+import { serverEnvironment } from "./server";
+import { environmentThreadDetails } from "./threads";
 
-const legacy = createProjectEnvironmentAtoms(connectionAtomRuntime);
-const searchEntries = createWorkspaceFileQuery({
-  tag: WS_METHODS.projectsSearchEntries,
-  label: "mobile:scoped-file-search",
-  staleTimeMs: 15_000,
-});
-const listEntries = createWorkspaceFileQuery({
-  tag: WS_METHODS.projectsListEntries,
-  label: "mobile:scoped-file-list",
-  staleTimeMs: 30_000,
-});
-const readFile = createWorkspaceFileQuery({
-  tag: WS_METHODS.projectsReadFile,
-  label: "mobile:scoped-file-read",
-  staleTimeMs: 30_000,
-});
-export const projectEnvironment = {
-  ...legacy,
-  searchEntries: (target: Parameters<typeof legacy.searchEntries>[0]) =>
-    "scope" in target.input
-      ? searchEntries(target, target.input.scope)
-      : legacy.searchEntries(target),
-  listEntries: (target: Parameters<typeof legacy.listEntries>[0]) =>
-    "scope" in target.input ? listEntries(target, target.input.scope) : legacy.listEntries(target),
-  readFile: (target: Parameters<typeof legacy.readFile>[0]) =>
-    "scope" in target.input ? readFile(target, target.input.scope) : legacy.readFile(target),
-};
 export const environmentProjects = createEnvironmentProjectAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: environmentSnapshotAtom,
+  serverConfigValueAtom: serverEnvironment.configValueAtom,
 });
+const unscoped = createProjectEnvironmentAtoms(connectionAtomRuntime, {
+  projectAtom: environmentProjects.projectAtom,
+  threadAtom: environmentThreadDetails.threadAtom,
+});
+const searchEntries = Atom.family((key: string) => {
+  const target = JSON.parse(key) as Parameters<typeof unscoped.searchEntries>[0];
+  return switchWorkspaceFileQuery(
+    workspaceFileBindingAtom(
+      target.environmentId,
+      "scope" in target.input ? target.input.scope : null,
+    ),
+    (bindingKey) => unscoped.searchEntries({ ...target, bindingKey }),
+  ).pipe(Atom.setIdleTTL(5 * 60_000));
+});
+const listEntries = Atom.family((key: string) => {
+  const target = JSON.parse(key) as Parameters<typeof unscoped.listEntries>[0];
+  return switchWorkspaceFileQuery(
+    workspaceFileBindingAtom(
+      target.environmentId,
+      "scope" in target.input ? target.input.scope : null,
+    ),
+    (bindingKey) => unscoped.listEntries({ ...target, bindingKey }),
+  ).pipe(Atom.setIdleTTL(5 * 60_000));
+});
+const readFile = Atom.family((key: string) => {
+  const target = JSON.parse(key) as Parameters<typeof unscoped.readFile>[0];
+  return switchWorkspaceFileQuery(
+    workspaceFileBindingAtom(
+      target.environmentId,
+      "scope" in target.input ? target.input.scope : null,
+    ),
+    (bindingKey) => unscoped.readFile({ ...target, bindingKey }),
+  ).pipe(Atom.setIdleTTL(5 * 60_000));
+});
+export const projectEnvironment = {
+  ...unscoped,
+  searchEntries: (target: Parameters<typeof unscoped.searchEntries>[0]) =>
+    "scope" in target.input
+      ? searchEntries(JSON.stringify(target))
+      : unscoped.searchEntries(target),
+  listEntries: (target: Parameters<typeof unscoped.listEntries>[0]) =>
+    "scope" in target.input ? listEntries(JSON.stringify(target)) : unscoped.listEntries(target),
+  readFile: (target: Parameters<typeof unscoped.readFile>[0]) =>
+    "scope" in target.input ? readFile(JSON.stringify(target)) : unscoped.readFile(target),
+};

@@ -1,4 +1,5 @@
-import * as NodeCrypto from "node:crypto";
+import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import type { ProviderInstanceEnvironment, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -9,7 +10,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as AcpSchema from "effect-acp/compat";
 
-import { writeFileStringAtomically } from "../atomicWrite.ts";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import {
   isKimiModeConfigOption,
   isKimiModelConfigOption,
@@ -54,7 +55,9 @@ export const makeKimiModelCatalog = Effect.fn("makeKimiModelCatalog")(function* 
     userHome: input.processEnvironment.USERPROFILE ?? input.processEnvironment.HOME ?? null,
     environment: [...input.environment].toSorted((a, b) => a.name.localeCompare(b.name)),
   }).pipe(Effect.orDie);
-  const key = NodeCrypto.createHash("sha256").update(binding).digest("hex");
+  const key = yield* (yield* Crypto.Crypto)
+    .digest("SHA-256", new TextEncoder().encode(binding))
+    .pipe(Effect.map(Hex.encode), Effect.orDie);
   const filePath = path.join(input.cacheDir, `kimi-models-${key}.json`);
   const saved = yield* fs.stat(filePath).pipe(
     Effect.flatMap((stat) =>

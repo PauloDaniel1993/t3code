@@ -1,3 +1,5 @@
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderHostTestLayer from "../../provider/testUtils/providerHostTestLayer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -14,7 +16,6 @@ import {
   type ProviderTurnId,
 } from "@t3tools/contracts";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -25,19 +26,24 @@ import * as Stream from "effect/Stream";
 import { createAttachmentId, resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { makeKimiTestHarness } from "../../provider/acp/KimiTestHarness.ts";
-import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
+import { layer as idAllocatorLayer } from "@t3tools/provider-core/server/IdAllocator";
 import {
   ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2TurnInput,
-} from "../ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeKimiAdapterV2 } from "./KimiAdapterV2.ts";
 
-const testLayer = Layer.mergeAll(
+const baseLayer = Layer.mergeAll(
   NodeServices.layer,
   idAllocatorLayer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-kimi-v2-" }).pipe(
     Layer.provide(NodeServices.layer),
   ),
+);
+
+const testLayer = ProviderHostTestLayer.layer.pipe(
+  Layer.provideMerge(baseLayer),
+  Layer.provideMerge(McpProviderSessions.layer),
 );
 
 const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
@@ -79,12 +85,8 @@ const makeSession = Effect.fn("KimiAdapterTest.makeSession")(function* (
     cwd: h.root,
     additionalDirectories,
   });
-  const adapter = makeKimiAdapterV2({
+  const adapter = yield* makeKimiAdapterV2({
     instanceId,
-    crypto: yield* Crypto.Crypto,
-    fileSystem: yield* FileSystem.FileSystem,
-    idAllocator: yield* IdAllocatorV2,
-    serverConfig: yield* ServerConfig,
     selfInvocation: yield* resolveSelfInvocation(),
     makeRuntime: h.makeRuntime,
   });

@@ -1,3 +1,5 @@
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as Crypto from "effect/Crypto";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -14,7 +16,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -26,9 +28,12 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
-import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
-import { makeProviderFailure } from "../ProviderFailure.ts";
+import {
+  IdAllocatorV2,
+  layer as idAllocatorLayer,
+} from "@t3tools/provider-core/server/IdAllocator";
+import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   CLAUDE_DEFAULT_INSTANCE_ID,
   makeClaudeAdapterV2,
@@ -44,7 +49,7 @@ const makeFixture = Effect.fnUntraced(function* (input: {
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const hostPlatform = yield* HostProcessPlatform;
+  const hostPlatform = yield* HostProcess.Platform;
   const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix: "claude-executable-" });
   const shim = path.join(directory, "claude.cmd");
   const entry = path.join(
@@ -66,7 +71,8 @@ const makeFixture = Effect.fnUntraced(function* (input: {
       ? "claude-not-installed"
       : defaultSettings.binaryPath;
   const opened: Array<ClaudeAgentSdkQueryOptions> = [];
-  const adapter = makeClaudeAdapterV2({
+  const adapter = yield* makeClaudeAdapterV2({
+    crypto: yield* Crypto.Crypto,
     instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
     settings: { ...defaultSettings, binaryPath },
     environment,
@@ -83,6 +89,8 @@ const makeFixture = Effect.fnUntraced(function* (input: {
             messages: Stream.never,
             offer: () => Effect.void,
             setModel: () => Effect.void,
+            setPermissionMode: () => Effect.void,
+            stopTask: () => Effect.void,
             interrupt: Effect.void,
             close: Effect.void,
           };
@@ -98,6 +106,7 @@ const makeFixture = Effect.fnUntraced(function* (input: {
     options: [],
   };
   const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+    additionalDirectories: [],
     runtimeMode: "full-access",
     interactionMode: "default",
     cwd: directory,
@@ -155,7 +164,7 @@ const makeFixture = Effect.fnUntraced(function* (input: {
       runtimePolicy,
     })
     .pipe(
-      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(HostProcess.Platform, "win32"),
       Effect.provideService(ClaudeExecutableFileCheck, (filePath) => {
         try {
           return NodeFS.statSync(filePath.replaceAll("\\", NodePath.sep)).isFile();
@@ -193,7 +202,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
         );
         assert.equal(fixture.resolutionCount, 1);
       }),
-    ).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+      ),
+    ),
   );
 
   it.effect("passes an explicit exe path through to the SDK", () =>
@@ -203,7 +216,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
         assert.equal(fixture.result._tag, "Success");
         assert.equal(fixture.opened[0]?.pathToClaudeCodeExecutable, fixture.entry);
       }),
-    ).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+      ),
+    ),
   );
 
   it.effect("resolves older npm packages to cli.js", () =>
@@ -216,7 +233,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
           NodePath.win32.normalize(fixture.entry),
         );
       }),
-    ).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+      ),
+    ),
   );
 
   it.effect("fails an unresolved name with the setting and attempted path visible to clients", () =>
@@ -232,7 +253,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
         assert.include(failure.message, "PATH");
         assert.lengthOf(fixture.opened, 0);
       }),
-    ).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+      ),
+    ),
   );
 
   it.effect("reports the resolved shim path when its npm package entry is missing", () =>
@@ -246,6 +271,10 @@ describe("fork(claude-executable) V2 turn startup", () => {
         assert.include(failure.message.toLowerCase(), fixture.shim.toLowerCase());
         assert.lengthOf(fixture.opened, 0);
       }),
-    ).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+      ),
+    ),
   );
 });

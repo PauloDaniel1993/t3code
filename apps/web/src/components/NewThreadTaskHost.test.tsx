@@ -37,6 +37,7 @@ vi.mock("@effect/atom-react", async () => {
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => (state.route ? { kind: "server", threadRef: state.route } : null),
 }));
+vi.mock("../state/session", () => ({ readEnvironmentScope: () => true }));
 vi.mock("../state/server", () => ({
   primaryServerKeybindingsAtom: {},
   serverEnvironment: {

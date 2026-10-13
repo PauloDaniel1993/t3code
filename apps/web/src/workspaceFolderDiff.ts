@@ -7,7 +7,7 @@ import {
   type WorkspaceThread,
 } from "@t3tools/shared/workspaceFolders";
 import { resolveDiffPathForWorkspace } from "./diffFileActions";
-import { resolvePathLinkTarget } from "./terminal-links";
+import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import {
   workspaceFolderRows,
   type WorkspaceFoldersProject,

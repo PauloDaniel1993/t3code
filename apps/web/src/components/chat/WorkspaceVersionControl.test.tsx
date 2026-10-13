@@ -12,6 +12,8 @@ const fixtures = vi.hoisted(() => ({
   switchBranch: vi.fn(),
   openLink: vi.fn(),
   queries: vi.fn(),
+  canRun: true,
+  canSwitch: true,
 }));
 vi.mock("../../state/workspaceVcs", () => ({
   useWorkspaceStatuses: (...args: unknown[]) => {
@@ -19,11 +21,26 @@ vi.mock("../../state/workspaceVcs", () => ({
     return fixtures.statuses;
   },
 }));
+const permission = (atom: { kind: string }) =>
+  atom.kind === "run-permission" ? fixtures.canRun : fixtures.canSwitch;
+vi.mock("@effect/atom-react", () => ({
+  useAtomValue: (atom: { kind: string }) => permission(atom),
+}));
+vi.mock("../../rpc/atomRegistry", () => ({
+  appAtomRegistry: { get: (atom: { kind: string }) => permission(atom) },
+}));
 vi.mock("../../state/vcs", () => ({
-  vcsEnvironment: { runWorkspaceAction: "run", switchWorktreeSetBranch: "switch" },
+  vcsEnvironment: {
+    runWorkspaceAction: { label: "run", permissionAtom: () => ({ kind: "run-permission" }) },
+    switchWorktreeSetBranch: {
+      label: "switch",
+      permissionAtom: () => ({ kind: "branch-permission" }),
+    },
+  },
 }));
 vi.mock("../../state/use-atom-command", () => ({
-  useAtomCommand: (command: string) => (command === "run" ? fixtures.run : fixtures.switchBranch),
+  useAtomCommand: (command: { label: string }) =>
+    command.label === "run" ? fixtures.run : fixtures.switchBranch,
 }));
 vi.mock("../../browser/useOpenLink", () => ({ useOpenLink: () => fixtures.openLink }));
 vi.mock("../../state/queries", () => ({ usePaginatedBranches: () => ({ refs: [], data: null }) }));
@@ -119,6 +136,8 @@ const render = async (
 };
 
 beforeEach(() => {
+  fixtures.canRun = true;
+  fixtures.canSwitch = true;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   fixtures.statuses = ["feature", "feature-web"].map((refName) => ({
     status: status(refName),
@@ -322,4 +341,41 @@ it("does not treat a nested independent repository as a healthy folder of its un
     environmentId,
     input: expect.objectContaining({ members: ["/api", "/web/child"] }),
   });
+});
+
+it("disables workspace mutations without the command permissions", async () => {
+  fixtures.canRun = false;
+  fixtures.canSwitch = false;
+  fixtures.statuses[1]!.status = status("other");
+  await render();
+  expect(button("Commit all").props.disabled).toBe(true);
+  expect(button("Push all").props.disabled).toBe(true);
+  expect(
+    renderer.root
+      .findAllByType("button")
+      .find((node) => node.props["aria-label"] === "Switch shared branch")?.props.disabled,
+  ).toBe(true);
+  await act(() => button("Per-repo breakdown2").props.onClick());
+  expect(button("Switch back to feature-web").props.disabled).toBe(true);
+  await act(async () => button("Switch back to feature-web").props.onClick());
+  expect(fixtures.switchBranch).not.toHaveBeenCalled();
+});
+
+it("keeps batch Git actions available while worktree branch changes require the extra scope", async () => {
+  fixtures.canSwitch = false;
+  await render();
+  expect(button("Push all").props.disabled).toBe(false);
+  expect(
+    renderer.root
+      .findAllByType("button")
+      .find((node) => node.props["aria-label"] === "Switch shared branch")?.props.disabled,
+  ).toBe(true);
+});
+
+it("rechecks the grant when confirming an already-open workspace action", async () => {
+  await render();
+  await act(() => button("Push all").props.onClick());
+  fixtures.canRun = false;
+  await act(async () => button("Continue").props.onClick());
+  expect(fixtures.run).not.toHaveBeenCalled();
 });

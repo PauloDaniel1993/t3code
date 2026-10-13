@@ -1,3 +1,4 @@
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { AgentOptions, RunResult } from "@cursor/sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -10,18 +11,21 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import * as IdAllocator from "../IdAllocator.ts";
-import { createAgentPlatform, JsonlLocalAgentStore } from "../../provider/cursorSdk.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
-import { CursorProviderCapabilitiesV2, makeCursorAgentOptions } from "./CursorAdapterV2.ts";
-import * as CursorAgentSdk from "./CursorAgentSdk.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { createAgentPlatform, JsonlLocalAgentStore } from "@t3tools/provider-cursor/testing";
+import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  CursorProviderCapabilitiesV2,
+  makeCursorAgentOptions,
+} from "@t3tools/provider-cursor/testing";
+import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
 import {
   cursorWorkspaceTurnEvents,
   cursorWorkspaceTurnInput,
   makeCursorWorkspaceFixture,
 } from "./CursorWorkspaceFolders.testkit.ts";
 
-const testLayer = Layer.merge(NodeServices.layer, IdAllocator.layer);
+const testLayer = Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer);
 const quote = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const modelSelection = { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2.5" };
 
@@ -69,6 +73,7 @@ describe("Cursor workspace folders", () => {
       for (const interactionMode of ["default", "plan"] as const) {
         for (const sandboxPolicy of [undefined, { type: "readOnly" }] as const) {
           const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+            additionalDirectories: [],
             cwd: "/workspace/primary",
             runtimeMode,
             interactionMode,
@@ -77,6 +82,7 @@ describe("Cursor workspace folders", () => {
           const options = (additionalDirectories: string[]) =>
             makeCursorAgentOptions({
               threadId: ThreadId.make("cursor-workspace-policy"),
+              mcpSession: undefined,
               modelSelection,
               runtimePolicy: { ...runtimePolicy, additionalDirectories },
             });
@@ -98,7 +104,7 @@ describe("Cursor workspace folders", () => {
       let closes = 0;
       let nativeCwd: string | undefined;
       const firstRun = yield* Deferred.make<RunResult>();
-      const runner: CursorAgentSdk.CursorAgentSdkRunnerShape = {
+      const runner: CursorAgentSdk.CursorAgentSdkRunner["Service"] = {
         assertComplete: Effect.void,
         open: (input) =>
           Effect.gen(function* () {

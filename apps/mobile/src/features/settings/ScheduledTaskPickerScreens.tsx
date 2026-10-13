@@ -31,22 +31,21 @@ export function ScheduledTaskModelPickerRouteScreen() {
   const config = useEnvironmentServerConfig(editor?.environmentId ?? null);
   const selectedModel = editor?.draft.modelSelection ?? null;
   const projects = useProjects();
-  // A run that launches a thread works in the project's folders, so it needs
-  // a provider that reaches them all.
+  const projectId = editor?.draft.projectId ?? null;
+  // A new scheduled thread must use a provider that can reach all project folders.
   const launchProject =
     editor?.draft.task?.threadId == null
       ? (projects.find(
-          (entry) =>
-            entry.environmentId === editor?.environmentId && entry.id === editor.draft.projectId,
+          (entry) => entry.environmentId === editor?.environmentId && entry.id === projectId,
         ) ?? null)
       : null;
   const models = useMemo(
     () =>
       restrictModelOptionsToScope(
-        buildModelOptions(config, selectedModel),
+        buildModelOptions(config, selectedModel, undefined, projectId),
         workspaceFolderScope({ thread: null, project: launchProject }),
       ),
-    [config, selectedModel, launchProject],
+    [config, selectedModel, projectId, launchProject],
   );
   const providerGroups = useMemo(() => groupByProvider(models), [models]);
   const selectedOption = models.find(
@@ -68,6 +67,7 @@ export function ScheduledTaskModelPickerRouteScreen() {
   return (
     <ThreadSettingsPickerScreen
       environmentId={editor.environmentId}
+      projectId={projectId}
       providerGroups={providerGroups}
       selectedModel={selectedModel}
       onSelectModel={(option) =>

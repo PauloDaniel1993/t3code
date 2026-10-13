@@ -1,26 +1,16 @@
+import { fileBasename, workspaceRelativeFilePath } from "@t3tools/shared/path";
 import {
-  fileBasename,
-  formatFilePathPosition,
   inlineCodeFilePathCandidate,
   isRelativeFilePath,
   normalizeMarkdownLinkDestination,
-  parseFileUrlHref,
-  parseMarkdownFileLink,
-  safeDecodeURIComponent,
-  splitFilePathPosition,
-  workspaceRelativeFilePath,
-} from "@t3tools/client-runtime/markdown-links";
+  resolveMarkdownFileLinkTarget,
+} from "@t3tools/shared/markdownLinks";
+import { parseFileUrlHref, splitFilePathPosition } from "@t3tools/shared/fileLinks";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
-import { isTerminalLinkActivation, resolvePathLinkTarget } from "./terminal-links";
-
-export { normalizeMarkdownLinkDestination };
+import { isTerminalLinkActivation } from "./terminal-links";
 
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
-const PRESERVED_MARKDOWN_FILE_HREF_PROPERTY = "dataT3MarkdownFileHref";
-const MARKDOWN_LINK_HREF_PATTERN =
-  /\[[^\]]*]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g;
-
 export interface MarkdownFileLinkMeta {
   filePath: string;
   targetPath: string;
@@ -37,15 +27,6 @@ export function isMarkdownFileExternalOpenModifier(
   return event.ctrlKey || event.metaKey;
 }
 
-export function extractMarkdownLinkHrefs(markdown: string): string[] {
-  const hrefs: string[] = [];
-  for (const match of markdown.matchAll(MARKDOWN_LINK_HREF_PATTERN)) {
-    const href = (match[1] ?? match[2])?.trim();
-    if (href) hrefs.push(href);
-  }
-  return hrefs;
-}
-
 export function shouldOpenMarkdownFileLinkInEditor(
   event: Pick<MouseEvent, "metaKey" | "ctrlKey">,
   platform?: string,
@@ -55,10 +36,6 @@ export function shouldOpenMarkdownFileLinkInEditor(
 
 export function shouldOpenMarkdownFileLinkInBrowserByDefault(path: string): boolean {
   return /\.pdf$/i.test(path.split(/[?#]/, 1)[0] ?? "");
-}
-
-export function isWindowsDrivePathHref(href: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(safeDecodeURIComponent(href));
 }
 
 export function rewriteMarkdownFileUriHref(href: string | undefined): string | null {
@@ -79,79 +56,6 @@ export function rewriteMarkdownFileHrefForRendering(href: string): string | null
   return `file:///${normalizedHref.replaceAll("\\", "/")}`;
 }
 
-function rewriteMarkdownFileHrefsInTree(node: unknown): void {
-  if (!node || typeof node !== "object") return;
-
-  if (
-    "tagName" in node &&
-    node.tagName === "a" &&
-    "properties" in node &&
-    node.properties &&
-    typeof node.properties === "object" &&
-    "href" in node.properties &&
-    typeof node.properties.href === "string"
-  ) {
-    const properties: Record<string, unknown> = node.properties;
-    const rewrittenHref = rewriteMarkdownFileHrefForRendering(properties.href as string);
-    if (rewrittenHref) {
-      properties[PRESERVED_MARKDOWN_FILE_HREF_PROPERTY] = rewrittenHref;
-      properties.href = rewrittenHref;
-    }
-  }
-
-  if ("children" in node && Array.isArray(node.children)) {
-    for (const child of node.children) {
-      rewriteMarkdownFileHrefsInTree(child);
-    }
-  }
-}
-
-export function rehypeRewriteMarkdownFileHrefs() {
-  return (tree: unknown) => {
-    rewriteMarkdownFileHrefsInTree(tree);
-  };
-}
-
-export function resolvePreservedMarkdownFileHref(
-  node: unknown,
-  renderedHref: string | undefined,
-): string | undefined {
-  if (
-    node &&
-    typeof node === "object" &&
-    "properties" in node &&
-    node.properties &&
-    typeof node.properties === "object" &&
-    PRESERVED_MARKDOWN_FILE_HREF_PROPERTY in node.properties
-  ) {
-    const preservedHref = node.properties[PRESERVED_MARKDOWN_FILE_HREF_PROPERTY];
-    if (typeof preservedHref === "string") {
-      return preservedHref;
-    }
-  }
-  return renderedHref;
-}
-
-/**
- * `baseDir` anchors relative links; it defaults to the workspace root and is the
- * file's own directory when rendering a markdown file. `cwd` stays the workspace
- * root so the result still knows whether the target is inside it.
- */
-export function resolveMarkdownFileLinkTarget(
-  href: string | undefined,
-  cwd?: string,
-  baseDir: string | undefined = cwd,
-): string | null {
-  if (!href) return null;
-  const target = parseMarkdownFileLink(href);
-  if (!target) return null;
-
-  const pathWithPosition = formatFilePathPosition(target);
-  if (!isRelativeFilePath(pathWithPosition)) return pathWithPosition;
-  if (!baseDir) return null;
-  return resolvePathLinkTarget(pathWithPosition, baseDir);
-}
-
 /**
  * Inline code spans mostly hold identifiers, commands, and refs (`node.meta`,
  * `origin/main`) rather than deliberate link destinations, so auto-linking
@@ -166,7 +70,27 @@ export function resolveInlineCodeFileLinkMeta(
   const candidate = inlineCodeFilePathCandidate(codeText);
   if (candidate === null) return null;
 
-  return resolveMarkdownFileLinkMeta(candidate, cwd, baseDir);
+  return resolveMarkdownFileLinkMeta(
+    candidate,
+    cwd,
+    inlineCodePathNamesFromWorkspaceRoot(candidate, cwd, baseDir) ? cwd : baseDir,
+  );
+}
+
+/**
+ * Prose in a workspace file names other files from the repo root (`docs/ai/design.md`),
+ * unlike an explicit link. Single-segment names (`design.md:12`) and `./`, `../`
+ * paths still read as siblings, and files outside the workspace keep their own base.
+ */
+function inlineCodePathNamesFromWorkspaceRoot(
+  candidate: string,
+  cwd: string | undefined,
+  baseDir: string | undefined,
+): boolean {
+  if (!cwd || !baseDir || !isRelativeFilePath(candidate)) return false;
+  if (/^(?:~|\.{1,2})\//.test(candidate)) return false;
+  if (!splitFilePathPosition(candidate).path.includes("/")) return false;
+  return workspaceRelativeFilePath(baseDir, cwd) !== null;
 }
 
 export function resolveMarkdownFileLinkMeta(

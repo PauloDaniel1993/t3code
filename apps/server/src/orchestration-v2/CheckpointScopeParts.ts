@@ -16,6 +16,7 @@ import {
   worktreeSetPath,
   type WorkspaceThread,
 } from "@t3tools/shared/workspaceFolders";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- pure scope planning requires synchronous stable part keys.
 import * as NodeCrypto from "node:crypto";
 
 export const PRIMARY_CHECKPOINT_PART_KEY = "primary";

@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { VcsListRefsInput, VcsListRefsResult } from "./git.ts";
 import { WorkspaceMcpBinding } from "./workspaceMcp.ts";
 
@@ -115,6 +115,7 @@ export const WorktreeMcpStatusResult = Schema.Struct({
 export type WorktreeMcpStatusResult = typeof WorktreeMcpStatusResult.Type;
 
 export const WorktreeMcpListInput = Schema.Struct({
+  threadId: Schema.optional(ThreadId),
   folderPath: Schema.optional(
     TrimmedNonEmptyString.annotate({
       description:
@@ -150,6 +151,7 @@ export class WorktreeMcpFailure extends Schema.TaggedError<WorktreeMcpFailure>()
       "handoff_in_progress",
       "invalid_request",
       "operation_failed",
+      "thread_credential_required",
     ]),
     message: Schema.String,
   },

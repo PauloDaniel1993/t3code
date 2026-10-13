@@ -1,4 +1,5 @@
-import * as NodeCrypto from "node:crypto";
+import * as Crypto from "effect/Crypto";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -10,9 +11,9 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 
-import * as ProviderEventLoggers from "../../provider/Layers/ProviderEventLoggers.ts";
-import * as IdAllocator from "../IdAllocator.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
+import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import {
   makeClaudeWorkspaceFolderHarness,
@@ -20,6 +21,7 @@ import {
 } from "./ClaudeWorkspaceFolders.testkit.ts";
 
 const platformLayer = Layer.mergeAll(
+  McpProviderSessions.layer,
   NodeServices.layer,
   IdAllocator.layer,
   Layer.succeed(
@@ -30,7 +32,7 @@ const platformLayer = Layer.mergeAll(
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const liveLayer = Layer.merge(
   platformLayer,
-  ClaudeAdapterV2.claudeAgentSdkQueryRunnerLiveLayer.pipe(Layer.provide(platformLayer)),
+  ClaudeAdapterV2.layerQueryRunner.pipe(Layer.provide(platformLayer)),
 );
 
 // Explicit config selection keeps opt-in runs away from the default Team account.
@@ -84,7 +86,7 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
               runtimePolicy = scope,
             ) {
               const file = path.join(runtimePolicy.additionalDirectories[0]!, "proof.txt");
-              const fixtureValue = NodeCrypto.randomUUID();
+              const fixtureValue = yield* (yield* Crypto.Crypto).randomUUIDv4;
               const marker = `CLAUDE_WORKSPACE_${stage.toUpperCase()}_OK`;
               yield* fileSystem.writeFileString(
                 file,

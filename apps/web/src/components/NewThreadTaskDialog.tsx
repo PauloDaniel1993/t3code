@@ -71,9 +71,13 @@ export function NewThreadTaskDialog(props: {
   const entries = useMemo(
     () =>
       sortProviderInstanceEntries(
-        applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
+        applyProviderInstanceSettings(
+          deriveProviderInstanceEntries(providers),
+          settings,
+          parent?.projectId ?? null,
+        ),
       ),
-    [providers, settings],
+    [providers, settings, parent?.projectId],
   );
   const modelOptionsByInstance = useMemo<
     ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>
@@ -221,6 +225,7 @@ export function NewThreadTaskDialog(props: {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">Model</span>
                 <ProviderModelPicker
+                  environmentId={parentThreadRef.environmentId}
                   activeInstanceId={model.instanceId}
                   model={model.model}
                   lockedProvider={null}

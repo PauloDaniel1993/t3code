@@ -3,7 +3,7 @@ import {
   parseMarkdownFileLink,
   safeDecodeURIComponent,
   splitMarkdownLinkSearchAndHash,
-} from "@t3tools/client-runtime/markdown-links";
+} from "@t3tools/shared/markdownLinks";
 import type { WorkspaceScope, WorkspaceScopeFolder } from "@t3tools/contracts";
 import { parseCanonicalPath, toCanonicalPath } from "@t3tools/shared/workspaceFolders";
 

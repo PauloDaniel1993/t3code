@@ -3,7 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import * as Schema from "effect/Schema";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { Platform as HostProcessPlatform } from "@t3tools/shared/HostProcess";
 
 export const MaintenanceJournal = Schema.Struct({
   version: Schema.Literal(2),

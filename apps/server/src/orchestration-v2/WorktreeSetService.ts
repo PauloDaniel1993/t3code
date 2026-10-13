@@ -11,7 +11,13 @@ import {
   WorkspaceFolderEntry,
   type WorktreeSetupStageStatus,
 } from "@t3tools/contracts";
-import { buildTemporaryWorktreeBranchName, sanitizeBranchFragment } from "@t3tools/shared/git";
+import {
+  buildTemporaryWorktreeBranchName,
+  flattenTemporaryWorktreeBranchName,
+  isTemporaryWorktreeBranch,
+  sanitizeBranchFragment,
+  WORKTREE_BRANCH_PREFIX,
+} from "@t3tools/shared/git";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import {
   hasOwnChanges,
@@ -38,10 +44,10 @@ import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
-import { makeKeyedSerialExecutor } from "./KeyedSerialExecutor.ts";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import type * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { randomUuidV4 } from "./RandomUuid.ts";
+import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export class WorktreeRecreateError extends Schema.TaggedError<WorktreeRecreateError>()(
@@ -182,7 +188,11 @@ export class WorktreeSetService extends Context.Service<
       readonly threadId: ThreadId;
       readonly set: WorktreeSet;
       readonly expectedWorktreePath?: string | null | undefined;
-    }) => Effect.Effect<WorktreeSetBinding, Orchestrator.OrchestratorV2Error>;
+    }) => Effect.Effect<
+      WorktreeSetBinding,
+      | Orchestrator.OrchestratorV2Error
+      | ThreadManagement.ThreadManagementProviderInstanceDisabledError
+    >;
     /**
      * Renames every member's branch to `branch`, or the first variant free in
      * every repository, keeping each member's suffix. If any rename fails, the
@@ -331,7 +341,7 @@ const make = Effect.gen(function* () {
   // Serializes a thread's set changes, so each starts from the binding the
   // last one left: two creations can't both make a set, and two switches
   // can't record each other's stale branches.
-  const threadChanges = yield* makeKeyedSerialExecutor<ThreadId>();
+  const threadChanges = yield* KeyedLock.make<ThreadId>();
 
   /** A snapshot folder's real place inside the checkout git found it in; undefined outside git. */
   const checkoutLocation = (folder: OrchestrationV2ThreadWorkspaceFolder) =>
@@ -394,6 +404,23 @@ const make = Effect.gen(function* () {
     }
   });
 
+  // A repository may already have a branch named t3, blocking t3/<hash> refs.
+  const availableTemporaryBranch = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    cwd: string,
+    branch: string,
+  ) {
+    if (!isTemporaryWorktreeBranch(branch)) return branch;
+    const prefixExists = yield* git
+      .hasCommit({ cwd, refName: `refs/heads/${WORKTREE_BRANCH_PREFIX}` })
+      .pipe(
+        Effect.mapError((cause) =>
+          failure(threadId, "Could not inspect the worktree branch prefix.", cause),
+        ),
+      );
+    return prefixExists ? flattenTemporaryWorktreeBranchName(branch) : branch;
+  });
+
   const plan: WorktreeSetService["Service"]["plan"] = Effect.fn("WorktreeSetService.plan")(
     function* (input) {
       const threadId = input.thread.id;
@@ -403,7 +430,7 @@ const make = Effect.gen(function* () {
         const member = {
           repositoryRoot: input.projectRoot,
           path: input.path ?? null,
-          branch: input.branch,
+          branch: yield* availableTemporaryBranch(threadId, input.projectRoot, input.branch),
           startRef: input.baseRef,
           baseBranch: input.baseRef,
         };
@@ -519,7 +546,7 @@ const make = Effect.gen(function* () {
           return {
             repositoryRoot: root,
             path: places[index]!,
-            branch: names[index]!,
+            branch: yield* availableTemporaryBranch(threadId, root, names[index]!),
             startRef: baseBranch ?? "HEAD",
             baseBranch,
           } satisfies PlannedMember;

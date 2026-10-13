@@ -7,10 +7,10 @@ import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import { EDITORS } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ExternalLauncher from "./externalLauncher.ts";
 
 // Fork-owned: concurrent editor discovery. Kept apart from externalLauncher.test.ts
@@ -71,7 +71,7 @@ it.effect("discovers editors concurrently with at most eight probes and stable o
     Effect.provide(
       Layer.mergeAll(
         launcherLayer,
-        Layer.succeed(HostProcessPlatform, "win32"),
+        Layer.succeed(HostProcess.Platform, "win32"),
         ConfigProvider.layer(
           ConfigProvider.fromEnv({
             env: { PATH: "C:\\t3-editor-concurrent-test", PATHEXT: ".CMD" },
@@ -128,7 +128,7 @@ it.effect("shares a discovery scan across simultaneous connects and expired cach
     Effect.provide(
       Layer.mergeAll(
         launcherLayer,
-        Layer.succeed(HostProcessPlatform, "win32"),
+        Layer.succeed(HostProcess.Platform, "win32"),
         ConfigProvider.layer(
           ConfigProvider.fromEnv({
             env: { PATH: "C:\\t3-editor-shared-scan-test", PATHEXT: ".CMD" },

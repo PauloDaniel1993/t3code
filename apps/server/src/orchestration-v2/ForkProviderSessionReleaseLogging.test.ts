@@ -50,7 +50,7 @@ function candidate(
       providerSession: { status: "ready" },
     },
     attachedThreadIds: new Set([ThreadId.make("release-logging-thread")]),
-    busyCount: 0,
+    busyTurns: new Set(),
     idleGeneration: 1,
     lastActivityAtMs: 0,
     ...overrides,
@@ -108,7 +108,7 @@ it.effect("records a correlated candidate, decision, stop request and result", (
 it.effect("decision spans are roots even when the timer was forked inside a request span", () => {
   const telemetry = captureTelemetry();
   return Effect.gen(function* () {
-    const entry = candidate({ busyCount: 1 });
+    const entry = candidate({ busyTurns: new Set(["active"]) });
     const sessions = yield* Ref.make(new Map([[key, entry]]));
     yield* makeTracer(sessions)
       .begin(key, input, entry)
@@ -123,7 +123,7 @@ it.effect("decision spans are roots even when the timer was forked inside a requ
 });
 
 it.effect.each([
-  { overrides: { busyCount: 1 }, decision: "skip_active_turn" },
+  { overrides: { busyTurns: new Set(["active"]) }, decision: "skip_active_turn" },
   { overrides: { idleGeneration: 2 }, decision: "skip_stale_generation" },
 ])("explains $decision", ({ overrides, decision }) => {
   const telemetry = captureTelemetry();
@@ -195,7 +195,10 @@ it.effect("does not report a guarded no-op release as the entry being removed", 
     const trace = yield* makeTracer(sessions).begin(key, input, entry);
     // The manager's atomic guard left the entry in place: a turn started.
     yield* trace.observeStop(
-      Ref.set(sessions, new Map([[key, { ...entry, busyCount: 1, idleGeneration: 2 }]])),
+      Ref.set(
+        sessions,
+        new Map([[key, { ...entry, busyTurns: new Set(["active"]), idleGeneration: 2 }]]),
+      ),
     );
     assert.equal(telemetry.logs.at(-1)?.annotations.result, "skipped_session_busy");
     assert.equal(telemetry.logs.at(-1)?.annotations.currentBusyCount, 1);

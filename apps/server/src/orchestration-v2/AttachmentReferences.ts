@@ -7,8 +7,8 @@ import {
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import type { Fragment } from "effect/unstable/sql/Statement";
+import * as SqlClient from "effect/sql/SqlClient";
+import type { Fragment } from "effect/sql/Statement";
 
 import { attachmentRelativePath, parseThreadSegmentFromAttachmentId } from "../attachmentStore.ts";
 import { normalizeAttachmentRelativePath } from "../attachmentPaths.ts";

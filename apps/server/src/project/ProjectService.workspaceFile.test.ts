@@ -24,17 +24,17 @@ import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 
 import * as ServerConfig from "../config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
-import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
-import { OrchestrationV2EventSinkLayerLive } from "../orchestration-v2/runtimeLayer.ts";
+import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { planThreadWorkspaceUpdate } from "../orchestration-v2/ThreadWorkspaceBinding.ts";
-import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import * as OrchestrationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { subscribeOrchestrationV2Shell } from "../ws.ts";
@@ -116,17 +116,15 @@ const metaUpdates = Effect.fn("ProjectWorkspaceFileTest.metaUpdates")(function* 
 
 /** Every dependency of ProjectService.make, with real folders, git and workspace files. */
 const dependencies = Layer.mergeAll(
-  OrchestrationV2EventSinkLayerLive,
-  OrchestrationEventStoreLive,
+  RuntimeLayer.layerEventSink,
+  OrchestrationEventStore.layer,
   ProjectStore.layer,
   ProjectionStore.layer,
   IdAllocator.layer,
   ThreadCommandExecutor.layer,
   drivenWorkspaceFiles,
 ).pipe(
-  Layer.provideMerge(
-    LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
-  ),
+  Layer.provideMerge(LegacyV1ThreadImporter.layer.pipe(Layer.provide(RuntimeLayer.layerEventSink))),
   Layer.provideMerge(ProjectEnrichmentService.layer),
   Layer.provideMerge(WorkspacePaths.layer),
   Layer.provideMerge(
@@ -140,7 +138,8 @@ const dependencies = Layer.mergeAll(
       WorkspaceFolderResolver.layer,
     ),
   ),
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
+  Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "project-workspace-file-" })),
   Layer.provideMerge(NodeServices.layer),
 );

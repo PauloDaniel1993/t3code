@@ -1,5 +1,8 @@
+import { CursorSettings } from "@t3tools/provider-cursor/settings";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
-  CursorSettings,
   MessageId,
   NodeId,
   ProjectId,
@@ -15,15 +18,14 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
-import * as IdAllocator from "../IdAllocator.ts";
-import * as ProviderAdapter from "../ProviderAdapter.ts";
-import { makeCursorAdapterV2 } from "./CursorAdapterV2.ts";
-import type * as CursorAgentSdk from "./CursorAgentSdk.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { makeCursorAdapterV2 } from "@t3tools/provider-cursor/testing";
+import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
 
 const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 export const makeCursorWorkspaceFixture = Effect.fnUntraced(function* (
-  runner: CursorAgentSdk.CursorAgentSdkRunnerShape,
+  runner: CursorAgentSdk.CursorAgentSdkRunner["Service"],
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -44,18 +46,25 @@ export const makeCursorWorkspaceFixture = Effect.fnUntraced(function* (
     runtimeMode: "full-access",
     interactionMode: "default",
   });
-  const adapter = makeCursorAdapterV2({
+  const serverConfig = yield* ServerConfig.ServerConfig.pipe(
+    Effect.provide(ServerConfig.layerTest(directory, { prefix: "cursor-workspace-config-" })),
+  );
+  const host = yield* ProviderHost.ProviderHost.pipe(
+    Effect.provide(TestProviderHost.layer({ cwd })),
+  );
+  const adapter = yield* makeCursorAdapterV2({
     instanceId,
     settings: yield* decodeCursorSettings({}),
     environment: process.env,
-    fileSystem,
-    path,
-    idAllocator: yield* IdAllocator.IdAllocatorV2,
-    serverConfig: yield* ServerConfig.ServerConfig.pipe(
-      Effect.provide(ServerConfig.layerTest(directory, { prefix: "cursor-workspace-config-" })),
-    ),
-    runner,
-  });
+  }).pipe(
+    Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, runner),
+    Effect.provideService(ProviderHost.ProviderHost, {
+      ...host,
+      paths: { ...host.paths, attachmentsDir: serverConfig.attachmentsDir },
+      resolveAttachmentPath: (attachment) =>
+        resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
+    }),
+  );
   return { adapter, cwd, additionalDirectories, runtimePolicy, modelSelection };
 });
 

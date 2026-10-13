@@ -1,4 +1,6 @@
-import * as NetAddress from "effect/unstable/net/NetAddress";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import * as NetAddress from "effect/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -21,22 +23,25 @@ import * as References from "effect/References";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import * as Tracer from "effect/Tracer";
-import { HttpServer } from "effect/unstable/http";
+import { HttpServer } from "effect/http";
 
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { EventSinkV2, EventSinkWriteError, layer as eventSinkLayer } from "./EventSink.ts";
 import { layer as eventStoreLayer } from "./EventStore.ts";
-import { IdAllocatorV2, layer as idAllocatorLayer } from "./IdAllocator.ts";
+import {
+  IdAllocatorV2,
+  layer as idAllocatorLayer,
+} from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2, layer as projectionStoreLayer } from "./ProjectionStore.ts";
 import type {
   ProviderAdapterV2RuntimePolicy,
   ProviderAdapterV2SessionRuntime,
-  ProviderAdapterV2Shape,
-} from "./ProviderAdapter.ts";
-import { makeSingleLayer as makeProviderAdapterRegistryLayer } from "./ProviderAdapterRegistry.ts";
+  ProviderAdapterV2,
+} from "@t3tools/provider-core/server/ProviderAdapter";
+import { layerSingle as makeProviderAdapterRegistryLayer } from "./ProviderAdapterRegistry.ts";
 import { layer as providerEventIngestorLayer } from "./ProviderEventIngestor.ts";
 import {
   ProviderSessionManagerV2,
@@ -58,10 +63,10 @@ const runtimePolicy = {
 } satisfies ProviderAdapterV2RuntimePolicy;
 
 const StoresLayer = Layer.merge(eventStoreLayer, projectionStoreLayer).pipe(
-  Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(SqlitePersistence.layerMemory),
 );
 const EventSinkLayer = eventSinkLayer.pipe(
-  Layer.provide(Layer.mergeAll(StoresLayer, SqlitePersistenceMemory)),
+  Layer.provide(Layer.mergeAll(StoresLayer, SqlitePersistence.layerMemory)),
 );
 // Fails only the write that persists a release, so the release itself fails.
 const FailingReleaseEventSinkLayer = Layer.effect(
@@ -112,7 +117,7 @@ const unused = (name: string) => () => Effect.die(`${name} is unused in this tes
 function makeAdapter(input: {
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly closes: Ref.Ref<number>;
-}): ProviderAdapterV2Shape {
+}): ProviderAdapterV2["Service"] {
   return {
     instanceId: modelSelection.instanceId,
     driver,
@@ -230,8 +235,11 @@ function scenario<E>(input: {
           sinkLayer,
           idAllocatorLayer,
           providerEventIngestorLayer.pipe(
-            Layer.provide(Layer.mergeAll(sinkLayer, idAllocatorLayer, StoresLayer)),
+            Layer.provide(
+              Layer.mergeAll(sinkLayer, idAllocatorLayer, StoresLayer, ThreadCommandExecutor.layer),
+            ),
           ),
+          McpProviderSessions.layer.pipe(Layer.provide(McpRegistryLayer)),
           McpRegistryLayer,
           StoresLayer,
         ),

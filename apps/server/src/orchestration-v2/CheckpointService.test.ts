@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it, vi } from "@effect/vitest";
 import {
   CheckpointId,
@@ -21,6 +22,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- symlink fixtures require native lstat semantics.
 import * as NodeFSP from "node:fs/promises";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
@@ -29,7 +31,7 @@ import * as ServerConfig from "../config.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as CheckpointService from "./CheckpointService.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 const threadId = ThreadId.make("thread:checkpoint-parts");
@@ -72,10 +74,12 @@ const mockedService = (store: Partial<CheckpointStore.CheckpointStore["Service"]
       Layer.mergeAll(
         IdAllocator.layer,
         NodeServices.layer,
+        NodeCrypto.layer,
         Layer.mock(CheckpointStore.CheckpointStore)({
           isGitRepository: () => Effect.succeed(true),
           hasCheckpointRef: () => Effect.succeed(false),
           captureCheckpoint: () => Effect.void,
+          listAuthoredPaths: () => Effect.succeed(null),
           ...store,
         }),
       ),
@@ -112,18 +116,21 @@ it.effect.each([false, true, "interrupt"] as const)(
             )
           : Effect.succeed(true),
     );
-    const testLayer = CheckpointService.layer.pipe(
+    const layerTest = CheckpointService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           IdAllocator.layer,
           NodeServices.layer,
+          NodeCrypto.layer,
           Layer.mock(CheckpointStore.CheckpointStore)({
             isGitRepository: () => Effect.succeed(true),
             hasCheckpointRef,
             captureCheckpoint: () => Effect.void,
+            listAuthoredPaths: () => Effect.succeed(null),
           }),
         ),
       ),
+      Layer.provideMerge(NodeCrypto.layer),
     );
 
     return Effect.gen(function* () {
@@ -154,7 +161,7 @@ it.effect.each([false, true, "interrupt"] as const)(
       assert.equal(baseline.ordinalWithinScope, 2);
       assert.equal(
         baseline.ref,
-        CheckpointService.checkpointRefForScopeOrdinal({
+        yield* CheckpointService.checkpointRefForScopeOrdinal({
           scopeId: scope.id,
           ordinalWithinScope: 2,
         }),
@@ -164,7 +171,7 @@ it.effect.each([false, true, "interrupt"] as const)(
         cwd: scope.cwd,
         checkpointRef: baseline.ref,
       });
-    }).pipe(Effect.provide(testLayer));
+    }).pipe(Effect.provide(layerTest));
   },
 );
 
@@ -201,7 +208,7 @@ it.effect("keeps a single-folder thread's scope and checkpoint as they were", ()
       assert.equal(checkpoint.status, "ready");
       assert.equal(
         checkpoint.ref,
-        CheckpointService.checkpointRefForScopeOrdinal({
+        yield* CheckpointService.checkpointRefForScopeOrdinal({
           scopeId: scope.id,
           ordinalWithinScope: 1,
         }),
@@ -253,14 +260,17 @@ it.effect("records each part's outcome and a barrier status without failing the 
     assert.equal(checkpoint.status, "error");
     assert.equal(
       checkpoint.ref,
-      CheckpointService.checkpointRefForScopeOrdinal({ scopeId: scope.id, ordinalWithinScope: 2 }),
+      yield* CheckpointService.checkpointRefForScopeOrdinal({
+        scopeId: scope.id,
+        ordinalWithinScope: 2,
+      }),
     );
     assert.deepStrictEqual(
       checkpoint.parts?.map((part) => [part.key, part.status, part.ref, part.folders[0]?.label]),
       [
         ["primary", "ready", checkpoint.ref, "api"],
-        [keys[1], "error", partRef(keys[1]!), "broken"],
-        [keys[2], "missing", partRef(keys[2]!), "moved"],
+        [keys[1], "error", yield* partRef(keys[1]!), "broken"],
+        [keys[2], "missing", yield* partRef(keys[2]!), "moved"],
         [keys[3], "missing", null, "notes"],
       ],
     );
@@ -367,6 +377,51 @@ const multiFolderScope = Effect.gen(function* () {
   });
 });
 
+it.effect(
+  "multi-root summaries exclude imported files while preserving folder-relative authored paths",
+  () =>
+    Effect.gen(function* () {
+      const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+      const scope = yield* checkpoints.prepareRootRunScope({
+        threadId,
+        runId,
+        rootNodeId: nodeId,
+        providerThreadId,
+        cwd: "/repo/app",
+        createdAt,
+        thread: {
+          worktreePath: null,
+          workspaceFolders: [
+            snapshotFolder("/repo/app", "app", "/repo", "app"),
+            snapshotFolder("/lib", "lib", "/lib"),
+          ],
+        },
+      });
+      const checkpoint = yield* checkpoints.capture({
+        scope,
+        runId,
+        nodeId,
+        ordinalWithinScope: 1,
+        appRunOrdinal: 1,
+        capturedAt: createdAt,
+      });
+      assert.deepEqual(
+        checkpoint.files.map((file) => file.path),
+        ["app/written.ts", "lib/written.ts"],
+      );
+      assert.equal(checkpoint.status, "ready");
+    }).pipe(
+      Effect.provide(
+        mockedService({
+          hasCheckpointRef: () => Effect.succeed(true),
+          listAuthoredPaths: ({ cwd }) =>
+            Effect.succeed(new Set([cwd === "/repo" ? "app/written.ts" : "written.ts"])),
+          diffCheckpoints: () => Effect.succeed("1\t0\twritten.ts\0" + "2\t0\timported.ts\0"),
+        }),
+      ),
+    ),
+);
+
 it.effect("captures each missing part baseline, even when another part's fails", () => {
   const captured: Array<CheckpointStore.CaptureCheckpointInput> = [];
   return Effect.gen(function* () {
@@ -383,7 +438,7 @@ it.effect("captures each missing part baseline, even when another part's fails",
     assert.deepStrictEqual(captured, [
       {
         cwd: "/lib",
-        checkpointRef: CheckpointService.checkpointRefForScopeOrdinal({
+        checkpointRef: yield* CheckpointService.checkpointRefForScopeOrdinal({
           scopeId: scope.id,
           ordinalWithinScope: 1,
           partKey: lib!.key,
@@ -500,8 +555,9 @@ const GitServiceLayer = CheckpointService.layer.pipe(
     ),
   ),
   Layer.provideMerge(VcsProcessTestLayer),
+  Layer.provide(NodeCrypto.layer),
   Layer.provideMerge(
-    ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-checkpoint-parts-test-" }),
+    ServerConfig.layerTest(process.cwd(), { prefix: "t3-checkpoint-parts-test-" }),
   ),
   Layer.provideMerge(NodeServices.layer),
 );

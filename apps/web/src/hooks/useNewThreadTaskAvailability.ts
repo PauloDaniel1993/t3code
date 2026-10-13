@@ -1,12 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { AuthOrchestrationOperateScope, type ScopedThreadRef } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 import { useMemo } from "react";
 import { getNewThreadTaskUnavailableReason } from "../components/NewThreadTaskDialog.logic";
 import { useEnvironment } from "../state/environments";
 import { environmentPresentations } from "../state/presentation";
 import { environmentThreadDetails } from "../state/threads";
+import { useEnvironmentScope } from "../state/session";
 import { EMPTY_SERVER_PROVIDERS } from "../state/server";
 
 /** Mounts only the requested parent stream and ignores updates to its conversation entities. */
@@ -28,6 +29,7 @@ export function useNewThreadTaskParent(threadRef: ScopedThreadRef) {
 export function useNewThreadTaskAvailability(threadRef: ScopedThreadRef | null) {
   const environmentId = threadRef?.environmentId ?? null;
   const threadId = threadRef?.threadId ?? null;
+  const canOperate = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const environment = useEnvironment(environmentId);
   const providers = environment?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
   // Subscribe to the reason alone, so streaming tokens do not repaint the header or palette.
@@ -49,5 +51,8 @@ export function useNewThreadTaskAvailability(threadRef: ScopedThreadRef | null) 
     [environmentId, threadId],
   );
   const problem = useAtomValue(problemAtom);
-  return { providers, problem };
+  return {
+    providers,
+    problem: problem ?? (canOperate ? null : "This connection cannot change threads."),
+  };
 }

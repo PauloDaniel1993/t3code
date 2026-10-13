@@ -13,7 +13,7 @@ import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   createEnvironmentRpcCommand,
@@ -25,7 +25,14 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as Persistence from "../platform/persistence.ts";
-import { request, subscribe, runStream, type EnvironmentRpcInput } from "../rpc/client.ts";
+import {
+  request,
+  subscribe,
+  runStreamGuarded,
+  RpcPermissionGuard,
+  type EnvironmentRpcInput,
+} from "../rpc/client.ts";
+import { createCommandPermissions } from "./commandPermissions.ts";
 import { consumeWorkspaceActionProgress, type RunWorkspaceActionInput } from "./workspaceVcs.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import {
@@ -284,6 +291,10 @@ export function createVcsEnvironmentAtoms<R, E>(
       cwd: target.input.cwd,
     });
 
+  const workspaceActionPermissions = createCommandPermissions(
+    runtime,
+    WS_METHODS.vcsRunWorkspaceAction,
+  );
   return {
     listRefs,
     branchStatus: createEnvironmentSubscriptionAtomFamily(runtime, {
@@ -295,29 +306,42 @@ export function createVcsEnvironmentAtoms<R, E>(
           Stream.map((event) => ({ isRepo: event.isRepo, refName: event.refName })),
         ),
     }),
-    runWorkspaceAction: createEnvironmentCommand(runtime, {
-      label: "environment-data:vcs:run-workspace-action",
-      concurrency: {
-        mode: "serial",
-        key: (target: { environmentId: EnvironmentId; input: RunWorkspaceActionInput }) =>
-          JSON.stringify([target.environmentId, target.input.threadId]),
-      },
-      execute: (input: RunWorkspaceActionInput, registry, environmentId) => {
-        const { onProgress, cwds, ...rpcInput } = input;
-        return scheduleWorkspaceVcsCommand(
-          registry,
-          environmentId,
-          cwds,
-          consumeWorkspaceActionProgress(
-            runStream(WS_METHODS.vcsRunWorkspaceAction, rpcInput),
-            input.actionId,
-            onProgress,
-          ),
-        ).pipe(
-          Effect.ensuring(invalidateCachedVcsRefs(registry, { environmentId, cwd: cwds[0] ?? "" })),
-        );
-      },
-    }),
+    runWorkspaceAction: {
+      ...createEnvironmentCommand(runtime, {
+        label: "environment-data:vcs:run-workspace-action",
+        concurrency: {
+          mode: "serial",
+          key: (target: { environmentId: EnvironmentId; input: RunWorkspaceActionInput }) =>
+            JSON.stringify([target.environmentId, target.input.threadId]),
+        },
+        execute: (input: RunWorkspaceActionInput, registry, environmentId) => {
+          const { onProgress, cwds, ...rpcInput } = input;
+          return workspaceActionPermissions.authorize(registry, environmentId, rpcInput).pipe(
+            Effect.andThen(() =>
+              scheduleWorkspaceVcsCommand(
+                registry,
+                environmentId,
+                cwds,
+                consumeWorkspaceActionProgress(
+                  runStreamGuarded(WS_METHODS.vcsRunWorkspaceAction, rpcInput),
+                  input.actionId,
+                  onProgress,
+                ),
+              ),
+            ),
+            Effect.provideService(RpcPermissionGuard, {
+              authorize: (id, method, payload) =>
+                createCommandPermissions(runtime, method).authorize(registry, id, payload),
+            }),
+            Effect.ensuring(
+              invalidateCachedVcsRefs(registry, { environmentId, cwd: cwds[0] ?? "" }),
+            ),
+          );
+        },
+      }),
+      requiredScopes: workspaceActionPermissions.requiredScopes,
+      permissionAtom: workspaceActionPermissions.permissionAtom,
+    },
     switchWorktreeSetBranch: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:switch-worktree-set-branch",
       tag: WS_METHODS.vcsSwitchWorktreeSetBranch,

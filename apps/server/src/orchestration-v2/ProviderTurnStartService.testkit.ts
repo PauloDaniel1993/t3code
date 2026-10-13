@@ -6,7 +6,7 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorktreeSet from "./WorktreeSetService.ts";
 
-export const worktreeRepairDependenciesTestLayer = Layer.mergeAll(
+export const layer = Layer.mergeAll(
   Layer.mock(WorktreeSet.WorktreeSetService)({
     recreateMissing: () => Effect.void,
   }),

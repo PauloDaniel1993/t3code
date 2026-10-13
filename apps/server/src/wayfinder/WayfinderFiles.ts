@@ -9,7 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type { PlatformError } from "effect/PlatformError";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import type { WayfinderMarkdownFile } from "./WayfinderMarkdown.ts";
@@ -132,7 +132,7 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
 
   const realRoot = yield* resolveRealRoot(workspaceRoot);
 
@@ -294,12 +294,13 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
       });
       return yield* attempt.pipe(
         Effect.scoped,
-        Effect.catchTag("WayfinderNodeFileError", (cause) =>
-          (isAbsent(cause.code)
-            ? Effect.void
-            : logProbeFailure("bounded-read", target.relativePath, cause.code ?? "unknown")
-          ).pipe(Effect.as<WayfinderMarkdownFile | null>(null)),
-        ),
+        Effect.catchTags({
+          WayfinderNodeFileError: (cause) =>
+            (isAbsent(cause.code)
+              ? Effect.void
+              : logProbeFailure("bounded-read", target.relativePath, cause.code ?? "unknown")
+            ).pipe(Effect.as<WayfinderMarkdownFile | null>(null)),
+        }),
       );
     },
   );

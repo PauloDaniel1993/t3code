@@ -27,14 +27,14 @@ it("keeps Kimi disabled by default and preserves saved fork configuration", () =
     customModels: ["kimi-saved"],
   };
   const decoded = decodeSettings({
-    providers: { kimi: config },
     providerInstances: { kimi: { driver: "kimi", config } },
   });
-  expect(decoded.providers.kimi).toEqual(config);
   expect(decoded.providerInstances[ProviderInstanceId.make("kimi")]?.config).toEqual(config);
   expect(
-    decodePatch({ providers: { kimi: { homePath: "C:\\other" } } }).providers?.kimi?.homePath,
-  ).toBe("C:\\other");
+    decodePatch({
+      providerInstances: { kimi: { driver: "kimi", config: { ...config, homePath: "C:\\other" } } },
+    }).providerInstances?.[ProviderInstanceId.make("kimi")]?.config,
+  ).toEqual({ ...config, homePath: "C:\\other" });
   const driver = ProviderDriverKind.make("kimi");
   expect(resolveProviderInstanceEnabled({ driver, config: {} })).toBe(false);
   expect(DEFAULT_MODEL_BY_PROVIDER[driver]).toBe("kimi-default");

@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { ProjectionMaintenanceV2 } from "../ProjectionMaintenance.ts";
 import { LegacyV1ThreadImporter } from "./LegacyV1ThreadImporter.ts";

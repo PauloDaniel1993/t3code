@@ -7,11 +7,12 @@ import {
 import { createEnvironmentQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
+  ClientGuardedRpcTag,
   WorkspaceScope,
   OrchestrationProjectShell,
   OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { environmentSnapshotAtom } from "./shell";
@@ -94,7 +95,9 @@ export function switchWorkspaceFileQuery<A>(
   );
 }
 
-export function createWorkspaceFileQuery<TTag extends EnvironmentUnaryRpcTag>(options: {
+export function createWorkspaceFileQuery<
+  TTag extends Exclude<EnvironmentUnaryRpcTag, ClientGuardedRpcTag>,
+>(options: {
   readonly tag: TTag;
   readonly label: string;
   readonly staleTimeMs: number;

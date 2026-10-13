@@ -11,7 +11,7 @@ import {
   threadPullRequestKeyOf,
 } from "@t3tools/shared/threadPullRequests";
 import { useMemo, useState } from "react";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
 import { Screen, ScreenStack, ScreenStackHeaderConfig } from "react-native-screens";
 import * as Cause from "effect/Cause";
@@ -52,6 +52,10 @@ function RepositoryControls(props: {
 }) {
   const navigation = useNavigation();
   const { checkout, status } = props;
+  const actionPermission = workspaceVcs.runAction.permissionAtom(props.target.environmentId);
+  const branchPermission = workspaceVcs.switchBranch.permissionAtom(props.target.environmentId);
+  const canRunAction = useAtomValue(actionPermission);
+  const canSwitchBranch = useAtomValue(branchPermission);
   const run = useAtomCommand(
     vcsActionManager.runStackedAction({
       environmentId: props.target.environmentId,
@@ -73,6 +77,7 @@ function RepositoryControls(props: {
   const busy = props.batchBusy || actionState.isRunning || switching;
   const runAction = async (action: "commit" | "push" | "create_pr") => {
     const execute = async () => {
+      if (!appAtomRegistry.get(actionPermission)) return;
       const result = await run({
         actionId: uuidv4(),
         action,
@@ -117,8 +122,9 @@ function RepositoryControls(props: {
       {props.drifted && checkout.expectedBranch ? (
         <MaterialButton
           label={`Switch back to ${checkout.expectedBranch}`}
-          disabled={busy}
+          disabled={busy || !canSwitchBranch}
           onPress={() => {
+            if (!appAtomRegistry.get(branchPermission)) return;
             setSwitching(true);
             void vcsActionManager
               .track(
@@ -150,7 +156,7 @@ function RepositoryControls(props: {
       <View className="flex-row flex-wrap gap-2">
         <MaterialButton
           label="Commit"
-          disabled={busy || !status?.hasWorkingTreeChanges}
+          disabled={busy || !canRunAction || !status?.hasWorkingTreeChanges}
           onPress={() =>
             props.primary
               ? navigation.navigate("GitCommit", props.target)
@@ -159,12 +165,17 @@ function RepositoryControls(props: {
         />
         <MaterialButton
           label="Push"
-          disabled={busy || !status?.hasPrimaryRemote || !status.refName}
+          disabled={busy || !canRunAction || !status?.hasPrimaryRemote || !status.refName}
           onPress={() => void runAction("push")}
         />
         <MaterialButton
           label={status?.pr?.state === "open" ? `PR #${status.pr.number}` : "Create PR"}
-          disabled={busy || !status?.hasPrimaryRemote || !status.refName}
+          disabled={
+            busy ||
+            (status?.pr?.state !== "open" && !canRunAction) ||
+            !status?.hasPrimaryRemote ||
+            !status.refName
+          }
           onPress={() =>
             status?.pr?.state === "open"
               ? void tryOpenExternalUrl(status.pr.url, "pull-request")
@@ -184,7 +195,7 @@ function RepositoryControls(props: {
           />
           <MaterialButton
             label={`Commit ${checkout.label}`}
-            disabled={busy}
+            disabled={busy || !canRunAction}
             onPress={() => void runAction("commit")}
           />
         </View>
@@ -202,6 +213,11 @@ function PrimaryRepositoryTools(props: {
 }) {
   const navigation = useNavigation();
   const pull = useAtomCommand(vcsEnvironment.pull, { reportFailure: false });
+  const pullPermission = vcsEnvironment.pull.permissionAtom(props.target.environmentId);
+  const canPull = useAtomValue(pullPermission);
+  const canChangeThreadBranch = useAtomValue(
+    workspaceVcs.switchBranch.permissionAtom(props.target.environmentId),
+  );
   return (
     <View className="gap-1">
       <Text className="font-t3-semibold">Primary repository</Text>
@@ -209,8 +225,9 @@ function PrimaryRepositoryTools(props: {
         icon="arrow.down.circle"
         title="Pull latest"
         subtitle={`${props.status?.behindCount ?? 0} commits behind upstream`}
-        disabled={props.busy || !props.status?.hasUpstream}
+        disabled={props.busy || !canPull || !props.status?.hasUpstream}
         onPress={() => {
+          if (!appAtomRegistry.get(pullPermission)) return;
           void vcsActionManager.track(
             appAtomRegistry,
             { environmentId: props.target.environmentId, cwd: props.checkout.cwd },
@@ -243,7 +260,7 @@ function PrimaryRepositoryTools(props: {
         icon="point.topleft.down.curvedto.point.bottomright.up"
         title="Branches & worktrees"
         subtitle="Switch branch, create branch, or move the primary to a worktree"
-        disabled={props.busy || !props.status?.isRepo}
+        disabled={props.busy || !canChangeThreadBranch || !props.status?.isRepo}
         onPress={() => navigation.navigate("GitBranches", props.target)}
       />
     </View>
@@ -273,6 +290,10 @@ export function WorkspaceGitOverviewSheet(props: {
   );
   const repoCount = participation.ready ? eligibleCheckouts.length : workspace.checkouts.length;
   const linkedPrChains = resolveThreadPullRequestChains(workspace.thread?.pullRequests ?? []);
+  const actionPermission = workspaceVcs.runAction.permissionAtom(props.target.environmentId);
+  const branchPermission = workspaceVcs.switchBranch.permissionAtom(props.target.environmentId);
+  const canRunAction = useAtomValue(actionPermission);
+  const canSwitchBranch = useAtomValue(branchPermission);
   const run = useAtomCommand(workspaceVcs.runAction, { reportFailure: false });
   const switchBranch = useAtomCommand(workspaceVcs.switchBranch, {
     reportFailure: false,
@@ -306,6 +327,7 @@ export function WorkspaceGitOverviewSheet(props: {
   const [branch, setBranch] = useState("");
   const [breakdownOpen, setBreakdownOpen] = useState(false);
   const disabled =
+    !canRunAction ||
     busy ||
     !participation.ready ||
     !summary.known ||
@@ -317,7 +339,7 @@ export function WorkspaceGitOverviewSheet(props: {
   };
   const runBatch = async (action: "commit" | "push" | "create-prs") => {
     const execute = async () => {
-      if (disabled) return;
+      if (disabled || !appAtomRegistry.get(actionPermission)) return;
       setBusy(true);
       try {
         const result = await run({
@@ -373,7 +395,7 @@ export function WorkspaceGitOverviewSheet(props: {
               ? "Change the branch across the worktree set"
               : "Each repository uses its current checkout"
         }
-        disabled={busy || !workspace.thread?.worktrees?.length}
+        disabled={busy || !canSwitchBranch || !workspace.thread?.worktrees?.length}
         onPress={() => setBranchOpen(!branchOpen)}
       />
       {branchOpen ? (
@@ -389,8 +411,9 @@ export function WorkspaceGitOverviewSheet(props: {
           />
           <MaterialButton
             label="Switch all repositories"
-            disabled={busy || !branch.trim()}
+            disabled={busy || !canSwitchBranch || !branch.trim()}
             onPress={() => {
+              if (!appAtomRegistry.get(branchPermission)) return;
               setBusy(true);
               const primary = workspace.checkouts[0];
               if (!primary) {

@@ -2,7 +2,7 @@
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeURL from "node:url";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { Platform as HostProcessPlatform } from "@t3tools/shared/HostProcess";
 
 /**
  * Read without checkpointing or touching WAL/SHM, including a crashed writer's WAL.

@@ -27,15 +27,17 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import type { ProviderInstance } from "../provider/ProviderDriver.ts";
-import * as ProviderAuthService from "../provider/Services/ProviderAuthService.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+
+import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
@@ -203,6 +205,8 @@ function makeLocalCommandHarness(input: {
   readonly workspaceFolders?: OrchestrationV2ThreadProjection["thread"]["workspaceFolders"];
   readonly unavailableFolderPaths?: ReadonlyArray<string>;
   readonly workspaceFolderAccess?: ProviderWorkspaceFolderAccess;
+  /** Loads the thread and starts the run, then fails every later state read. */
+  readonly failReadsAfterRunning?: boolean;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -411,7 +415,7 @@ function makeLocalCommandHarness(input: {
     }).pipe(
       Effect.andThen(
         Effect.fail(
-          new ProviderAdapterEventStreamError({
+          new ProviderAdapter.ProviderAdapterEventStreamError({
             driver: providerThread.driver,
             providerSessionId,
             cause: input.ensureThreadFailure,
@@ -424,7 +428,7 @@ function makeLocalCommandHarness(input: {
     driver: providerThread.driver,
     resumeThread: () =>
       Effect.fail(
-        new ProviderAdapterEventStreamError({
+        new ProviderAdapter.ProviderAdapterEventStreamError({
           driver: providerThread.driver,
           providerSessionId,
           cause: "native thread is gone",
@@ -453,9 +457,40 @@ function makeLocalCommandHarness(input: {
                   ),
                 ),
               )
-            : Effect.die("A local command must not open a native session."),
+            : input.failReadsAfterRunning === true
+              ? Effect.succeed({
+                  driver: providerThread.driver,
+                  providerSession: {
+                    id: providerSessionId,
+                    driver: providerThread.driver,
+                    providerInstanceId: newInstanceId,
+                    status: "ready",
+                    cwd: "/tmp/native-account-command",
+                    model: null,
+                    capabilities: CodexProviderCapabilitiesV2,
+                    createdAt: now,
+                    updatedAt: now,
+                    lastError: null,
+                  },
+                  ensureThread: () => Effect.succeed(providerThread),
+                } as never)
+              : Effect.die("A local command must not open a native session."),
   );
-  const startRootRun = vi.fn(() => Effect.die("A local command must not start a native turn."));
+  const startRootRun = vi.fn<
+    (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
+  >(() =>
+    input.failReadsAfterRunning === true
+      ? Effect.void
+      : Effect.die("A local command must not start a native turn."),
+  );
+  const failReadIfRunning = Effect.suspend(() =>
+    input.failReadsAfterRunning === true &&
+    projection.runs.find((candidate) => candidate.id === runId)?.status === "running"
+      ? Effect.fail(
+          new ProjectionStore.ProjectionStoreReadError({ threadId, cause: "database unavailable" }),
+        )
+      : Effect.void,
+  );
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
       ? Effect.succeed(true)
@@ -522,7 +557,7 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getRuntimeRecoveryProjection: () =>
-            Effect.succeed({
+            Effect.as(failReadIfRunning, {
               ...projection,
               hasConversation: projection.messages.some(
                 (m) =>
@@ -794,6 +829,25 @@ effectIt.effect(
       expect(harness.projection().runs.at(-1)?.status).toBe("starting");
       expect(harness.events).toEqual([]);
     }),
+);
+
+effectIt.effect("does not mistake a failed state read for a superseded run", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue", failReadsAfterRunning: true });
+
+    yield* harness.start;
+
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    const controls = harness.startRootRun.mock.calls[0]?.[0];
+    expect(controls).toBeDefined();
+    if (controls === undefined) return;
+    // "false" would skip the provider turn or the terminal write and leave the
+    // run active. A read failure must reach the caller instead.
+    const startCheck = yield* Effect.flip(controls.shouldStartProviderTurn!());
+    const finalizeCheck = yield* Effect.flip(controls.shouldFinalizeRun!());
+    expect(startCheck._tag).toBe("ProjectionStoreReadError");
+    expect(finalizeCheck._tag).toBe("ProjectionStoreReadError");
+  }),
 );
 
 effectIt.effect("does not overwrite a run interrupted while its thread loads", () =>

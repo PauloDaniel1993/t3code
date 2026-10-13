@@ -43,6 +43,14 @@ export interface VcsDiffCheckpointsInput {
   readonly srcPrefix?: string;
   readonly dstPrefix?: string;
   readonly maxOutputBytes?: number;
+  /** Exact repository-relative paths replace positive pathspecs; exclusions still apply. Empty yields no diff. */
+  readonly filePaths?: ReadonlyArray<string>;
+}
+
+export interface VcsListAuthoredPathsInput {
+  readonly cwd: string;
+  readonly fromCheckpointRef: CheckpointRef;
+  readonly toCheckpointRef: CheckpointRef;
 }
 
 export interface VcsDeleteCheckpointRefsInput {
@@ -59,6 +67,9 @@ export interface VcsCheckpointOps {
     input: VcsRestoreCheckpointInput,
   ) => Effect.Effect<boolean, VcsError>;
   readonly diffCheckpoints: (input: VcsDiffCheckpointsInput) => Effect.Effect<string, VcsError>;
+  readonly listAuthoredPaths: (
+    input: VcsListAuthoredPathsInput,
+  ) => Effect.Effect<ReadonlySet<string> | null, VcsError>;
   readonly deleteCheckpointRefs: (
     input: VcsDeleteCheckpointRefsInput,
   ) => Effect.Effect<void, VcsError>;

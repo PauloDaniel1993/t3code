@@ -15,7 +15,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -365,7 +365,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFolderFiles", (it) 
       }),
     );
 
-    it.effect.skipIf(HostProcessPlatform.defaultValue() === "win32")(
+    it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
       "keep a backslash in a POSIX file name instead of reading it as a separator",
       () =>
         Effect.gen(function* () {

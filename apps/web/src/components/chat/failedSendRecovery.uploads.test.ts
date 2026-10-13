@@ -26,18 +26,18 @@ vi.mock("@t3tools/client-runtime/state/attachments", () => ({
   deletePendingAttachmentUpload: mocks.remove,
 }));
 vi.mock("../../rpc/atomRegistry", async () => {
-  const { AtomRegistry } = await import("effect/unstable/reactivity");
+  const { AtomRegistry } = await import("effect/reactivity");
   return { appAtomRegistry: AtomRegistry.make() };
 });
 vi.mock("../../state/threads", async () => {
-  const { Atom } = await import("effect/unstable/reactivity");
+  const { Atom } = await import("effect/reactivity");
   return {
     environmentThreadDetails: { threadAtom: () => Atom.make(null) },
     environmentThreadShells: {},
   };
 });
 vi.mock("../../connection/catalog", async () => {
-  const { Atom, AsyncResult } = await import("effect/unstable/reactivity");
+  const { Atom, AsyncResult } = await import("effect/reactivity");
   return {
     environmentCatalog: { stateAtom: () => Atom.make(AsyncResult.success({ phase: "connected" })) },
   };

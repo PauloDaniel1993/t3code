@@ -17,6 +17,7 @@ import {
 import { isSamePath, resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -42,6 +43,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as WorktreeMcpService from "./WorktreeMcpService.ts";
+import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 
 const environmentId = EnvironmentId.make("environment-worktree-test");
 const threadId = ThreadId.make("thread-worktree-test");
@@ -52,9 +54,13 @@ const makeScope = (
   capabilities: ReadonlySet<McpInvocationContext.McpCapability>,
 ): McpInvocationContext.McpInvocationScope => ({
   environmentId,
-  threadId,
-  providerSessionId: "provider-session-worktree-test",
-  providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+  requestNamespace: "provider-session-worktree-test",
+  thread: {
+    threadId,
+    providerSessionId: "provider-session-worktree-test",
+    providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+  },
+  client: undefined,
   capabilities,
   issuedAt: 1,
 });
@@ -68,19 +74,20 @@ interface ThreadFixture {
   readonly worktrees?: ReadonlyArray<OrchestrationV2ThreadWorktree>;
 }
 
-const makeProjection = (overrides: ThreadFixture = {}): OrchestrationV2ThreadProjection =>
-  ({
-    thread: {
-      id: threadId,
-      projectId,
-      title: "Worktree test thread",
-      branch: null,
-      worktreePath: null,
-      archivedAt: null,
-      deletedAt: null,
-      ...overrides,
-    },
-  }) as OrchestrationV2ThreadProjection;
+const makeProjection = (overrides: ThreadFixture = {}) => {
+  const { archivedAt, deletedAt, ...binding } = overrides;
+  const providerInstanceId = ProviderInstanceId.make("claudeAgent");
+  return idleThreadProjection({
+    ...liveThreadShell(threadId, { activeRunId: null }),
+    projectId,
+    title: "Worktree test thread",
+    providerInstanceId,
+    modelSelection: { instanceId: providerInstanceId, model: "claude-test" },
+    ...binding,
+    archivedAt: archivedAt == null ? null : DateTime.makeUnsafe(archivedAt),
+    deletedAt: deletedAt == null ? null : DateTime.makeUnsafe(deletedAt),
+  });
+};
 
 const project: Project = {
   id: projectId,
@@ -91,7 +98,7 @@ const project: Project = {
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   deletedAt: null,
-} as Project;
+};
 
 interface HarnessOptions {
   readonly thread?: ThreadFixture | null;
@@ -102,6 +109,7 @@ interface HarnessOptions {
   readonly newWorktreesStartFromOrigin?: boolean;
   readonly setupScript?: "started" | "no-script" | "fails" | "dies";
   readonly dispatchFails?: boolean;
+  readonly providerDisabledAtBind?: boolean;
   readonly dispatchDies?: boolean;
   readonly dispatchInterrupts?: boolean;
   readonly dispatchGate?: Effect.Effect<void>;
@@ -130,7 +138,9 @@ interface HarnessOptions {
 const makeHarness = (options: HarnessOptions = {}) => {
   const thread = options.thread === undefined ? {} : options.thread;
   let boundThread = thread;
-  const scope = makeScope(options.capabilities ?? new Set(["preview", "worktree"]));
+  const scope = makeScope(
+    options.capabilities ?? new Set(["preview", "worktree", "orchestration"]),
+  );
   const dispatch = vi.fn(
     (
       command: Parameters<
@@ -143,9 +153,16 @@ const makeHarness = (options: HarnessOptions = {}) => {
             ? (Effect.failCause(Cause.interrupt()) as never)
             : options.dispatchDies
               ? Effect.die(new Error("dispatch defect"))
-              : options.dispatchFails
-                ? (Effect.fail("simulated dispatch failure") as never)
-                : Effect.succeed({ sequence: 1, storedEvents: [] }),
+              : options.providerDisabledAtBind
+                ? Effect.fail(
+                    new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
+                      projectId,
+                      instanceId: ProviderInstanceId.make("claudeAgent"),
+                    }),
+                  )
+                : options.dispatchFails
+                  ? (Effect.fail("simulated dispatch failure") as never)
+                  : Effect.succeed({ sequence: 1, storedEvents: [] }),
         ),
         Effect.tap(() =>
           Effect.sync(() => {
@@ -173,43 +190,52 @@ const makeHarness = (options: HarnessOptions = {}) => {
         : ["dev", "feature/taken", "feature/taken-idle"],
     ),
   );
-  const getThreadRecords = vi.fn((id: ThreadId) => {
-    if (options.threadReadError === "dispatch") {
-      return Effect.fail(
-        new OrchestratorDispatchError({
-          commandId: CommandId.make("command:test:read"),
-          commandType: "thread.metadata.update",
-        }),
-      ) as never;
-    }
-    if (options.threadReadFailsOnRecheck === true && getThreadRecords.mock.calls.length > 1) {
-      return Effect.fail(
-        new OrchestratorDispatchError({
-          commandId: CommandId.make("command:test:recheck"),
-          commandType: "thread.metadata.update",
-        }),
-      ) as never;
-    }
-    if (
-      options.threadAttachedOnRecheck === true &&
-      getThreadRecords.mock.calls.length > 1 &&
-      thread !== null
-    ) {
-      return Effect.succeed(
-        makeProjection({ ...thread, worktreePath: "/worktrees/project/raced" }),
-      );
-    }
-    if (
-      options.threadArchivedOnRecheck === true &&
-      getThreadRecords.mock.calls.length > 1 &&
-      thread !== null
-    ) {
-      return Effect.succeed(makeProjection({ ...thread, archivedAt: "2026-01-02T00:00:00.000Z" }));
-    }
-    return id === threadId && thread !== null
-      ? Effect.succeed(makeProjection(boundThread ?? thread))
-      : Effect.fail(new OrchestratorProjectionError({ threadId: id }));
-  });
+  const getThreadRecords = vi.fn(
+    (
+      id: ThreadId,
+    ): Effect.Effect<
+      OrchestrationV2ThreadProjection,
+      OrchestratorDispatchError | OrchestratorProjectionError
+    > => {
+      if (options.threadReadError === "dispatch") {
+        return Effect.fail(
+          new OrchestratorDispatchError({
+            commandId: CommandId.make("command:test:read"),
+            commandType: "thread.metadata.update",
+          }),
+        );
+      }
+      if (options.threadReadFailsOnRecheck === true && getThreadRecords.mock.calls.length > 1) {
+        return Effect.fail(
+          new OrchestratorDispatchError({
+            commandId: CommandId.make("command:test:recheck"),
+            commandType: "thread.metadata.update",
+          }),
+        );
+      }
+      if (
+        options.threadAttachedOnRecheck === true &&
+        getThreadRecords.mock.calls.length > 1 &&
+        thread !== null
+      ) {
+        return Effect.succeed(
+          makeProjection({ ...thread, worktreePath: "/worktrees/project/raced" }),
+        );
+      }
+      if (
+        options.threadArchivedOnRecheck === true &&
+        getThreadRecords.mock.calls.length > 1 &&
+        thread !== null
+      ) {
+        return Effect.succeed(
+          makeProjection({ ...thread, archivedAt: "2026-01-02T00:00:00.000Z" }),
+        );
+      }
+      return id === threadId && thread !== null
+        ? Effect.succeed(makeProjection(boundThread ?? thread))
+        : Effect.fail(new OrchestratorProjectionError({ threadId: id }));
+    },
+  );
   const sendToThread = vi.fn((_: unknown) => {
     switch (options.continuation ?? "queued") {
       case "fails":
@@ -344,7 +370,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
   // inlined so the test does not depend on the host's path module.
   const win32IsAbsolute = (value: string) => /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(value);
   const posixIsAbsolute = (value: string) => value.startsWith("/");
-  const serviceLayer =
+  const layerService =
     options.pathSemantics === undefined
       ? WorktreeMcpService.layer
       : WorktreeMcpService.layer.pipe(
@@ -413,6 +439,21 @@ const makeHarness = (options: HarnessOptions = {}) => {
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       dispatch,
       getThreadRecords,
+      getThreadShell: (id) =>
+        id !== threadId || thread === null
+          ? Effect.succeed(null)
+          : getThreadRecords(id).pipe(Effect.map(ProjectionStore.threadShellFromProjection)),
+      getProjectThreadRecords: ({ projectId, threadId }) =>
+        getThreadRecords(threadId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ThreadManagementService.ThreadManagementProjectionLoadError({
+                projectId,
+                threadId,
+                cause,
+              }),
+          ),
+        ),
       sendToThread,
     } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
     Layer.mock(ProjectService.ProjectService)({
@@ -466,7 +507,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
       ),
     ),
   );
-  const layer = serviceLayer.pipe(Layer.provide(Layer.merge(services, worktreeSets)));
+  const layer = layerService.pipe(Layer.provide(Layer.merge(services, worktreeSets)));
 
   return {
     layer,
@@ -1543,4 +1584,48 @@ describe("WorktreeMcpHandoffInput schema", () => {
       expect(Exit.isFailure(exit)).toBe(true);
     }),
   );
+});
+
+it.effect("outside clients list an explicit thread's folders and must name a target", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const service = yield* WorktreeMcpService.WorktreeMcpService;
+    const externalScope: McpInvocationContext.McpInvocationScope = {
+      ...harness.scope,
+      requestNamespace: "client:worktree-read",
+      thread: undefined,
+      client: { sessionId: "worktree-read", label: "External agent", access: "read-only" },
+    };
+    expect(yield* service.list(externalScope, { threadId })).toMatchObject({
+      folderPath: workspaceRoot,
+      cwd: workspaceRoot,
+    });
+    expect(yield* service.list(externalScope, {}).pipe(Effect.flip)).toMatchObject({
+      code: "target_required",
+    });
+    expect(yield* service.status(externalScope).pipe(Effect.flip)).toMatchObject({
+      code: "thread_credential_required",
+    });
+    expect(harness.dispatch).not.toHaveBeenCalled();
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("rolls back a handoff when the provider is disabled before the binding commits", () => {
+  const harness = makeHarness({ providerDisabledAtBind: true });
+  return Effect.gen(function* () {
+    const result = yield* runHandoff(harness, {
+      branch: "feature/disabled",
+      continuationPrompt: "Continue",
+    }).pipe(Effect.flip);
+    expect(result).toMatchObject({
+      code: "invalid_request",
+      message: `Provider instance "claudeAgent" is disabled for project ${projectId}.`,
+    });
+    expect(harness.removeWorktree).toHaveBeenCalledWith({
+      cwd: workspaceRoot,
+      path: "/worktrees/project/feature/disabled",
+      force: true,
+    });
+    expect(harness.sendToThread).not.toHaveBeenCalled();
+  });
 });

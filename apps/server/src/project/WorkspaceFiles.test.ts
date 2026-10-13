@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
 import { ProjectId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -30,6 +31,23 @@ it.layer(TestLayer)("WorkspaceFiles", (it) => {
         kind: "workspace-file",
       });
       expect(yield* fs.exists(missing)).toBe(false);
+    }),
+  );
+  it.effect("expands workspace-file paths using the environment's home directory", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workspace-home-" });
+      const filePath = path.join(home, "team.code-workspace");
+      yield* fs.writeFileString(filePath, '{ "folders": [{ "path": "app" }] }');
+      const files = yield* WorkspaceFiles.make.pipe(
+        Effect.provideService(HostProcess.HomeDirectory, home),
+      );
+      expect(yield* files.resolveProjectPath("~/team.code-workspace")).toEqual({
+        path: filePath,
+        kind: "workspace-file",
+      });
+      expect((yield* files.read("~/team.code-workspace")).filePath).toEqual(filePath);
     }),
   );
   it.effect("reads a workspace file's folders relative to its directory", () =>

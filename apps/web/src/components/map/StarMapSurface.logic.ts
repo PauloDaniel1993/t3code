@@ -1,4 +1,4 @@
-import { resolvePathLinkTarget } from "~/terminal-links";
+import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { workspaceFileReference, type WorkspaceFileContext } from "../files/workspaceFiles";
 
 /** Keep a choice by folder identity; a removed draft folder returns to the primary. */

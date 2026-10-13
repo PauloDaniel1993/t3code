@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Read-only Windows known-folder regression check.
 import * as NodePath from "node:path";
 import { assert, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import {
   readWindowsUserDirectories,
@@ -10,7 +10,7 @@ import {
 
 it.effect("gets real Windows folders inside an alpha.local shell", () =>
   Effect.gen(function* () {
-    if ((yield* HostProcessPlatform) !== "win32") return;
+    if ((yield* HostProcess.Platform) !== "win32") return;
     const original = readWindowsUserDirectories();
     const alphaHome = NodePath.win32.join(original.home, ".t3.local");
     const inherited = {

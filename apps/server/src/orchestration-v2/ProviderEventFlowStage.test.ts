@@ -23,7 +23,10 @@ import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { ProviderAdapterEventStreamError, ProviderAdapterV2Event } from "./ProviderAdapter.ts";
+import {
+  ProviderAdapterEventStreamError,
+  ProviderAdapterV2Event,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeProviderEventFlowStage } from "./ProviderEventFlowStage.ts";
 import { makeProviderEventRoutingState, routeProviderEvent } from "./RunExecutionService.ts";
 import {

@@ -7,9 +7,8 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
-import type { IdAllocatorV2 } from "./IdAllocator.ts";
+import type { IdAllocatorV2 } from "@t3tools/provider-core/server/IdAllocator";
 import type { ProjectionStoreV2 } from "./ProjectionStore.ts";
-import { planThreadDeletion } from "./ThreadDeletion.ts";
 
 type Plan = {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -72,45 +71,7 @@ export function withTaskThreadLifecycle<E, R>(
         threadId: child.id,
         commandId: CommandId.make(`${command.commandId}:task:${child.id}`),
       };
-      if (command.type === "thread.archive") {
-        const projection = yield* projectionStore.getThreadRecords(child.id, [
-          "runs",
-          "attempts",
-          "nodes",
-          "runtimeRequests",
-          "subagents",
-          "providerSessions",
-        ]);
-        // Reuse upstream's durable cancellation plan; retain attachments and the thread.
-        const cancellation = yield* planThreadDeletion({
-          command: { type: "thread.delete", commandId: childCommand.commandId, threadId: child.id },
-          projection,
-          attachmentIds: [],
-          now: yield* DateTime.now,
-          idAllocator,
-        });
-        events.push(
-          ...cancellation.events.filter(
-            (event) =>
-              event.type === "run.updated" ||
-              event.type === "run-attempt.updated" ||
-              event.type === "node.updated",
-          ),
-        );
-        for (const event of cancellation.events) {
-          if (event.type === "runtime-request.updated")
-            events.push({
-              ...event,
-              payload: {
-                ...event.payload,
-                responseCapability: {
-                  type: "not_resumable",
-                  reason: "The task was archived with its parent.",
-                },
-              },
-            });
-        }
-      }
+      // Native archive/delete planners own run cancellation and durable cleanup.
       const childPlan = yield* plan(childCommand);
       events.push(...childPlan.events);
       effects.push(...childPlan.effects);

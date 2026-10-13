@@ -1,4 +1,5 @@
-import * as NodeCrypto from "node:crypto";
+import * as Crypto from "effect/Crypto";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -16,11 +17,12 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
 
-import * as ProviderEventLoggers from "../../provider/Layers/ProviderEventLoggers.ts";
-import * as IdAllocator from "../IdAllocator.ts";
+import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { deliverContextHandoffs } from "../ContextHandoffDelivery.ts";
-import type * as ProviderAdapter from "../ProviderAdapter.ts";
-import * as CursorAgentSdk from "./CursorAgentSdk.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as CursorSdk from "@t3tools/provider-cursor/server/CursorSdk";
+import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
 import {
   cursorWorkspaceTurnEvents,
   cursorWorkspaceTurnInput,
@@ -28,9 +30,11 @@ import {
 } from "./CursorWorkspaceFolders.testkit.ts";
 
 const liveLayer = Layer.mergeAll(
+  McpProviderSessions.layer,
   NodeServices.layer,
   IdAllocator.layer,
-  CursorAgentSdk.cursorAgentSdkRunnerLiveLayer.pipe(
+  CursorAgentSdk.layer.pipe(
+    Layer.provideMerge(CursorSdk.layer),
     Layer.provide(
       Layer.succeed(
         ProviderEventLoggers.ProviderEventLoggers,
@@ -64,8 +68,8 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
           const files = fixture.additionalDirectories.map((directory) =>
             path.join(directory, "probe.txt"),
           );
-          const original = NodeCrypto.randomUUID();
-          const inheritedMarker = NodeCrypto.randomUUID();
+          const original = yield* (yield* Crypto.Crypto).randomUUIDv4;
+          const inheritedMarker = yield* (yield* Crypto.Crypto).randomUUIDv4;
           yield* Effect.forEach(files, (file) => fileSystem.writeFileString(file, original));
           const threadId = ThreadId.make("cursor-live-workspace-source");
           const exercise = Effect.fnUntraced(function* (

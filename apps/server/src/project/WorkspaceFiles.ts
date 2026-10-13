@@ -3,7 +3,7 @@ import {
   WorkspaceFileDiagnostic,
   type WorkspaceFolderEntry,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -19,7 +19,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 
-import { expandHomePathWith } from "../pathExpansion.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { watchDirectory } from "../wayfinder/WayfinderFiles.ts";
 import { parseWorkspaceFile } from "./workspaceFileDefinition.ts";
 
@@ -46,8 +46,11 @@ export class WorkspaceFileReadError extends Schema.TaggedError<WorkspaceFileRead
 }
 
 /** The normalized server path a requested workspace-file path names. */
-export const resolveWorkspaceFilePath = (requestedPath: string, path: Path.Path): string =>
-  path.resolve(expandHomePathWith(requestedPath.trim(), path));
+export const resolveWorkspaceFilePath = (
+  requestedPath: string,
+  path: Path.Path,
+  home: string,
+): string => path.resolve(expandHomePath(requestedPath.trim(), home));
 
 export class WorkspaceFiles extends Context.Service<
   WorkspaceFiles,
@@ -91,7 +94,8 @@ interface ProjectWatch {
 export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
+  const home = yield* HostProcess.HomeDirectory;
   const layerScope = yield* Scope.Scope;
   const watches = new Map<ProjectId, ProjectWatch>();
   const watchLock = yield* Semaphore.make(1);
@@ -99,7 +103,7 @@ export const make = Effect.gen(function* () {
   const resolveProjectPath: WorkspaceFiles["Service"]["resolveProjectPath"] = Effect.fn(
     "WorkspaceFiles.resolveProjectPath",
   )(function* (input) {
-    const resolvedPath = path.resolve(expandHomePathWith(input.trim(), path));
+    const resolvedPath = resolveWorkspaceFilePath(input, path, home);
     if (!/\.code-workspace$/i.test(resolvedPath)) {
       return { path: resolvedPath, kind: "directory" as const };
     }
@@ -115,7 +119,7 @@ export const make = Effect.gen(function* () {
 
   const read: WorkspaceFiles["Service"]["read"] = Effect.fn("WorkspaceFiles.read")(
     function* (requestedPath) {
-      const filePath = resolveWorkspaceFilePath(requestedPath, path);
+      const filePath = resolveWorkspaceFilePath(requestedPath, path, home);
       const fail = (diagnostic: Omit<WorkspaceFileDiagnostic, "path">) =>
         Effect.fail(new WorkspaceFileReadError({ diagnostic: { ...diagnostic, path: filePath } }));
       const unreadable = () =>

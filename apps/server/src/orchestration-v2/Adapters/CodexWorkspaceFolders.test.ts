@@ -1,3 +1,5 @@
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as Crypto from "effect/Crypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -14,9 +16,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-import { buildWorkspaceFolderInventory } from "../../provider/WorkspaceFolderInventory.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
-import * as IdAllocator from "../IdAllocator.ts";
+import { buildWorkspaceFolderInventory } from "@t3tools/provider-core/server/workspaceFolderInventory";
+import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { decideProviderSessionTransition } from "../ProviderSessionTransitionPolicy.ts";
 import { buildCodexTurnStartParams, makeCodexAdapterV2 } from "./CodexAdapterV2.ts";
 import { makeReplayServerConfig } from "./CodexAdapterV2.testkit.ts";
@@ -46,7 +48,8 @@ const build = (runtimePolicy: ProviderAdapterV2RuntimePolicy, hasT3Mcp = false) 
 describe("Codex workspace folders", () => {
   it.effect("records the session scope so a model change reuses it and reopening clears it", () =>
     Effect.gen(function* () {
-      const adapter = makeCodexAdapterV2({
+      const adapter = yield* makeCodexAdapterV2({
+        crypto: yield* Crypto.Crypto,
         instanceId: modelSelection.instanceId,
         settings,
         environment: {},
@@ -107,7 +110,11 @@ describe("Codex workspace folders", () => {
       );
       const cleared = yield* open({ ...policy, additionalDirectories: [] }, "cleared");
       assert.deepEqual(cleared.providerSession.additionalDirectories, []);
-    }).pipe(Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+      ),
+    ),
   );
 
   it.effect("grants ordered extra roots in both workspace-write modes", () =>

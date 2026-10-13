@@ -14,9 +14,9 @@ import {
 } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import type { McpInvocationScope } from "./McpInvocationContext.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { requireThreadScope, type McpInvocationScope } from "./McpInvocationContext.ts";
 import type { OrchestratorMcpServiceShape } from "./OrchestratorMcpService.ts";
 import { summarizeForkTask } from "./OrchestratorTaskList.ts";
 
@@ -39,8 +39,9 @@ function reasoningDescriptor(descriptors: readonly ProviderOptionDescriptor[] = 
 }
 
 const readParent = Effect.fn("ForkTaskAliases.readParent")(function* (scope: McpInvocationScope) {
-  const threads = yield* ThreadManagementService;
-  return yield* threads.getThreadRecords(scope.threadId, ["subagents"]).pipe(
+  const caller = yield* requireThreadScope(scope, "Task aliases");
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  return yield* threads.getThreadRecords(caller.thread.threadId, ["subagents"]).pipe(
     Effect.mapError(
       () =>
         new OrchestratorMcpFailure({
@@ -59,7 +60,7 @@ export const forkTaskModels = Effect.fn("ForkTaskAliases.models")(function* (
   // Native capabilities enforce scope and adapter readiness; retain the fork's field names.
   const capabilities = yield* service.capabilities(scope);
   const parent = yield* readParent(scope);
-  const registry = yield* ProviderRegistry;
+  const registry = yield* ProviderRegistry.ProviderRegistry;
   const providers = yield* registry.getProviders;
   const selection = parent.thread.modelSelection;
   const currentModel = providers
@@ -198,6 +199,7 @@ export const forkTaskCancel = Effect.fn("ForkTaskAliases.cancel")(function* (
   input: ForkTaskCancelInput,
   service: OrchestratorMcpServiceShape,
 ) {
+  const caller = yield* requireThreadScope(scope, "task_cancel");
   // Leave native taskId calls on the native path, with the native result shape.
   if (input.threadId === undefined && input.taskId !== undefined)
     return yield* service.cancelTask(scope, { ...input, taskId: input.taskId });
@@ -206,7 +208,7 @@ export const forkTaskCancel = Effect.fn("ForkTaskAliases.cancel")(function* (
   const task = parent.subagents.find(
     (task) =>
       task.origin === "app_owned" &&
-      task.threadId === scope.threadId &&
+      task.threadId === caller.thread.threadId &&
       task.childThreadId === ThreadId.make(input.threadId!),
   );
   if (task === undefined || (input.taskId !== undefined && input.taskId !== task.id)) {

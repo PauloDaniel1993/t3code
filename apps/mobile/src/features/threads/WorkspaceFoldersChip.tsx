@@ -4,7 +4,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import * as Option from "effect/Option";
 import { useMemo } from "react";
 import { Pressable, View } from "react-native";

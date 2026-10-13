@@ -16,18 +16,22 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as Option from "effect/Option";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcp from "./OrchestratorMcpService.ts";
-import { ThreadToolkitHandlersLive } from "./toolkits/thread/handlers.ts";
+import * as ThreadHandlers from "./toolkits/thread/handlers.ts";
+import * as McpToolAccess from "./McpToolAccess.ts";
 import { ThreadToolkit } from "./toolkits/thread/tools.ts";
 
 const projectId = ProjectId.make("project:schedule-mcp");
@@ -35,9 +39,14 @@ const threadId = ThreadId.make("thread:schedule-mcp");
 const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:schedule-mcp"),
-  threadId,
-  providerInstanceId: modelSelection.instanceId,
-  providerSessionId: "session:schedule-mcp",
+  requestNamespace: "session:schedule-mcp",
+  thread: {
+    threadId,
+    providerSessionId: "session:schedule-mcp",
+    providerInstanceId: modelSelection.instanceId,
+  },
+  client: undefined,
+
   capabilities: new Set(["orchestration"]),
   issuedAt: 0,
 };
@@ -119,14 +128,19 @@ const external = Layer.mergeAll(
   Layer.mock(ThreadSearch.ThreadSearch)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
-  Layer.mock(ProjectStore.ProjectStoreV2)({}),
+  Layer.mock(ProjectService.ProjectService)({
+    getById: (id) =>
+      Effect.succeed(Option.some({ id, defaultModelSelection: modelSelection } as never)),
+  }),
+  Layer.mock(SecretRequests.SecretRequests)({}),
+  ServerSettings.layerTest(),
   Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
 );
 const scheduler = ScheduledTasks.layer.pipe(Layer.provide(external));
 const dependencies = Layer.mergeAll(external, scheduler);
 const layer = OrchestratorMcp.layer.pipe(
   Layer.provideMerge(dependencies),
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
 );
 const scheduleInput = {
   prompt: "Review the project.",
@@ -163,7 +177,7 @@ it.effect("keeps schedule defaults, inherited settings, idempotency and project 
       id: ScheduledTaskId.make("schedule:other"),
       projectId: ProjectId.make("project:other"),
     });
-    expect((yield* mcp.listScheduledTasks(scope)).tasks).toHaveLength(2);
+    expect((yield* mcp.listScheduledTasks(scope, {})).tasks).toHaveLength(2);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -202,7 +216,7 @@ it.effect("persists unbound strategies, preserves ordinary edits and resets bind
       (yield* mcp.updateScheduledTask(scope, { ...input, workspaceStrategy: reused }))
         .workspaceStrategy,
     ).toEqual(reused);
-    expect((yield* mcp.listScheduledTasks(scope)).tasks[0]?.workspaceStrategy).toEqual(reused);
+    expect((yield* mcp.listScheduledTasks(scope, {})).tasks[0]?.workspaceStrategy).toEqual(reused);
     expect(
       (yield* mcp.updateScheduledTask(scope, { ...input, bindToCurrentThread: true }))
         .boundThreadId,
@@ -231,7 +245,7 @@ it.effect(
         .scheduleTask(scope, { ...scheduleInput, workspaceStrategy: { type: "root" } })
         .pipe(Effect.flip);
       expect(rejected.code).toBe("invalid_request");
-      expect((yield* mcp.listScheduledTasks(scope)).tasks).toEqual([]);
+      expect((yield* mcp.listScheduledTasks(scope, {})).tasks).toEqual([]);
       const bound = yield* mcp.scheduleTask(scope, scheduleInput);
       const error = yield* mcp
         .updateScheduledTask(scope, {
@@ -241,7 +255,7 @@ it.effect(
         })
         .pipe(Effect.flip);
       expect(error.code).toBe("invalid_request");
-      expect((yield* mcp.listScheduledTasks(scope)).tasks[0]).toEqual(bound);
+      expect((yield* mcp.listScheduledTasks(scope, {})).tasks[0]).toEqual(bound);
       const unbound = yield* mcp.scheduleTask(scope, {
         ...scheduleInput,
         bindToCurrentThread: false,
@@ -267,7 +281,9 @@ it.effect(
         bindToCurrentThread: false,
         workspaceStrategy: { type: "root" },
       });
-      const toolkit = yield* ThreadToolkit.pipe(Effect.provide(ThreadToolkitHandlersLive));
+      const toolkit = yield* ThreadToolkit.pipe(
+        Effect.provide(McpToolAccess.HandlersLayer.layer(ThreadHandlers.layer)),
+      );
       const results = yield* toolkit
         .handle("run_scheduled_task_now", { taskId: created.scheduledTaskId })
         .pipe(Stream.unwrap, Stream.runCollect);
@@ -278,7 +294,7 @@ it.effect(
         lastRunError: "Workspace file not found.",
         runCount: 1,
       });
-      const listed = (yield* mcp.listScheduledTasks(scope)).tasks[0];
+      const listed = (yield* mcp.listScheduledTasks(scope, {})).tasks[0];
       expect(listed).toMatchObject({
         workspaceStrategy: { type: "root" },
         lastRunError: "Workspace file not found.",

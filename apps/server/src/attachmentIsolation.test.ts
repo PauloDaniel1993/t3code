@@ -18,8 +18,8 @@ import {
   ATTACHMENT_SEED_REPORT_INTERVAL_MS,
 } from "./attachmentIsolation.ts";
 import { deriveServerPaths, ensureServerDirectories, ServerConfig } from "./config.ts";
-import { layerConfig as persistenceLayer } from "./persistence/Layers/Sqlite.ts";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlitePersistence from "./persistence/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 
 const decodeSeedReport = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ completed: Schema.Array(Schema.String) })),
@@ -142,7 +142,7 @@ describe("V2 attachment isolation", () => {
           expect(
             yield* fs.readFileString(path.join(config.attachmentsDir, "after-config.png")),
           ).toBe("second");
-        }).pipe(Effect.provide(persistenceLayer));
+        }).pipe(Effect.provide(SqlitePersistence.layerConfig));
       }).pipe(
         Effect.provide(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-attachment-init-order-" }).pipe(
@@ -228,7 +228,7 @@ describe("V2 attachment isolation", () => {
           const sql = yield* SqlClient.SqlClient;
           expect(yield* sql`SELECT 1 AS ready`).toEqual([{ ready: 1 }]);
         }).pipe(
-          Effect.provide(persistenceLayer),
+          Effect.provide(SqlitePersistence.layerConfig),
           Effect.provideService(FileSystem.FileSystem, {
             ...fs,
             copyFile: (from, to) =>

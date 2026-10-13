@@ -6,7 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as AcpErrors from "effect-acp/errors";
 import type * as AcpSchema from "effect-acp/compat";
 
@@ -16,9 +16,9 @@ import {
   kimiConfigChoices,
   normalizeKimiConfigOptions,
 } from "../KimiModels.ts";
-import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
-import { parseSessionModeState } from "./AcpRuntimeModel.ts";
-import { makeProviderFailure } from "../../orchestration-v2/ProviderFailure.ts";
+import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { parseSessionModeState } from "@t3tools/provider-acp/server/runtimeModel";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { captureKimiAcpLogCheckpoint, readKimiAcpFailureSince } from "./KimiAcpDiagnostics.ts";
 import {
   normalizeKimiPermissionRequest,
@@ -34,6 +34,7 @@ export interface KimiAcpRuntimeInput extends Omit<
   readonly environment: NodeJS.ProcessEnv;
   readonly supervisionGuidance?: boolean;
   readonly agentDeviceEnvironment?: Readonly<Record<string, string>>;
+  readonly processEnvironment?: NodeJS.ProcessEnv;
 }
 
 export function buildKimiAcpSpawnInput(
@@ -162,7 +163,10 @@ export const makeKimiAcpRuntime = Effect.fn("makeKimiAcpRuntime")(function* (
   const path = yield* Path.Path;
   const runtimeOptions = {
     ...input,
-    spawn: buildKimiAcpSpawnInput(input.kimiSettings, input.cwd, input.environment),
+    spawn: buildKimiAcpSpawnInput(input.kimiSettings, input.cwd, {
+      ...input.environment,
+      ...input.processEnvironment,
+    }),
     authMethodId: "login",
     authenticateEagerly: true,
     resumeMethod: "resume" as "load" | "resume",

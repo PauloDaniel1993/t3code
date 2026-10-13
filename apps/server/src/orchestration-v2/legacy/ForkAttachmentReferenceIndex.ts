@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { EffectOutboxV2 } from "../EffectOutbox.ts";
 
 export const ATTACHMENT_REFERENCE_TABLE = "fork_v2_attachment_references";

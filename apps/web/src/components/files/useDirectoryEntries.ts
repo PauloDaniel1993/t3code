@@ -24,6 +24,8 @@ export function useDirectoryEntries(
   const [directories, setDirectories] = useState(new Map<string, readonly ProjectEntry[]>());
   const [errors, setErrors] = useState(new Map<string, string>());
   const [pending, setPending] = useState(0);
+  // First loads only: a refresh keeps showing the cached children, so it gets no row spinner.
+  const [loadingDirectories, setLoadingDirectories] = useState<ReadonlySet<string>>(new Set());
   const requests = useRef(new Map<string, Promise<void>>());
   const loaded = useRef(new Set<string>());
   const requested = useRef(new Set<string>());
@@ -54,6 +56,7 @@ export function useDirectoryEntries(
         input: scope ? { scope, directoryPath } : { cwd, directoryPath },
       });
       setPending((count) => count + 1);
+      if (!refresh) setLoadingDirectories((previous) => new Set(previous).add(directoryPath));
       const request = (async () => {
         if (running.current >= 4)
           await new Promise<void>((resolve) => waiting.current.push(resolve));
@@ -106,7 +109,14 @@ export function useDirectoryEntries(
         .finally(() => {
           if (generation.current === requestGeneration) {
             requests.current.delete(directoryPath);
-            if (active.current) setPending((count) => count - 1);
+            if (!active.current) return;
+            setPending((count) => count - 1);
+            if (!refresh)
+              setLoadingDirectories((previous) => {
+                const next = new Set(previous);
+                next.delete(directoryPath);
+                return next;
+              });
           }
         });
       requests.current.set(directoryPath, request);
@@ -125,6 +135,7 @@ export function useDirectoryEntries(
     setDirectories(new Map());
     setErrors(new Map());
     setPending(0);
+    setLoadingDirectories(new Set());
     void load("");
     return () => {
       active.current = false;
@@ -173,6 +184,7 @@ export function useDirectoryEntries(
     load,
     refresh,
     isPending: pending > 0,
+    loadingDirectories,
     ready: directories.has(""),
     error: [...errors].find(([path]) => reachableDirectories.has(path))?.[1] ?? null,
   };

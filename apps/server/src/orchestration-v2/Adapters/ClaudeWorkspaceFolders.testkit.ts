@@ -1,3 +1,4 @@
+import * as Crypto from "effect/Crypto";
 import {
   ClaudeSettings,
   MessageId,
@@ -19,8 +20,11 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import * as IdAllocator from "../IdAllocator.ts";
-import { ProviderAdapterV2RuntimePolicy, type ProviderAdapterV2Event } from "../ProviderAdapter.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import {
+  ProviderAdapterV2RuntimePolicy,
+  type ProviderAdapterV2Event,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 
 export const workspaceFolderModelSelection = {
@@ -41,7 +45,8 @@ export const makeClaudeWorkspaceFolderHarness = Effect.fnUntraced(function* (inp
     prefix: "t3-claude-folders-attachments-",
   });
   const modelSelection = input.modelSelection ?? workspaceFolderModelSelection;
-  const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+  const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+    crypto: yield* Crypto.Crypto,
     instanceId: modelSelection.instanceId,
     settings: input.settings ?? decodeClaudeSettings({ binaryPath: process.execPath }),
     environment: input.environment ?? {},

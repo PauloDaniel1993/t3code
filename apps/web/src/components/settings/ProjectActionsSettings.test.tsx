@@ -1,5 +1,5 @@
 import { EnvironmentId, ProjectId, DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { act, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   input: null as NewProjectScriptInput | null,
   error: "",
 }));
+vi.mock("./useScopedSettings", () => ({ useScopedSettingsWriteAllowed: () => true }));
 vi.mock("./SettingsScopeContext", () => ({ useSettingsScope: () => state.scope }));
 vi.mock("../../state/environments", () => ({
   useEnvironments: () => ({
@@ -176,6 +177,7 @@ beforeEach(() => {
     icon: "play" as const,
     runOnWorktreeCreate: false,
     waitForSetup: false,
+    runOnSettle: false,
     keybinding: null,
     previewUrl: null,
     autoOpenPreview: false,

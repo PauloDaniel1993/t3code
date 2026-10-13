@@ -12,7 +12,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { makeWayfinderFiles } from "./WayfinderFiles.ts";
@@ -346,7 +346,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WayfinderMaps containment", 
         Effect.gen(function* () {
           // Only Linux lets Node name the file behind a descriptor; elsewhere this swap is
           // the documented limit in WayfinderFiles.ts.
-          if (HostProcessPlatform.defaultValue() !== "linux") {
+          if (HostProcess.Platform.defaultValue() !== "linux") {
             return context.skip("needs /proc/self/fd, which only Linux has");
           }
           const { project, target, swapOut, restore } = yield* makeSwap;

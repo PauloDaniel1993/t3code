@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   FilesystemBrowseError,
   FilesystemBrowseInput,
+  FilesystemGetMetadataInput,
   FilesystemBrowseResult,
 } from "./filesystem.ts";
 const decodeBrowseInput = Schema.decodeUnknownSync(FilesystemBrowseInput);
@@ -29,6 +30,16 @@ describe("workspace file browse compatibility", () => {
         includeWorkspaceFiles: true,
       }).includeWorkspaceFiles,
     ).toBe(true);
+  });
+});
+
+describe("FilesystemGetMetadataInput", () => {
+  const decode = Schema.decodeUnknownSync(FilesystemGetMetadataInput);
+  it("bounds request size and path lengths", () => {
+    expect(() => decode({ paths: [] })).toThrow();
+    expect(() => decode({ paths: Array.from({ length: 65 }, () => "/file") })).toThrow();
+    expect(() => decode({ paths: ["/" + "x".repeat(512)] })).toThrow();
+    expect(decode({ paths: Array.from({ length: 64 }, () => "/file") }).paths).toHaveLength(64);
   });
 });
 

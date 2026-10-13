@@ -14,6 +14,7 @@ export interface ProjectScriptInput {
   readonly icon: ProjectScript["icon"];
   readonly runOnWorktreeCreate: ProjectScript["runOnWorktreeCreate"];
   readonly waitForSetup: boolean;
+  readonly runOnSettle: boolean;
   readonly previewUrl: Exclude<ProjectScript["previewUrl"], undefined> | null;
   readonly autoOpenPreview: boolean;
   readonly folderPath?: string | null;
@@ -28,6 +29,7 @@ export function buildProjectScript(id: string, input: ProjectScriptInput): Proje
     runOnWorktreeCreate: input.runOnWorktreeCreate,
     ...(!input.runOnWorktreeCreate && input.folderPath ? { folderPath: input.folderPath } : {}),
     ...(input.runOnWorktreeCreate && input.waitForSetup ? { async: false } : {}),
+    ...(input.runOnSettle ? { runOnSettle: true } : {}),
     ...(input.previewUrl === null
       ? {}
       : {
@@ -40,6 +42,24 @@ export function buildProjectScript(id: string, input: ProjectScriptInput): Proje
 /** A pending terminal's cwd is unknown, so an Action must allocate its own terminal. */
 export function canReuseProjectScriptTerminal(existingCwd: string | undefined, cwd: string) {
   return existingCwd !== undefined && isSamePath(existingCwd, cwd);
+}
+
+/**
+ * A project runs at most one setup script and one settle script, so saving a
+ * script that claims either role takes it from the script that held it.
+ */
+export function releaseClaimedRoles(
+  script: ProjectScript,
+  saved: ProjectScriptInput,
+): ProjectScript {
+  const releaseSetup = saved.runOnWorktreeCreate && script.runOnWorktreeCreate;
+  const releaseSettle = saved.runOnSettle && script.runOnSettle === true;
+  if (!releaseSetup && !releaseSettle) return script;
+  return {
+    ...script,
+    ...(releaseSetup ? { runOnWorktreeCreate: false } : {}),
+    ...(releaseSettle ? { runOnSettle: false } : {}),
+  };
 }
 
 function normalizeScriptId(value: string): string {
@@ -95,6 +115,6 @@ export function nextProjectScriptId(name: string, existingIds: Iterable<string>)
 }
 
 export function primaryProjectScript(scripts: ReadonlyArray<ProjectScript>): ProjectScript | null {
-  const regular = scripts.find((script) => !script.runOnWorktreeCreate);
-  return regular ?? scripts[0] ?? null;
+  const regular = scripts.find((script) => !script.runOnWorktreeCreate && !script.runOnSettle);
+  return regular ?? scripts.find((script) => !script.runOnSettle) ?? null;
 }

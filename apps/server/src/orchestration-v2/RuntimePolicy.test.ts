@@ -18,9 +18,9 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import type { ProviderInstance } from "../provider/ProviderDriver.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
-import { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
@@ -99,7 +99,7 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
       } as ProviderInstance);
 
 let projectReads = 0;
-const TestLayer = RuntimePolicy.layerFromProjectStore.pipe(
+const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(
     Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
       getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
@@ -147,7 +147,7 @@ const folder = (path: string, checkoutRoot: string | null = null) => ({
   checkoutRoot,
 });
 
-it.layer(TestLayer)("RuntimePolicyV2", (it) => {
+it.layer(layerTest)("RuntimePolicyV2", (it) => {
   it.effect("uses the project root for local-checkout threads", () =>
     Effect.gen(function* () {
       const policy = yield* RuntimePolicy.RuntimePolicyV2;

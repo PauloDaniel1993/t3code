@@ -6,10 +6,12 @@ import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitation
 import { truncate } from "@t3tools/shared/String";
 import {
   MessageId,
+  AuthOrchestrationOperateScope,
+  DEFAULT_MODEL,
   type ScopedThreadRef,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { vi } from "vite-plus/test";
 
 import * as DraftStore from "../../composerDraftStore";
@@ -23,7 +25,7 @@ import * as ChatLogic from "../ChatView.logic";
 import { toastManager } from "../ui/toast";
 import { stackedThreadToast } from "../ui/toastHelpers";
 import * as Recovery from "./failedSendRecovery";
-import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "./composerPromptHistory";
+import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 import { fileAttachmentCapabilityBlockReason } from "./composerAttachmentFiles";
 import chatViewSource from "../ChatView.tsx?raw";
 
@@ -57,6 +59,7 @@ export function createSendHarness(
       current: store.getComposerDraft(target)?.terminalContexts ?? [],
     },
     currentRouteThreadKeyRef: { current: routeThreadKey },
+    environmentChangeRef: { current: null },
     sendInFlightRef: { current: false },
     composerSendGenerationRef: { current: 0 },
   };
@@ -98,6 +101,14 @@ export function createSendHarness(
     truncate,
     PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
     ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+    AuthOrchestrationOperateScope,
+    DEFAULT_MODEL,
+    readEnvironmentScope: () => true,
+    sendQueuesBehindSetup: false,
+    resumeCompactionTokens: null,
+    keepFullHistory: false,
+    setKeepFullHistory: vi.fn(),
+    setSetupQueueSendThreadKey: vi.fn(),
     environmentId: threadRef.environmentId,
     routeThreadKey,
     composerDraftTarget: target,

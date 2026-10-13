@@ -3,13 +3,13 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Layer from "effect/Layer";
 import * as Console from "effect/Console";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
-import { SqlError, ConnectionError } from "effect/unstable/sql/SqlError";
+import { SqlError, ConnectionError } from "effect/sql/SqlError";
 import * as TestClock from "effect/testing/TestClock";
 import * as Queue from "effect/Queue";
 import * as Option from "effect/Option";
@@ -23,10 +23,7 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import { vi } from "vite-plus/test";
-import {
-  SqlitePersistenceMemory,
-  makeSqlitePersistenceLive,
-} from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Path from "effect/Path";
 import {
   ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE,
@@ -66,7 +63,7 @@ const fixture = Effect.gen(function* () {
     SELECT message_id, thread_id, 1, 'user_message', 'completed', updated_at, payload_json FROM orchestration_v2_projection_messages`;
 });
 const testLayer = outboxLayer.pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provideMerge(NodeServices.layer),
 );
 const id = (i: number) =>
@@ -148,7 +145,7 @@ describe("attachment reference index", () => {
           expect((yield* findReadableAttachment(id(5)))?.threadId).toBe("thread-0");
           yield* awaitAttachmentReferenceIndex();
           yield* requireCompleteAttachmentReferenceIndex();
-        }).pipe(Effect.provide(makeSqlitePersistenceLive(dbPath)));
+        }).pipe(Effect.provide(SqlitePersistence.layerFromPath(dbPath)));
       }).pipe(Effect.provide(NodeServices.layer)),
   );
   it.effect(
@@ -284,7 +281,7 @@ describe("attachment reference index", () => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped();
-      const database = makeSqlitePersistenceLive(path.join(directory, "statev2.sqlite"));
+      const database = SqlitePersistence.layerFromPath(path.join(directory, "statev2.sqlite"));
       yield* Effect.gen(function* () {
         yield* smallFixture;
         const sql = yield* SqlClient.SqlClient;

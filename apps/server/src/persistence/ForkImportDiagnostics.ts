@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 // Also used before upstream's migrations and at startup, so a database that ran
 // fork migration 009 before a table was added here still gets it.

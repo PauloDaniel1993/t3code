@@ -14,8 +14,8 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
-import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
-import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore.ts";
+import * as SqlitePersistence from "./persistence/Sqlite.ts";
+import * as OrchestrationEventStore from "./persistence/OrchestrationEventStore.ts";
 import { EventSinkV2, layer as eventSinkLayer } from "./orchestration-v2/EventSink.ts";
 import { layerFromOrchestrationEventStore as eventStoreLayer } from "./orchestration-v2/EventStore.ts";
 import {
@@ -29,13 +29,13 @@ import {
 import { ThreadManagementService } from "./orchestration-v2/ThreadManagementService.ts";
 import { subscribeOrchestrationV2Thread } from "./ws.ts";
 
-const applicationEvents = OrchestrationEventStoreLive.pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
+const applicationEvents = OrchestrationEventStore.layer.pipe(
+  Layer.provideMerge(SqlitePersistence.layerMemory),
 );
 const stores = Layer.mergeAll(
   applicationEvents,
   eventStoreLayer.pipe(Layer.provideMerge(applicationEvents)),
-  projectionStoreLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+  projectionStoreLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
 );
 const TestLayer = eventSinkLayer.pipe(Layer.provideMerge(stores));
 

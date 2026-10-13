@@ -1,6 +1,6 @@
 import type { OrchestrationV2Subagent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import type * as SqlClient from "effect/unstable/sql/SqlClient";
+import type * as SqlClient from "effect/sql/SqlClient";
 
 /** Omit empty watermarks so ordinary shells pay no wire cost. */
 export function taskDeliveryShellFields(fields: object) {

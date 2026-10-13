@@ -24,21 +24,25 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { McpSchema, McpServer } from "effect/unstable/ai";
+import { McpSchema, McpServer } from "effect/ai";
 
-import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
-import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import { compileClaudeModelSelection } from "../claudeModelOptions.ts";
 import { SYNTHETIC_CLAUDE_MODEL_CATALOG } from "../provider/ClaudeModelCatalog.testFixtures.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
-import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import { McpInvocationContext, type McpInvocationScope } from "./McpInvocationContext.ts";
-import { layer as serviceLayer, OrchestratorMcpService } from "./OrchestratorMcpService.ts";
+import * as OrchestratorMcp from "./OrchestratorMcpService.ts";
 import { ThreadMetadataMcpService } from "./ThreadMetadataMcpService.ts";
-import { OrchestratorToolkitHandlersLive } from "./toolkits/orchestrator/handlers.ts";
+import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
+import { toolkitRegistration } from "./McpHttpServer.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import {
   TASK_LIST_RESPONSE_MAX_BYTES,
@@ -59,9 +63,14 @@ const instanceId = ProviderInstanceId.make("codex-custom-instance");
 const now = DateTime.makeUnsafe("2026-09-29T12:00:00.000Z");
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:task-restorations"),
-  threadId: parentId,
-  providerSessionId: "session:task-restorations",
-  providerInstanceId: instanceId,
+  requestNamespace: "session:task-restorations",
+  thread: {
+    threadId: parentId,
+    providerSessionId: "session:task-restorations",
+    providerInstanceId: instanceId,
+  },
+  client: undefined,
+
   capabilities: new Set(["orchestration"]),
   issuedAt: 1,
 };
@@ -199,18 +208,36 @@ function makeLayer(
   records: Map<ThreadId, OrchestrationV2ThreadProjection>,
   options: {
     reads?: ThreadId[];
-    dispatch?: ThreadManagementService["Service"]["dispatch"];
+    dispatch?: ThreadManagement.ThreadManagementService["Service"]["dispatch"];
     providers?: readonly ServerProvider[];
     unreadable?: ThreadId;
   } = {},
 ) {
-  return serviceLayer.pipe(
+  return OrchestratorMcp.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
-        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        ServerSettings.layerTest(),
         Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         NodeCrypto.layer,
-        Layer.mock(ThreadManagementService)({
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (id) => {
+            const record = records.get(id);
+            if (record === undefined) return Effect.succeed(null);
+            const active = record.runs.find(
+              (run) => run.status === "running" || run.status === "waiting",
+            );
+            return Effect.succeed({
+              ...liveThreadShell(id, { activeRunId: active?.id ?? null }),
+              ...record.thread,
+            });
+          },
+          delegatedTaskResultPending: () => Effect.succeed(false),
+          hasReceipt: () => Effect.succeed(false),
+          assertProviderInstanceEnabled: () => Effect.void,
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          stopDelegatedTasks: () => Effect.void,
           getThreadRecords: (id) =>
             id === options.unreadable
               ? Effect.fail(
@@ -228,16 +255,17 @@ function makeLayer(
           dispatch:
             options.dispatch ?? (() => Effect.die("Listing must not acknowledge or dispatch.")),
         }),
-        Layer.mock(ProviderRegistry)({
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed(options.providers ?? [provider]),
+          refreshInstance: () => Effect.succeed(options.providers ?? [provider]),
         }),
-        Layer.mock(ProviderAdapterRegistryV2)({
+        Layer.mock(ProviderAdapters.ProviderAdapterRegistryV2)({
           list: () =>
             Effect.succeed(
               (options.providers ?? [provider]).map((provider) => provider.instanceId),
             ),
         }),
-        Layer.mock(ScheduledTaskService)({}),
+        Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
       ),
     ),
   );
@@ -275,10 +303,10 @@ function recordsFor(tasks: readonly OrchestrationV2Subagent[]) {
 
 function listFixture(
   records: Map<ThreadId, OrchestrationV2ThreadProjection>,
-  input: Parameters<OrchestratorMcpService["Service"]["listTasks"]>[1],
+  input: Parameters<OrchestratorMcp.OrchestratorMcpService["Service"]["listTasks"]>[1],
   options: Parameters<typeof makeLayer>[1] = {},
 ) {
-  return OrchestratorMcpService.pipe(
+  return OrchestratorMcp.OrchestratorMcpService.pipe(
     Effect.flatMap((service) => service.listTasks(scope, input)),
     Effect.provide(Layer.fresh(makeLayer(records, options))),
   );
@@ -309,7 +337,7 @@ describe("task restorations on orchestration v2", () => {
       runs: [],
     });
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       const expected = status === "completed" ? "finished" : status;
       const listed = yield* service.listTasks(scope, {});
       expect(listed.tasks).toMatchObject([{ taskId: imported.id, status: expected }]);
@@ -326,10 +354,14 @@ describe("task restorations on orchestration v2", () => {
         status,
       });
       expect(records.get(parentId)!.subagents).toEqual([imported]);
-    }).pipe(Effect.provide(makeLayer(records)));
+    }).pipe(
+      Effect.provide(
+        makeLayer(records, { dispatch: () => Effect.succeed({ sequence: 1, storedEvents: [] }) }),
+      ),
+    );
   });
 
-  it.effect("cancels a finished task's pending hand-back without interrupting a follow-up", () => {
+  it.effect("stops a finished task's later work and disposes its pending hand-back", () => {
     const finished = task("finished-pending", { result: null });
     const records = recordsFor([finished]);
     const childId = finished.childThreadId!;
@@ -337,21 +369,24 @@ describe("task restorations on orchestration v2", () => {
       ...records.get(childId)!,
       runs: [run(childId, "completed"), run(childId, "running", 2)],
     });
-    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
+    const commands: Parameters<
+      ThreadManagement.ThreadManagementService["Service"]["dispatch"]
+    >[0][] = [];
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       expect(yield* service.cancelTask(scope, { taskId: finished.id })).toEqual({
         taskId: finished.id,
         status: "completed",
       });
       expect(commands).toMatchObject([
+        { type: "thread.stop", threadId: childId },
         {
           type: "delegated_task.completion-delivery.dispose",
           parentThreadId: parentId,
           taskId: finished.id,
         },
       ]);
-      expect(commands).toHaveLength(1);
+      expect(commands).toHaveLength(2);
     }).pipe(
       Effect.provide(
         makeLayer(records, {
@@ -365,7 +400,7 @@ describe("task restorations on orchestration v2", () => {
     );
   });
 
-  it.effect("leaves a finished task's delivered hand-back and later child run alone", () => {
+  it.effect("stops later work without changing a finished task's delivered hand-back", () => {
     const finished = task("finished-delivered", {
       result: null,
       completionDelivery: {
@@ -381,13 +416,17 @@ describe("task restorations on orchestration v2", () => {
       runs: [run(childId, "completed"), run(childId, "running", 2)],
     });
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       expect(yield* service.cancelTask(scope, { taskId: finished.id })).toEqual({
         taskId: finished.id,
         status: "completed",
       });
       expect(records.get(parentId)!.subagents).toEqual([finished]);
-    }).pipe(Effect.provide(makeLayer(records)));
+    }).pipe(
+      Effect.provide(
+        makeLayer(records, { dispatch: () => Effect.succeed({ sequence: 1, storedEvents: [] }) }),
+      ),
+    );
   });
 
   it.effect("cancels an already settled task without changing delivered completion state", () => {
@@ -405,7 +444,7 @@ describe("task restorations on orchestration v2", () => {
     const childId = imported.childThreadId!;
     records.set(childId, { ...records.get(childId)!, runs: [] });
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       expect(yield* service.cancelTask(scope, { taskId: imported.id })).toEqual({
         taskId: imported.id,
         status: "cancelled",
@@ -413,7 +452,11 @@ describe("task restorations on orchestration v2", () => {
       expect(records.get(parentId)!.subagents[0]!.completionDelivery).toEqual(
         imported.completionDelivery,
       );
-    }).pipe(Effect.provide(makeLayer(records)));
+    }).pipe(
+      Effect.provide(
+        makeLayer(records, { dispatch: () => Effect.succeed({ sequence: 1, storedEvents: [] }) }),
+      ),
+    );
   });
 
   it.effect(
@@ -430,7 +473,7 @@ describe("task restorations on orchestration v2", () => {
       const unbacked = task("unbacked", { childThreadId: null });
       const reads: ThreadId[] = [];
       return Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService;
+        const service = yield* OrchestratorMcp.OrchestratorMcpService;
         const result = yield* service.listTasks(scope, {});
         expect(result.tasks.map((item) => item.taskId)).toEqual([active.id, finished.id]);
         expect(result.tasks[0]).toMatchObject({
@@ -450,7 +493,12 @@ describe("task restorations on orchestration v2", () => {
         expect(reads.filter((id) => id === parentId)).toHaveLength(1);
         expect(reads).not.toContain(native.childThreadId);
         expect(reads).not.toContain(foreign.childThreadId);
-        expect((yield* service.listTasks({ ...scope, threadId: otherId }, {})).tasks).toEqual([]);
+        expect(
+          (yield* service.listTasks(
+            { ...scope, thread: { ...scope.thread!, threadId: otherId } },
+            {},
+          )).tasks,
+        ).toEqual([]);
       }).pipe(
         Effect.provide(
           makeLayer(recordsFor([finished, active, native, foreign, unbacked]), { reads }),
@@ -492,7 +540,7 @@ describe("task restorations on orchestration v2", () => {
       ],
     });
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       const result = yield* service.listTasks(scope, {});
       expect(result.tasks.find((item) => item.taskId === waiting.id)).toMatchObject({
         status: "running",
@@ -511,7 +559,7 @@ describe("task restorations on orchestration v2", () => {
     const tasks = Array.from({ length: 55 }, (_, index) => task(String(index).padStart(3, "0")));
     const reads: ThreadId[] = [];
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       const first = yield* service.listTasks(scope, { limit: 20 });
       expect(first.tasks).toHaveLength(20);
       expect(first.nextCursor).not.toBeNull();
@@ -533,7 +581,7 @@ describe("task restorations on orchestration v2", () => {
         task(status, { status, result: `Task ended: ${status}` }),
       );
       return Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService;
+        const service = yield* OrchestratorMcp.OrchestratorMcpService;
         const result = yield* service.listTasks(scope, {});
         for (const expected of tasks) {
           expect(result.tasks.find((item) => item.taskId === expected.id)).toMatchObject({
@@ -553,7 +601,7 @@ describe("task restorations on orchestration v2", () => {
   it.effect("rejects missing capability before reading state and rejects a foreign cursor", () => {
     const reads: ThreadId[] = [];
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       const denied = yield* service
         .listTasks({ ...scope, capabilities: new Set() }, {})
         .pipe(Effect.flip);
@@ -566,6 +614,15 @@ describe("task restorations on orchestration v2", () => {
     }).pipe(Effect.provide(makeLayer(recordsFor([]), { reads })));
   });
 });
+
+const declaredResult = (result: McpSchema.CallToolResult) => {
+  if (!result.isError) return result;
+  const content = result.content[0];
+  return {
+    ...result,
+    structuredContent: content?.type === "text" ? JSON.parse(content.text) : undefined,
+  };
+};
 
 const client = McpSchema.McpServerClient.of({
   clientId: 1,
@@ -584,8 +641,11 @@ function makeMcpLayer(
   records: Map<ThreadId, OrchestrationV2ThreadProjection>,
   options: Parameters<typeof makeLayer>[1] = {},
 ) {
-  return McpServer.toolkit(OrchestratorToolkit).pipe(
-    Layer.provide(OrchestratorToolkitHandlersLive),
+  const parent = records.get(parentId);
+  if (parent !== undefined && parent.runs.length === 0) {
+    records.set(parentId, { ...parent, runs: [run(parentId, "running")] });
+  }
+  return toolkitRegistration(OrchestratorToolkit, OrchestratorHandlers.layer).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(makeLayer(records, options)),
     Layer.provide(Layer.mock(ThreadMetadataMcpService)({})),
@@ -663,7 +723,7 @@ it.effect(
 it.effect("returns readable siblings when one child cannot be loaded", () => {
   const tasks = [task("a"), task("b"), task("c")];
   return Effect.gen(function* () {
-    const service = yield* OrchestratorMcpService;
+    const service = yield* OrchestratorMcp.OrchestratorMcpService;
     const result = yield* service.listTasks(scope, {});
     expect(result.tasks.map((entry) => entry.taskId)).toEqual(tasks.map((task) => task.id));
     expect(result.tasks[1]).toMatchObject({
@@ -681,7 +741,7 @@ it.effect("keeps unreadable unresolved tasks visible in every status filter", ()
   const unknown = task("unreadable", { status: "running", result: null });
   const tasks = [task("finished"), unknown];
   return Effect.gen(function* () {
-    const service = yield* OrchestratorMcpService;
+    const service = yield* OrchestratorMcp.OrchestratorMcpService;
     for (const status of ["queued", "running", "finished", "failed", "cancelled"] as const) {
       const result = yield* service.listTasks(scope, { status });
       expect(result.tasks.find((entry) => entry.taskId === unknown.id)).toMatchObject({
@@ -702,7 +762,7 @@ it.effect(
     const lastTask = task("z-last", { startedAt: DateTime.makeUnsafe("2026-09-29T13:00:00Z") });
     const records = recordsFor([lastTask, secondTask, firstTask]);
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       const first = yield* service.listTasks(scope, { limit: 2 });
       expect(first.tasks.map((entry) => entry.taskId)).toEqual([lastTask.id, secondTask.id]);
       const tied = task("a-new-tied");
@@ -749,7 +809,7 @@ it.effect(
     ];
     const records = recordsFor([a!, b!, c!]);
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       const first = yield* service.listTasks(scope, { limit: 1 });
       expect(first.tasks.map((entry) => entry.taskId)).toEqual([c!.id]);
       const d = task("D", { startedAt: at(5) });
@@ -781,7 +841,7 @@ it.effect(
       task("f-interrupted", { status: "interrupted" }),
     ];
     return Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService;
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
       for (const [status, count] of [
         ["queued", 1],
         ["running", 1],
@@ -914,7 +974,7 @@ it.effect("bounds child reads for 120 tasks, filtered discovery, and complete pa
   const records = recordsFor(tasks);
   const reads: ThreadId[] = [];
   return Effect.gen(function* () {
-    const service = yield* OrchestratorMcpService;
+    const service = yield* OrchestratorMcp.OrchestratorMcpService;
     const running = yield* service.listTasks(scope, { status: "running" });
     expect(running.tasks.map((entry) => entry.taskId)).toEqual(
       tasks
@@ -971,7 +1031,9 @@ it.effect(
     const child = task("ultrathink", { status: "running", result: null });
     const records = recordsFor([child]);
     records.set(parentId, { ...records.get(parentId)!, runs: [run(parentId, "running")] });
-    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
+    const commands: Parameters<
+      ThreadManagement.ThreadManagementService["Service"]["dispatch"]
+    >[0][] = [];
     const prompt = "Review the module.";
     return Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
@@ -979,6 +1041,7 @@ it.effect(
         server
           .callTool({ name, arguments: args })
           .pipe(
+            Effect.map(declaredResult),
             Effect.provideService(McpInvocationContext, scope),
             Effect.provideService(McpSchema.McpServerClient, client),
           );
@@ -1135,7 +1198,9 @@ it.effect.each(["codex", "claudeCode"] as const)(
       },
       runs: [run(parentId, "running")],
     });
-    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
+    const commands: Parameters<
+      ThreadManagement.ThreadManagementService["Service"]["dispatch"]
+    >[0][] = [];
     const layer = makeMcpLayer(records, {
       providers: [activeProvider, disabled, remote],
       dispatch: (command) => {
@@ -1164,6 +1229,7 @@ it.effect.each(["codex", "claudeCode"] as const)(
         server
           .callTool({ name, arguments: args })
           .pipe(
+            Effect.map(declaredResult),
             Effect.provideService(McpInvocationContext, scope),
             Effect.provideService(McpSchema.McpServerClient, client),
           );
@@ -1258,9 +1324,10 @@ it.effect(
     });
     const records = recordsFor([child]);
     records.set(parentId, { ...records.get(parentId)!, runs: [run(parentId, "running")] });
-    const commands: Parameters<ThreadManagementService["Service"]["dispatch"]>[0][] = [];
-    const layer = McpServer.toolkit(OrchestratorToolkit).pipe(
-      Layer.provide(OrchestratorToolkitHandlersLive),
+    const commands: Parameters<
+      ThreadManagement.ThreadManagementService["Service"]["dispatch"]
+    >[0][] = [];
+    const layer = toolkitRegistration(OrchestratorToolkit, OrchestratorHandlers.layer).pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provide(
         makeLayer(records, {
@@ -1293,6 +1360,7 @@ it.effect(
         server
           .callTool({ name, arguments: args })
           .pipe(
+            Effect.map(declaredResult),
             Effect.provideService(McpInvocationContext, caller),
             Effect.provideService(McpSchema.McpServerClient, client),
           );
@@ -1384,10 +1452,13 @@ it.effect(
       expect(unavailable.structuredContent).toMatchObject({ code: "model_unavailable" });
       const wrongSession = yield* call("task_create", input, {
         ...scope,
-        providerInstanceId: ProviderInstanceId.make("other-instance"),
+        thread: { ...scope.thread!, providerInstanceId: ProviderInstanceId.make("other-instance") },
       });
       expect(wrongSession.structuredContent).toMatchObject({ code: "parent_not_active" });
-      const idle = yield* call("task_create", input, { ...scope, threadId: otherId });
+      const idle = yield* call("task_create", input, {
+        ...scope,
+        thread: { ...scope.thread!, threadId: otherId },
+      });
       expect(idle.structuredContent).toMatchObject({ code: "parent_not_active" });
       records.set(parentId, {
         ...records.get(parentId)!,
@@ -1412,6 +1483,14 @@ it.effect(
       }
       const filtered = yield* call("task_list", { status: "finished" });
       expect((yield* decodeListedTasks(filtered.structuredContent)).tasks).toEqual([]);
+      const deniedCancellation = yield* call("task_cancel", { threadId: createdTask.threadId });
+      expect(deniedCancellation.structuredContent).toMatchObject({
+        code: "runtime_mode_escalation_denied",
+      });
+      records.set(parentId, {
+        ...records.get(parentId)!,
+        thread: { ...records.get(parentId)!.thread, runtimeMode: "full-access" },
+      });
       const cancelled = yield* call("task_cancel", { threadId: createdTask.threadId });
       expect(cancelled.structuredContent).toMatchObject({
         threadId: child.childThreadId,
@@ -1425,7 +1504,7 @@ it.effect(
       });
       const foreignCancelled = yield* call("task_cancel", { threadId: otherId });
       expect(foreignCancelled.structuredContent).toMatchObject({ code: "task_not_found" });
-      const interrupted = commands.filter((command) => command.type === "run.interrupt");
+      const interrupted = commands.filter((command) => command.type === "thread.stop");
       expect(interrupted).toHaveLength(2);
       expect(interrupted[0]).toMatchObject({ threadId: child.childThreadId });
       const ended = {
@@ -1448,3 +1527,33 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect("task aliases refuse external callers without changing owned tasks", () => {
+  const records = recordsFor([task("external-check")]);
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const externalScope: McpInvocationScope = {
+      ...scope,
+      requestNamespace: "client:external",
+      thread: undefined,
+      client: { sessionId: "external", label: "External agent", access: "full-access" },
+    };
+    for (const [name, args] of [
+      ["task_models", {}],
+      ["task_list", {}],
+      ["task_create", { title: "Review", prompt: "Review the module.", context: "none" }],
+      ["task_cancel", { threadId: "child:external-check" }],
+    ] as const) {
+      const response = yield* server
+        .callTool({ name, arguments: args })
+        .pipe(
+          Effect.provideService(McpInvocationContext, externalScope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(declaredResult(response).structuredContent).toMatchObject({
+        code: "thread_credential_required",
+      });
+    }
+    expect(records.get(parentId)!.subagents[0]!.completionDelivery?.state).toBe("pending");
+  }).pipe(Effect.provide(makeMcpLayer(records)));
+});

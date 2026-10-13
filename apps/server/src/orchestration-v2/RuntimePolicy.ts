@@ -20,11 +20,8 @@ import {
   workspaceAdditionalDirectories,
 } from "@t3tools/shared/workspaceFolders";
 
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
-import {
-  ProviderAdapterV2RuntimePolicy,
-  type ProviderAdapterV2RuntimePolicy as ProviderAdapterV2RuntimePolicyType,
-} from "./ProviderAdapter.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
 
 /**
@@ -63,7 +60,7 @@ export class ProviderWorkspaceFolderAccessError extends Schema.TaggedError<Provi
  * runs it.
  */
 function providerMayRunScope(
-  scope: Pick<ProviderAdapterV2RuntimePolicyType, "additionalDirectories">,
+  scope: Pick<ProviderAdapter.ProviderAdapterV2RuntimePolicy, "additionalDirectories">,
   access: ProviderWorkspaceFolderAccess | undefined,
 ): boolean {
   return scope.additionalDirectories.length === 0 || access === "supported";
@@ -115,7 +112,7 @@ export interface RuntimePolicyV2Shape {
     readonly thread: OrchestrationV2AppThread;
     readonly modelSelection: ModelSelection;
     readonly unavailableFolderPaths?: ReadonlyArray<string> | undefined;
-  }) => Effect.Effect<ProviderAdapterV2RuntimePolicyType, RuntimePolicyV2Error>;
+  }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2RuntimePolicy, RuntimePolicyV2Error>;
   /**
    * The one eligibility rule, for turn start, provider and model switches and
    * launches: a scope with additional directories needs a provider instance
@@ -124,7 +121,7 @@ export interface RuntimePolicyV2Shape {
   readonly requireWorkspaceFolderAccess: (input: {
     readonly threadId: ThreadId;
     readonly providerInstanceId: ProviderInstanceId;
-    readonly scope: Pick<ProviderAdapterV2RuntimePolicyType, "additionalDirectories">;
+    readonly scope: Pick<ProviderAdapter.ProviderAdapterV2RuntimePolicy, "additionalDirectories">;
   }) => Effect.Effect<void, ProviderWorkspaceFolderAccessError>;
 }
 
@@ -138,7 +135,7 @@ export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePol
 export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2, {
   resolve: (input) =>
     Effect.succeed(
-      ProviderAdapterV2RuntimePolicy.make({
+      ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
         runtimeMode: input.thread.runtimeMode,
         interactionMode: input.thread.interactionMode,
         cwd: input.thread.worktreePath,
@@ -220,7 +217,7 @@ export const layerFromProjectStore: Layer.Layer<
           project: project ?? { workspaceRoot: primaryPath },
           unavailableFolderPaths: input.unavailableFolderPaths,
         });
-        return ProviderAdapterV2RuntimePolicy.make({
+        return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
           cwd: workspace.primaryPath,
@@ -255,7 +252,7 @@ export function layerWithOverride(
         resolve: (input) =>
           base.resolve(input).pipe(
             Effect.map((policy) =>
-              ProviderAdapterV2RuntimePolicy.make({
+              ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
                 ...policy,
                 ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
                 ...(override.approvalPolicy === undefined

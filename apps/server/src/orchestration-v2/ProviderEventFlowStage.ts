@@ -19,7 +19,10 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
-import type { ProviderAdapterV2Error, ProviderAdapterV2Event } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterV2Error,
+  ProviderAdapterV2Event,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { sanitizeProviderEvent } from "./ProviderEventPayload.ts";
 
 export const PROVIDER_EVENT_BACKLOG_MAX_ITEMS = 1_000;

@@ -1,7 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import * as Effect from "effect/Effect";
-import type { AtomRegistry } from "effect/unstable/reactivity";
+import type { AtomRegistry } from "effect/reactivity";
 import {
   createAtomCommandScheduler,
   scheduleAtomCommandEffect,

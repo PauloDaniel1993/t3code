@@ -74,7 +74,8 @@ export function useFileTreeEntries(input: {
         })
       : null,
   );
-  const [revision, render] = useReducer((value: number) => value + 1, 0);
+  const [, render] = useReducer((value: number) => value + 1, 0);
+  const [entriesRevision, entriesChanged] = useReducer((value: number) => value + 1, 0);
   const resultFolders = search.data?.folders ?? folders;
   const scopeForPath = useCallback(
     (path: string) => (scope ? pinWorkspaceFileScope(scope, path, resultFolders) : null),
@@ -90,6 +91,9 @@ export function useFileTreeEntries(input: {
       errors: new Map<string, string>(),
     }),
     [workspaceKey, selectedFolderPath],
+  );
+  const [refreshingDirectories, setRefreshingDirectories] = useState<typeof directories | null>(
+    null,
   );
   useEffect(
     () => () => {
@@ -138,6 +142,7 @@ export function useFileTreeEntries(input: {
                     entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) === directoryPath,
                 ),
           );
+          entriesChanged();
         } else {
           const error = Cause.squash(result.cause);
           directories.errors.set(
@@ -154,14 +159,14 @@ export function useFileTreeEntries(input: {
   const { refresh: refreshSearch, data: searchData } = search;
   const snapshot = useMemo(() => {
     return {
-      revision,
+      revision: entriesRevision,
       ...collectFileTreeEntries(
         (rootData?.entries ?? []).filter((entry) => scope !== null || !entry.path.includes("/")),
         directories.entries,
         searching ? searchData?.entries : [],
       ),
     };
-  }, [directories, revision, rootData, searchData, searching, scope]);
+  }, [directories, entriesRevision, rootData, searchData, searching, scope]);
 
   const refresh = useCallback(() => {
     inventory.refresh();
@@ -174,6 +179,7 @@ export function useFileTreeEntries(input: {
     directories.pending.clear();
     directories.errors.clear();
     const version = ++refreshVersion.current;
+    setRefreshingDirectories(directories);
     const remaining = paths.values();
     const worker = async () => {
       while (version === refreshVersion.current) {
@@ -182,9 +188,41 @@ export function useFileTreeEntries(input: {
         await loadDirectory(next.value, true);
       }
     };
-    for (let index = 0; index < Math.min(4, paths.size); index++) void worker();
+    const queries =
+      cwd !== null && environmentId !== null
+        ? [
+            projectEnvironment.listEntries({
+              environmentId,
+              input: scope
+                ? { scope: selectedScope ?? scope, directoryPath: rootDirectoryPath }
+                : { cwd, directoryPath: "" },
+            }),
+            ...(searching
+              ? [
+                  projectEnvironment.searchEntries({
+                    environmentId,
+                    input: selectedScope
+                      ? { scope: selectedScope, query: debouncedQuery, limit: 200 }
+                      : { cwd, query: debouncedQuery, limit: 200 },
+                  }),
+                ]
+              : []),
+          ]
+        : [];
+    const work = [
+      ...queries.map((atom) =>
+        executeAtomQuery(appAtomRegistry, atom, { reportFailure: false, reportDefect: false }),
+      ),
+      ...Array.from({ length: Math.min(4, paths.size) }, () => worker()),
+    ];
     render();
+    return Promise.all(work).finally(() => {
+      if (version === refreshVersion.current) setRefreshingDirectories(null);
+    });
   }, [
+    cwd,
+    debouncedQuery,
+    environmentId,
     directories,
     inventory.refresh,
     loadDirectory,
@@ -192,6 +230,8 @@ export function useFileTreeEntries(input: {
     refreshSearch,
     searching,
     selectedScope,
+    scope,
+    rootDirectoryPath,
     snapshot.reachableDirectories,
   ]);
 
@@ -203,6 +243,7 @@ export function useFileTreeEntries(input: {
       setSelection(folderPath === null ? null : { key: workspaceKey, folderPath }),
     scopeForPath,
     entries: snapshot.entries,
+    isRefreshing: refreshingDirectories === directories,
     error:
       root.error ??
       (searching ? search.error : null) ??
@@ -215,6 +256,7 @@ export function useFileTreeEntries(input: {
       (searching && (query !== debouncedQuery || search.isPending)),
     searchTruncated: searching && (search.data?.truncated ?? false),
     loadedDirectories: new Set(directories.entries.keys()),
+    loadingDirectories: new Set(directories.pending.keys()),
     loadDirectory,
     refresh,
   };

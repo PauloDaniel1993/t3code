@@ -1,4 +1,4 @@
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -22,7 +22,7 @@ export class ClaudeSdkExecutableResolutionError extends Schema.TaggedError<Claud
 export const resolveClaudeTurnExecutablePath = Effect.fn("resolveClaudeTurnExecutablePath")(
   function* (binaryPath: string, environment: NodeJS.ProcessEnv) {
     const executablePath = yield* resolveClaudeSdkExecutablePath(binaryPath, environment);
-    const platform = yield* HostProcessPlatform;
+    const platform = yield* HostProcess.Platform;
     if (platform === "win32") {
       const isFile = yield* ClaudeExecutableFileCheck;
       if (isWindowsClaudeLauncherShimPath(executablePath) || !isFile(executablePath)) {

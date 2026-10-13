@@ -33,28 +33,28 @@ import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { Command } from "effect/unstable/cli";
-import { FetchHttpClient, HttpRouter, HttpPlatform, Etag } from "effect/unstable/http";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import { Command } from "effect/cli";
+import { FetchHttpClient, HttpRouter, HttpPlatform, Etag } from "effect/http";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { cli } from "../binCli.ts";
 import * as ServerConfig from "../config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
-import {
-  OrchestrationV2EventSinkLayerLive,
-  ProjectServiceLayerLive,
-} from "../orchestration-v2/runtimeLayer.ts";
-import * as SqlitePersistence from "../persistence/Layers/Sqlite.ts";
+import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { projectHttpApiLayer } from "../project/http.ts";
+import * as ProjectHttp from "../project/http.ts";
 import { persistServerRuntimeState } from "../serverRuntimeState.ts";
 import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
 import {
@@ -64,11 +64,11 @@ import {
   projectCommandErrorFromLiveServerRequest,
 } from "./project.ts";
 
-const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
+const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 const runCli = (args: ReadonlyArray<string>) =>
   Command.runWith(cli, { version: "0.0.0" })(args).pipe(
     Effect.provide(
-      Layer.mergeAll(CliRuntimeLayer, ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      Layer.mergeAll(layerCliRuntime, ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
     ),
   );
 
@@ -111,13 +111,14 @@ const makeConfig = (baseDir: string) =>
 const readProjects = (baseDir: string) =>
   Effect.gen(function* () {
     const config = yield* makeConfig(baseDir);
-    const layer = ProjectServiceLayerLive.pipe(
+    const layer = RuntimeLayer.layerProjectService.pipe(
       Layer.provideMerge(ProjectEnrichmentService.layer),
       Layer.provideMerge(RepositoryIdentityResolver.layer),
       Layer.provideMerge(WorkspaceFolderResolver.layer),
       Layer.provideMerge(ProjectFaviconResolver.layer),
       Layer.provideMerge(T3ProjectFileLoader.layer),
       Layer.provideMerge(WorkspacePaths.layer),
+      Layer.provideMerge(ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer))),
       Layer.provideMerge(SqlitePersistence.layerConfig),
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(ServerConfig.layer(config)),
@@ -151,13 +152,14 @@ it.effect.each(["import", "link"] as const)(
             )).projects[0]!.id
           : undefined;
       const config = yield* makeConfig(baseDir);
-      const serviceLayer = ProjectServiceLayerLive.pipe(
+      const serviceLayer = RuntimeLayer.layerProjectService.pipe(
         Layer.provideMerge(ProjectEnrichmentService.layer),
         Layer.provideMerge(RepositoryIdentityResolver.layer),
         Layer.provideMerge(WorkspaceFolderResolver.layer),
         Layer.provideMerge(ProjectFaviconResolver.layer),
         Layer.provideMerge(T3ProjectFileLoader.layer),
         Layer.provideMerge(WorkspacePaths.layer),
+        Layer.provideMerge(ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer))),
         Layer.provideMerge(SqlitePersistence.layerConfig),
         Layer.provide(ServerConfig.layer(config)),
       );
@@ -177,7 +179,7 @@ it.effect.each(["import", "link"] as const)(
         enqueueCommand: (effect) => effect,
       });
       const routesLayer = HttpApiBuilder.layer(ProjectCliTestApi).pipe(
-        Layer.provide(projectHttpApiLayer),
+        Layer.provide(ProjectHttp.layer),
         Layer.provide(serviceLayer),
         Layer.provide(authLayer),
         Layer.provide(startupLayer),
@@ -495,7 +497,7 @@ const makeThreadPersistenceLayer = Effect.fn("ProjectCliTest.makeThreadPersisten
   function* (baseDir: string) {
     const config = yield* makeConfig(baseDir);
     return Layer.mergeAll(
-      OrchestrationV2EventSinkLayerLive,
+      RuntimeLayer.layerEventSink,
       ProjectionStore.layer,
       EventStore.layer,
     ).pipe(

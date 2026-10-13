@@ -12,7 +12,7 @@ import {
   workspaceCheckoutStatusCwds,
 } from "./workspaceVcs.ts";
 import { EnvironmentId, type VcsStatusResult } from "@t3tools/contracts";
-import { AtomRegistry } from "effect/unstable/reactivity";
+import { AtomRegistry } from "effect/reactivity";
 import {
   scheduleWorkspaceVcsCommand,
   vcsCommandScheduler,

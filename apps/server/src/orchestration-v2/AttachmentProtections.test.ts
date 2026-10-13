@@ -1,3 +1,5 @@
+import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 // @effect-diagnostics nodeBuiltinImport:off - tests plant filesystem escapes in isolated fixtures.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeFSP from "node:fs/promises";
@@ -24,13 +26,15 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { issueAssetUrl, resolveAsset } from "../assets/AssetAccess.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { base64UrlEncode, signPayload } from "../auth/utils.ts";
 import { ServerConfig } from "../config.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as ServerConfiguration from "../config.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as PreviewManager from "../preview/Manager.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { ProjectFaviconResolver } from "../project/ProjectFaviconResolver.ts";
@@ -38,7 +42,7 @@ import { NativeAppIconResolver } from "../assets/NativeAppIconResolver.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { EffectOutboxV2, layer as outboxLayer } from "./EffectOutbox.ts";
 import * as ResourceCleanup from "./ResourceCleanupService.ts";
-import { OrchestrationV2EventSinkLayerLive } from "./runtimeLayer.ts";
+import * as RuntimeLayer from "./runtimeLayer.ts";
 import {
   initializeAttachmentReferenceIndex,
   rebuildAttachmentReferenceIndex,
@@ -54,8 +58,10 @@ import {
   layerWithOptions as workerLayer,
 } from "./EffectWorker.ts";
 
-const configLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-attachment-protections-" });
-const databaseLayer = SqlitePersistenceMemory;
+const configLayer = ServerConfiguration.layerTest(process.cwd(), {
+  prefix: "t3-attachment-protections-",
+});
+const databaseLayer = SqlitePersistence.layerMemory;
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeDraft = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -67,19 +73,37 @@ const decodeDraft = Schema.decodeUnknownEffect(
 const decodeTestClaims = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
 );
+const layerAssetOrchestrator = Layer.unwrap(
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    return Layer.mock(Orchestrator.OrchestratorV2)({
+      getTurnItem: (input) =>
+        projections
+          .getTurnItem(input)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new Orchestrator.OrchestratorProjectionError({ threadId: input.threadId, cause }),
+            ),
+          ),
+    });
+  }),
+).pipe(Layer.provide(ProjectionStore.layer.pipe(Layer.provide(databaseLayer))));
 const testLayer = Layer.mergeAll(
+  layerAssetOrchestrator,
   databaseLayer,
   configLayer,
   WorkspacePaths.layer,
   Layer.mock(ProjectFaviconResolver)({ resolvePath: () => Effect.die("unused favicon") }),
   Layer.mock(NativeAppIconResolver)({ resolve: () => Effect.die("unused icon") }),
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
-  OrchestrationV2EventSinkLayerLive.pipe(Layer.provide(databaseLayer)),
+  RuntimeLayer.layerEventSink.pipe(Layer.provide(databaseLayer)),
   outboxLayer.pipe(Layer.provide(databaseLayer)),
-  ResourceCleanup.live.pipe(
+  ResourceCleanup.layer.pipe(
     Layer.provide(configLayer),
     Layer.provide(databaseLayer),
     Layer.provide(Layer.mock(TerminalManager)({ close: () => Effect.void })),
+    Layer.provide(Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void })),
   ),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 

@@ -1,3 +1,5 @@
+import { useAtomValue } from "@effect/atom-react";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
 import type {
   EnvironmentId,
   ThreadId,
@@ -88,6 +90,10 @@ export function WorkspaceVersionControl(props: {
   const switchBranch = useAtomCommand(vcsEnvironment.switchWorktreeSetBranch, {
     reportFailure: false,
   });
+  const actionPermissionAtom = vcsEnvironment.runWorkspaceAction.permissionAtom(environmentId);
+  const branchPermissionAtom = vcsEnvironment.switchWorktreeSetBranch.permissionAtom(environmentId);
+  const canRunWorkspaceAction = useAtomValue(actionPermissionAtom);
+  const canSwitchBranch = useAtomValue(branchPermissionAtom);
   const openLink = useOpenLink(threadRef);
   const branches = usePaginatedBranches({
     environmentId,
@@ -95,7 +101,12 @@ export function WorkspaceVersionControl(props: {
     query: branchQuery,
   });
   const actionDisabled =
-    busy || props.thread === null || !ready || branch.drifted > 0 || !available.some(Boolean);
+    !canRunWorkspaceAction ||
+    busy ||
+    props.thread === null ||
+    !ready ||
+    branch.drifted > 0 ||
+    !available.some(Boolean);
   const changed = workspaceChangedFiles(
     props.project,
     thread,
@@ -127,7 +138,7 @@ export function WorkspaceVersionControl(props: {
             ? "Unavailable repositories are excluded from batch actions."
             : null;
   const run = async (action: VcsWorkspaceAction) => {
-    if (actionDisabled) return;
+    if (actionDisabled || !appAtomRegistry.get(actionPermissionAtom)) return;
     setBusy(true);
     setError(null);
     setResults([]);
@@ -177,7 +188,7 @@ export function WorkspaceVersionControl(props: {
     }
   };
   const switchTo = async (name: string, members?: Array<string>) => {
-    if (busy || !props.thread) return;
+    if (busy || !props.thread || !appAtomRegistry.get(branchPermissionAtom)) return;
     setBusy(true);
     setError(null);
     try {
@@ -197,7 +208,7 @@ export function WorkspaceVersionControl(props: {
         props.draftBranchControl
       ) : (
         <ThreadDetailsControl
-          disabled={busy || !thread.worktrees?.length}
+          disabled={!canSwitchBranch || busy || !thread.worktrees?.length}
           onClick={() => setBranchOpen(true)}
           aria-label="Switch shared branch"
         >
@@ -395,7 +406,7 @@ export function WorkspaceVersionControl(props: {
                     <Button
                       variant="outline"
                       size="xs"
-                      disabled={busy}
+                      disabled={!canSwitchBranch || busy}
                       onClick={() =>
                         void switchTo(checkout.expectedBranch!, [checkout.repositoryRoot])
                       }
@@ -501,7 +512,7 @@ export function WorkspaceVersionControl(props: {
                     <Button
                       variant="ghost"
                       size="sm"
-                      disabled={busy}
+                      disabled={!canSwitchBranch || busy}
                       onClick={() => void switchTo(ref.name)}
                     >
                       {ref.name}

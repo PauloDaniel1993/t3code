@@ -5,7 +5,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
-import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
+import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 
 it.effect("keeps a healthy runtime alive while text and lifecycle events remain unread", () =>
   Effect.gen(function* () {

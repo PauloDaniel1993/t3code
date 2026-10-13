@@ -17,6 +17,7 @@ import {
   type OrchestrationV2CheckpointFolder,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -33,6 +34,32 @@ import {
 } from "./Errors.ts";
 import * as CheckpointStore from "./CheckpointStore.ts";
 import { checkpointFolderDiffs, collectCheckpointDiffs } from "./CheckpointFolderDiffs.ts";
+import { isGitImport, parseTurnDiffFilesFromNumstat, type TurnDiffFileSummary } from "./Diffs.ts";
+
+// Windows limits a command line to 32,767 characters. Leave room for the rest of git's arguments.
+const MAX_PATHSPEC_CHARS = 24_000;
+const encodeKey = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+/** Splits files into pathspec lists that each fit on one git command line. Renames keep both paths together. */
+function batchFilePaths(files: ReadonlyArray<TurnDiffFileSummary>) {
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let length = 0;
+  for (const file of files) {
+    const paths = file.previousPath === undefined ? [file.path] : [file.previousPath, file.path];
+    // Each pathspec also carries a `:(top,literal)` prefix and a separator.
+    const size = paths.reduce((total, path) => total + path.length + 16, 0);
+    if (batch.length > 0 && length + size > MAX_PATHSPEC_CHARS) {
+      batches.push(batch);
+      batch = [];
+      length = 0;
+    }
+    batch.push(...paths);
+    length += size;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
 
 /** Service tag for checkpoint diff queries. */
 export class CheckpointDiffQuery extends Context.Service<
@@ -80,6 +107,46 @@ function buildTurnDiffResult(
 export const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
+  const crypto = yield* Crypto.Crypto;
+
+  // Path attribution is per checkpoint pair. Read repository-relative numstat paths before
+  // rendering folder-relative patches so imported changes cannot consume the output budget.
+  const diffAuthoredCheckpoints = Effect.fn("CheckpointDiffQuery.diffAuthoredCheckpoints")(
+    function* (
+      input: CheckpointStore.DiffCheckpointsInput,
+      authoredPathsByComparison: Map<string, ReadonlySet<string> | null>,
+    ) {
+      const key = encodeKey([input.cwd, input.fromCheckpointRef, input.toCheckpointRef]);
+      let authoredPaths = authoredPathsByComparison.get(key);
+      if (authoredPaths === undefined) {
+        authoredPaths = yield* checkpointStore
+          .listAuthoredPaths(input)
+          .pipe(Effect.orElseSucceed(() => null));
+        authoredPathsByComparison.set(key, authoredPaths);
+      }
+      if (authoredPaths === null) return yield* checkpointStore.diffCheckpoints(input);
+      const { relativePath: _relativePath, ...repositoryInput } = input;
+      const files = yield* checkpointStore
+        .diffCheckpoints({
+          ...repositoryInput,
+          format: "numstat",
+        })
+        .pipe(
+          Effect.map(parseTurnDiffFilesFromNumstat),
+          Effect.orElseSucceed(() => []),
+        );
+      const retainedFiles = files.filter((file) => !isGitImport(file, authoredPaths));
+      if (retainedFiles.length === files.length) {
+        return yield* checkpointStore.diffCheckpoints(input);
+      }
+      const diffs = yield* collectCheckpointDiffs(
+        batchFilePaths(retainedFiles).map((filePaths) => ({ ...input, filePaths })),
+        checkpointStore.diffCheckpoints,
+        input.maxOutputBytes,
+      );
+      return diffs.map(({ diff }) => diff).join("");
+    },
+  );
 
   const getTurnDiff: CheckpointDiffQuery["Service"]["getTurnDiff"] = Effect.fn("getTurnDiff")(
     function* (input) {
@@ -149,6 +216,8 @@ export const make = Effect.gen(function* () {
         });
       }
 
+      // Folders sharing an endpoint pair share its Git history lookup within this request.
+      const authoredPathsByComparison = new Map<string, ReadonlySet<string> | null>();
       if (toCheckpoint.parts !== undefined) {
         const firstListings = new Map<string, (typeof projection.checkpoints)[number]>();
         const latestCheckouts = new Map<string, string>();
@@ -168,7 +237,7 @@ export const make = Effect.gen(function* () {
             if (checkpoint.appRunOrdinal === null || checkpoint.appRunOrdinal > input.toTurnCount)
               continue;
             for (const folder of part.folders) {
-              const key = JSON.stringify([part.key, folder.relativePath]);
+              const key = encodeKey([part.key, folder.relativePath]);
               if (!firstListings.has(key)) firstListings.set(key, checkpoint);
             }
           }
@@ -191,7 +260,7 @@ export const make = Effect.gen(function* () {
             for (const folder of part.folders) {
               if (seen.has(folder.relativePath)) continue;
               seen.add(folder.relativePath);
-              const key = JSON.stringify([part.key, folder.relativePath]);
+              const key = encodeKey([part.key, folder.relativePath]);
               const entries = folderHistories.get(key) ?? [];
               entries.push({ checkpoint, part, folder });
               folderHistories.set(key, entries);
@@ -225,14 +294,14 @@ export const make = Effect.gen(function* () {
           );
           // A stopped or failed capture can still contain work. Only a folder
           // first listed later in the thread starts after ordinal zero.
-          const first = firstListings.get(JSON.stringify([part.key, folder.relativePath]))!;
+          const first = firstListings.get(encodeKey([part.key, folder.relativePath]))!;
           const fromCheckpointRef =
             from?.part.ref ??
-            checkpointRefForScopeOrdinal({
+            (yield* checkpointRefForScopeOrdinal({
               scopeId: first.scopeId,
               ordinalWithinScope: Math.max(0, first.appRunOrdinal! - 1),
               partKey: part.key,
-            });
+            }).pipe(Effect.provideService(Crypto.Crypto, crypto)));
           if (fromCheckpointRef === part.ref) continue;
           const folderDiff = folderPlans.get(part.key)!.get(folder.relativePath)!;
           diffInputs.push({
@@ -252,14 +321,14 @@ export const make = Effect.gen(function* () {
         }
         const failedReads = new Set<string>();
         const diffs = yield* collectCheckpointDiffs(diffInputs, (diffInput) => {
-          const key = JSON.stringify([
+          const key = encodeKey([
             diffInput.cwd,
             diffInput.fromCheckpointRef,
             diffInput.toCheckpointRef,
           ]);
           return failedReads.has(key)
             ? Effect.succeed("")
-            : checkpointStore.diffCheckpoints(diffInput).pipe(
+            : diffAuthoredCheckpoints(diffInput, authoredPathsByComparison).pipe(
                 Effect.catch((cause) => {
                   failedReads.add(key);
                   return Effect.logWarning("checkpoint part diff unavailable", {
@@ -283,21 +352,20 @@ export const make = Effect.gen(function* () {
         });
       }
 
+      // The root scope is shared by every run in this thread. Its runId
+      // tracks the latest owner, while ordinal zero stays the baseline.
+      const firstScope =
+        input.fromTurnCount === 0
+          ? projection.checkpointScopes.find((scope) => scope.kind === "root_run")
+          : undefined;
       const fromCheckpointRef =
         input.fromTurnCount === 0
-          ? (() => {
-              // The root scope is shared by every run in this thread. Its
-              // runId tracks the latest owner, while ordinal zero stays the baseline.
-              const firstScope = projection.checkpointScopes.find(
-                (scope) => scope.kind === "root_run",
-              );
-              return firstScope === undefined
-                ? undefined
-                : checkpointRefForScopeOrdinal({
-                    scopeId: firstScope.id,
-                    ordinalWithinScope: 0,
-                  });
-            })()
+          ? firstScope === undefined
+            ? undefined
+            : yield* checkpointRefForScopeOrdinal({
+                scopeId: firstScope.id,
+                ordinalWithinScope: 0,
+              }).pipe(Effect.provideService(Crypto.Crypto, crypto))
           : readyCheckpoints.find((checkpoint) => checkpoint.appRunOrdinal === input.fromTurnCount)
               ?.ref;
       if (fromCheckpointRef === undefined) {
@@ -309,15 +377,16 @@ export const make = Effect.gen(function* () {
         });
       }
 
-      const diff = yield* checkpointStore
-        .diffCheckpoints({
-          cwd: toScope.cwd,
-          fromCheckpointRef,
-          toCheckpointRef: toCheckpoint.ref,
-          fallbackFromToHead: false,
-          ignoreWhitespace,
-        })
-        .pipe(Effect.withSpan("checkpoint.turnDiff.diffCheckpoints"));
+      const comparison = {
+        cwd: toScope.cwd,
+        fromCheckpointRef,
+        toCheckpointRef: toCheckpoint.ref,
+        fallbackFromToHead: false,
+        ignoreWhitespace,
+      };
+      const diff = yield* diffAuthoredCheckpoints(comparison, authoredPathsByComparison).pipe(
+        Effect.withSpan("checkpoint.turnDiff.diffCheckpoints"),
+      );
 
       const turnDiff = buildTurnDiffResult(input, diff);
       if (!isTurnDiffResult(turnDiff)) {

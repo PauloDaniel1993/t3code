@@ -6,14 +6,14 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Ref from "effect/Ref";
 
-import type { ProviderAdapterV2SessionRuntime } from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
 
 export interface IdleSessionReleaseCandidate {
   readonly runtime: Pick<ProviderAdapterV2SessionRuntime, "instanceId" | "driver"> & {
     readonly providerSession: Pick<ProviderAdapterV2SessionRuntime["providerSession"], "status">;
   };
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
-  readonly busyCount: number;
+  readonly busyTurns: ReadonlySet<string>;
   readonly idleGeneration: number;
   readonly lastActivityAtMs: number;
 }
@@ -62,7 +62,7 @@ function releaseResult(
   expectedGeneration: number,
 ) {
   if (remaining?.runtime !== probedRuntime) return "entry_removed";
-  if (remaining.busyCount > 0) return "skipped_session_busy";
+  if (remaining.busyTurns.size > 0) return "skipped_session_busy";
   return remaining.idleGeneration === expectedGeneration
     ? "entry_still_resident"
     : "skipped_session_active_since_check";
@@ -115,7 +115,7 @@ export function makeIdleReleaseTracer<Entry extends IdleSessionReleaseCandidate>
             maxIdlePinMs: options.maxIdlePinMs,
             expectedGeneration: input.generation,
             generation: entry.idleGeneration,
-            busyCount: entry.busyCount,
+            busyCount: entry.busyTurns.size,
           };
           const probedRuntime = entry.runtime;
           let stopDecision = "stop_inactive_session";
@@ -136,8 +136,8 @@ export function makeIdleReleaseTracer<Entry extends IdleSessionReleaseCandidate>
           yield* safely(() =>
             Effect.logInfo("provider.session.release.candidate").pipe(Effect.annotateLogs(context)),
           );
-          if (entry.busyCount > 0 || entry.idleGeneration !== input.generation) {
-            yield* decide(entry.busyCount > 0 ? "skip_active_turn" : "skip_stale_generation");
+          if (entry.busyTurns.size > 0 || entry.idleGeneration !== input.generation) {
+            yield* decide(entry.busyTurns.size > 0 ? "skip_active_turn" : "skip_stale_generation");
             return inertTrace;
           }
 
@@ -204,7 +204,7 @@ export function makeIdleReleaseTracer<Entry extends IdleSessionReleaseCandidate>
                                 ? "release_failed"
                                 : releaseResult(remaining, probedRuntime, input.generation),
                             currentGeneration: remaining?.idleGeneration ?? null,
-                            currentBusyCount: remaining?.busyCount ?? null,
+                            currentBusyCount: remaining?.busyTurns.size ?? null,
                             ...(failed && !interrupted ? { cause: Cause.pretty(exit.cause) } : {}),
                           }),
                         );

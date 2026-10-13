@@ -10,7 +10,7 @@ import {
   ProjectId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   DraftId,
@@ -489,7 +489,9 @@ describe("ChatView single-send failures", () => {
     expect(harness.messages).toEqual([]);
     expect(harness.setThreadError).toHaveBeenLastCalledWith(threadId, "Send rejected");
     expect(harness.refs.sendInFlightRef.current).toBe(false);
-    expect(read.mock.calls.map(([file]) => file.name)).toEqual(["newer.png", "failed.png"]);
+    expect(read.mock.calls.map(([file]) => (file instanceof File ? file.name : undefined))).toEqual(
+      ["newer.png", "failed.png"],
+    );
     reads[0]!.resolve("data:image/png;base64,bmV3ZXI=");
     reads[1]!.resolve("data:image/png;base64,ZmFpbGVk");
     await saved.promise;

@@ -19,7 +19,7 @@ import { SidebarTaskTestClock } from "./sidebarTaskTestClock";
 
 const detail = vi.hoisted(() => ({ subagents: [] as OrchestrationV2Subagent[] }));
 vi.mock("../state/threads", async () => {
-  const { Atom } = await import("effect/unstable/reactivity");
+  const { Atom } = await import("effect/reactivity");
   const atom = Atom.make(() => ({ projection: { runs: [], subagents: detail.subagents } }));
   return { environmentThreadDetails: { threadAtom: () => atom } };
 });

@@ -1,15 +1,30 @@
 import { consumeWorkspaceActionProgress } from "./workspaceVcs.ts";
-import { EnvironmentId, ThreadId, type VcsWorkspaceActionProgressEvent } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthSourceControlWriteScope,
+  EnvironmentId,
+  ThreadId,
+  type AuthSessionState,
+  type VcsWorkspaceActionProgressEvent,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
-import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import * as Persistence from "../platform/persistence.ts";
 import type { AtomCommandResult } from "./runtime.ts";
 import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
 import { createWorkspaceVcsAtoms, workspaceActionOutcomeSummary } from "./workspaceVcsActions.ts";
+
+vi.mock("./session.ts", () => ({
+  createEnvironmentSessionAtoms: () => ({ sessionStateAtom: sessions }),
+}));
+const sessions = Atom.family((_id: EnvironmentId) =>
+  Atom.make<AsyncResult.AsyncResult<AuthSessionState, never>>(AsyncResult.initial()),
+);
 
 const input = { actionId: "batch", threadId: ThreadId.make("thread"), action: "push" as const };
 const finished: VcsWorkspaceActionProgressEvent = {
@@ -161,7 +176,21 @@ describe("workspace action progress", () => {
     const actions = createWorkspaceVcsAtoms(runtime);
     const registry = AtomRegistry.make();
     const target = { environmentId, threadId: input.threadId };
+    const unmountSession = registry.mount(sessions(environmentId));
+    const session: AuthSessionState = {
+      authenticated: true,
+      auth: {
+        policy: "remote-reachable",
+        bootstrapMethods: [],
+        sessionMethods: [],
+        sessionCookieName: "test",
+      },
+      scopes: [AuthSourceControlWriteScope, AuthOrchestrationOperateScope],
+      permissions: [AuthSourceControlWriteScope, AuthOrchestrationOperateScope],
+    };
+    registry.set(sessions(environmentId), AsyncResult.success(session));
     try {
+      expect(registry.get(actions.runAction.permissionAtom(environmentId, input))).toBe(true);
       let finishPrior!: () => void;
       const priorReceipt = new Promise<AtomCommandResult<void, never>>((resolve) => {
         finishPrior = () => resolve(AsyncResult.success(undefined));
@@ -223,7 +252,16 @@ describe("workspace action progress", () => {
       });
       expect(requests).toEqual([environmentId, environmentId]);
       expect(cleared).toEqual([environmentId, environmentId]);
+      registry.set(sessions(environmentId), AsyncResult.success({ ...session, permissions: [] }));
+      expect(registry.get(actions.runAction.permissionAtom(environmentId, input))).toBe(false);
+      expect(
+        AsyncResult.isFailure(
+          await actions.runAction.run(registry, { environmentId, input, cwds: ["/api", "/web"] }),
+        ),
+      ).toBe(true);
+      expect(requests).toEqual([environmentId, environmentId]);
     } finally {
+      unmountSession();
       registry.dispose();
     }
   });

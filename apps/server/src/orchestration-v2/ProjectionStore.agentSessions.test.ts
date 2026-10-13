@@ -11,10 +11,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
-const sqlLayer = ProjectionStore.layer.pipe(Layer.provide(SqlitePersistenceMemory));
+const sqlLayer = ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory));
 
 it.effect.each([
   { name: "SQL", layer: sqlLayer },

@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import { expect, vi } from "vite-plus/test";
 import { createPackageWithOptions } from "@electron/asar";
@@ -63,7 +63,7 @@ it("creates a Linux launcher without overwriting the packaged executable", async
 
 it.effect("resolves the Start Menu and default state outside an inherited alpha.local home", () =>
   Effect.gen(function* () {
-    if ((yield* HostProcessPlatform) !== "win32") return;
+    if ((yield* HostProcess.Platform) !== "win32") return;
     const folders = getWindowsUserDirectories();
     const alphaHome = NodePath.join(folders.home, ".t3.local");
     try {

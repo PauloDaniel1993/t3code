@@ -3,7 +3,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import {
@@ -15,12 +14,16 @@ import {
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewResult,
 } from "@t3tools/contracts";
-import { isPathWithin, projectFolders } from "@t3tools/shared/workspaceFolders";
+
+import { projectFolders } from "@t3tools/shared/workspaceFolders";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { isFilesystemRoot, managedWorktreesDirectories } from "../worktreesDirectory.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 export class ReviewService extends Context.Service<
   ReviewService,
@@ -41,6 +44,7 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const settings = yield* ServerSettings.ServerSettingsService;
   const projectStore = yield* ProjectStore.ProjectStoreV2;
 
   const canonicalizePath = (value: string) => {
@@ -62,58 +66,60 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  // Whether a canonical path lies in a folder of an active project. A canonical
-  // path below a folder as written is inside it, so folders are resolved only
-  // when none matches that way. A folder that can't be resolved grants nothing.
-  const isInProjectFolder = Effect.fn("ReviewService.isInProjectFolder")(function* (
-    candidate: string,
-    cwd: string,
-  ) {
-    const projects = yield* projectStore.list().pipe(
-      Effect.mapError(
-        (cause) =>
-          new VcsRepositoryDetectionError({
-            operation: "ReviewService.assertWorkspaceBoundCwd.listProjects",
-            cwd,
-            detail: "Failed to read projects while validating the review workspace.",
-            cause,
-          }),
-      ),
-    );
-    const folderPaths = projects.flatMap((project) =>
-      projectFolders(project).flatMap((folder) =>
-        folder.path === undefined ? [] : [path.resolve(folder.path)],
-      ),
-    );
-    if (folderPaths.some((folderPath) => isPathWithin(folderPath, candidate))) {
-      return true;
-    }
-    const roots = yield* Effect.forEach(
-      folderPaths,
-      (folderPath) => fileSystem.realPath(folderPath).pipe(Effect.option),
-      { concurrency: "unbounded" },
-    );
-    return roots.some((root) => Option.isSome(root) && isPathWithin(root.value, candidate));
-  });
+  const isWithinRoot = (candidate: string, root: string) => {
+    const relative = path.relative(root, candidate);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  };
 
-  /**
-   * Review diffs run only inside a registered location: the server's launch
-   * directory, its worktrees, or an active project's folder.
-   */
   const assertWorkspaceBoundCwd = Effect.fn("ReviewService.assertWorkspaceBoundCwd")(function* (
     operation: "ReviewService.getDiffPreview" | "ReviewService.getDiffFileContents",
     cwd: string,
   ) {
-    const [candidate, launchRoot, worktreesRoot] = yield* Effect.all([
+    const worktreesDirectories = yield* settings.getSettings.pipe(
+      Effect.orElseSucceed(() => ({ worktreesDirectory: "", previousWorktreesDirectories: [] })),
+    );
+    const home = yield* HostProcess.HomeDirectory;
+    const [candidate, workspaceRoot, worktreesRoots] = yield* Effect.all([
       canonicalizePath(cwd),
       canonicalizePath(config.cwd),
-      canonicalizePath(config.worktreesDir),
+      // A managed root that cannot be resolved, or resolves to a filesystem
+      // root through a symlink, is skipped rather than failing every review.
+      Effect.forEach(
+        managedWorktreesDirectories(worktreesDirectories, config.worktreesDir, path, home),
+        (directory) => canonicalizePath(directory).pipe(Effect.orElseSucceed(() => null)),
+      ).pipe(
+        Effect.map((roots) =>
+          roots.filter((root): root is string => root !== null && !isFilesystemRoot(root, path)),
+        ),
+      ),
     ]);
-    if (isPathWithin(launchRoot, candidate) || isPathWithin(worktreesRoot, candidate)) {
+
+    if (
+      isWithinRoot(candidate, workspaceRoot) ||
+      worktreesRoots.some((root) => isWithinRoot(candidate, root))
+    ) {
       return;
     }
 
-    if (yield* isInProjectFolder(candidate, cwd)) {
+    // Registered projects can live outside the server cwd, which is the home
+    // directory in packaged desktop builds, e.g. a repository on another
+    // Windows drive. Unreadable or unresolvable project roots grant nothing.
+    const projects = yield* projectStore.listShells().pipe(Effect.orElseSucceed(() => []));
+    const folderPaths = projects.flatMap((project) =>
+      projectFolders(project).flatMap((folder) => (folder.path === undefined ? [] : [folder.path])),
+    );
+    // The candidate is already canonical. A lexical match needs no additional
+    // filesystem reads; aliases of registered folders are resolved only on a miss.
+    if (folderPaths.some((folderPath) => isWithinRoot(candidate, path.resolve(folderPath)))) {
+      return;
+    }
+    const roots = yield* Effect.forEach(
+      folderPaths,
+      (folderPath) =>
+        fileSystem.realPath(path.resolve(folderPath)).pipe(Effect.orElseSucceed(() => null)),
+      { concurrency: 16 },
+    );
+    if (roots.some((root) => root !== null && isWithinRoot(candidate, root))) {
       return;
     }
 

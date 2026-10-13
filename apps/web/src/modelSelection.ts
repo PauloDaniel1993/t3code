@@ -7,7 +7,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
-  type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import {
   type CustomModelDefinition,
@@ -36,8 +35,6 @@ import { sortModelsForProviderInstance } from "./modelOrdering";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const DEFAULT_TEXT_GENERATION_INSTANCE_ID = ProviderInstanceId.make("codex");
-const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
-const OPENCODE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(OPENCODE_DRIVER_KIND);
 
 /**
  * Resolve the custom-model list for a given instance, preferring the
@@ -69,15 +66,7 @@ function readInstanceCustomModels(
       return readCustomModelEntries(value);
     }
   }
-  const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
-  if (instanceId !== defaultInstanceId) {
-    return [];
-  }
-  const legacyProviders = settings.providers as Record<
-    string,
-    { readonly customModels: ReadonlyArray<unknown> } | undefined
-  >;
-  return readCustomModelEntries(legacyProviders[driverKind]?.customModels ?? []);
+  return [];
 }
 
 export interface AppModelOption {
@@ -231,11 +220,8 @@ function getAppModelOptions(
  * come from the instance's own `entry.models` snapshot (rather than the
  * first-matching-kind fallback in `getProviderModels`), so each custom
  * instance gets the precise model list its driver reported. Custom model
- * slugs come from the instance's own `providerInstances[id].config.customModels`
- * when present, falling back to the legacy per-kind
- * `settings.providers[driverKind].customModels` bucket for default
- * instances only. This keeps two instances of the same kind from leaking
- * custom slugs into each other. Custom rows reported by the server are
+ * slugs come from the instance's own `providerInstances[id].config.customModels`,
+ * so two instances of the same kind never leak custom slugs into each other. Custom rows reported by the server are
  * ignored so a slug removed in Settings disappears without waiting for the
  * next provider probe.
  */
@@ -352,66 +338,13 @@ export function getCustomModelOptionsByInstance(
 }
 
 /**
- * Drop the opencode "plan" agent option from a stored model selection.
- * Used when legacy plan mode is turned off so server-side text-generation
- * tasks (title, branch, PR) cannot keep dispatching the plan agent.
+ * Whether stored model options pick the opencode "plan" agent. Shared settings
+ * pickers keep and show such a value even while this device's legacy plan
+ * mode is off: another device may have chosen it, and this device's filter
+ * only applies to picks made here.
  */
-export function withoutPlanAgentSelection(
-  selection: ModelSelection | null | undefined,
-  providers?: ReadonlyArray<ServerProvider>,
-): ModelSelection | null | undefined {
-  if (!selection?.options || !isOpenCodeSelection(selection, providers)) {
-    return selection;
-  }
-  const options = selection.options.filter(
-    (option) => !(option.id === "agent" && option.value === "plan"),
-  );
-  if (options.length === selection.options.length) {
-    return selection;
-  }
-  return createModelSelection(selection.instanceId, selection.model, options);
-}
-
-function isOpenCodeSelection(
-  selection: ModelSelection,
-  providers: ReadonlyArray<ServerProvider> | undefined,
-): boolean {
-  if (providers !== undefined) {
-    return (
-      providers.find((candidate) => candidate.instanceId === selection.instanceId)?.driver ===
-      OPENCODE_DRIVER_KIND
-    );
-  }
-  return selection.instanceId === OPENCODE_DEFAULT_INSTANCE_ID;
-}
-
-// The dropdown hides the opencode "plan" agent while legacy plan mode is off,
-// but the persisted text-generation selections are only healed when the toggle
-// flips. Users who already have plan mode off and a stored "plan" selection
-// never trip the toggle handler, so resolve the heal once per settings load.
-export function resolvePlanAgentHealPatch(input: {
-  readonly planModeEnabled: boolean;
-  readonly providers?: ReadonlyArray<ServerProvider>;
-  readonly textGenerationModelSelection: ModelSelection | null | undefined;
-  readonly sourceControlWriterModelSelection: ModelSelection | null | undefined;
-}): ServerSettingsPatch | null {
-  if (input.planModeEnabled) {
-    return null;
-  }
-  const healedText = withoutPlanAgentSelection(input.textGenerationModelSelection, input.providers);
-  const healedSourceControl = withoutPlanAgentSelection(
-    input.sourceControlWriterModelSelection,
-    input.providers,
-  );
-  const patch: ServerSettingsPatch = {
-    ...(healedText && healedText !== input.textGenerationModelSelection
-      ? { textGenerationModelSelection: healedText }
-      : {}),
-    ...(healedSourceControl && healedSourceControl !== input.sourceControlWriterModelSelection
-      ? { sourceControlWriterModelSelection: healedSourceControl }
-      : {}),
-  };
-  return Object.keys(patch).length > 0 ? patch : null;
+export function selectsPlanAgent(options: ModelSelection["options"]): boolean {
+  return options?.some((option) => option.id === "agent" && option.value === "plan") ?? false;
 }
 
 export function resolveAppModelSelectionState(
@@ -453,7 +386,7 @@ export function resolveAppModelSelectionState(
       model,
       models: entry.models,
       modelOptions: selectedEntry ? selection.options : undefined,
-      planModeEnabled: settings.planModeEnabled,
+      planModeEnabled: settings.planModeEnabled || selectsPlanAgent(selection.options),
     });
 
     return createModelSelection(entry.instanceId, model, modelOptionsForDispatch);

@@ -16,13 +16,13 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
+import { layerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.1-codex" };
@@ -32,15 +32,15 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("Admission happens before any provider opens"),
-} as ProviderAdapterV2Shape;
-const database = SqlitePersistenceMemory;
+} as ProviderAdapterV2["Service"];
+const database = SqlitePersistence.layerMemory;
 const testLayer = Layer.mergeAll(
   database,
   NodeServices.layer,
   ProjectionStore.layer.pipe(Layer.provide(database)),
-  makeOrchestratorV2ReplayLayerWithRegistry(
+  layerWithRegistry(
     { name: "run-workspace-admission" },
-    ProviderAdapterRegistry.makeLayer([adapter]),
+    ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: database, runEffectWorker: false },
   ),
 );

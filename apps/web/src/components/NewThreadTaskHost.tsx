@@ -9,10 +9,16 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { CommandId, type ModelSelection, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  CommandId,
+  type ModelSelection,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { matchesShortcut, resolveShortcutCommand } from "../keybindings";
+import { resolveShortcutCommand } from "../keybindings";
+import { matchesKeybindingShortcut as matchesShortcut } from "@t3tools/shared/keybindings";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { newMessageId, randomUUID } from "../lib/utils";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
@@ -34,6 +40,7 @@ import {
 } from "../hooks/useNewThreadTaskAvailability";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../state/server";
 import { environmentThreadDetails, threadEnvironment } from "../state/threads";
+import { readEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "../state/presentation";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -59,6 +66,8 @@ import {
 } from "./ui/dialog";
 
 function currentParentProblem(threadRef: ScopedThreadRef) {
+  if (!readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope))
+    return "This connection cannot change threads.";
   const environment = appAtomRegistry.get(
     environmentPresentations.presentationAtom(threadRef.environmentId),
   );

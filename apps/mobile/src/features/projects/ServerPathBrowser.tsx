@@ -1,11 +1,15 @@
 import {
   filterFilesystemBrowseEntries,
   getFilesystemBrowsePath,
+  resolveFilesystemReadAccess,
 } from "@t3tools/client-runtime/state/filesystem";
 import { isWindowsPlatform } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useMemo } from "react";
-import { ActivityIndicator, Platform, View } from "react-native";
+import { Platform, View } from "react-native";
+import { AppActivityIndicator } from "../../components/AppActivityIndicator";
+import { environmentSession } from "../../state/session";
+import { useEnvironmentPresentation } from "../../state/presentation";
 import { SymbolView } from "../../components/AppSymbol";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { filesystemEnvironment } from "../../state/filesystem";
@@ -39,8 +43,18 @@ export function ServerPathBrowser(props: {
         : null,
     [browsePath.directoryPath, props.environment.environmentId, props.includeWorkspaceFiles],
   );
+  const environment = useEnvironmentPresentation(props.environment.environmentId);
+  const session = useEnvironmentQuery(
+    environmentSession.sessionStateAtom(props.environment.environmentId),
+  );
+  const fileAccess = resolveFilesystemReadAccess({
+    isCatalogReady: environment.isReady,
+    connection: environment.presentation?.connection ?? null,
+    session: session.data,
+    sessionError: session.error,
+  });
   const browseState = useEnvironmentQuery(
-    browseTarget ? filesystemEnvironment.browse(browseTarget) : null,
+    fileAccess.canReadFiles && browseTarget ? filesystemEnvironment.browse(browseTarget) : null,
   );
   const pinned = props.pinnedDirectoryName ?? "";
   const caseSensitive = !isWindowsPlatform(props.environment.platform);
@@ -59,11 +73,14 @@ export function ServerPathBrowser(props: {
       <SectionTitle>
         {props.includeWorkspaceFiles ? "Browse folders and workspace files" : "Browse folders"}
       </SectionTitle>
+      {!fileAccess.canReadFiles && !fileAccess.isPending ? (
+        <ErrorBanner message={fileAccess.error ?? "This connection cannot browse host folders."} />
+      ) : null}
       {browseState.error ? <ErrorBanner message={browseState.error} /> : null}
       <ListSection>
-        {browseState.isPending && browseState.data === null ? (
+        {fileAccess.isPending || (browseState.isPending && browseState.data === null) ? (
           <View className="items-center py-5">
-            <ActivityIndicator colorClassName="accent-icon-muted" />
+            <AppActivityIndicator colorClassName="accent-icon-muted" />
           </View>
         ) : null}
         {browsePath.canBrowseUp ? (
@@ -79,7 +96,7 @@ export function ServerPathBrowser(props: {
             }
             isFirst
             right={null}
-            disabled={props.disabled}
+            disabled={props.disabled || !fileAccess.canReadFiles}
             onPress={() => {
               if (browsePath.parentPath)
                 void props.navigateToBrowsePath({ browseDirectoryPath: browsePath.parentPath });
@@ -100,7 +117,7 @@ export function ServerPathBrowser(props: {
             }
             isFirst={index === 0 && !browsePath.canBrowseUp}
             right={null}
-            disabled={props.disabled}
+            disabled={props.disabled || !fileAccess.canReadFiles}
             onPress={() => {
               if (entry.kind === "workspace-file") props.setPathInput(entry.fullPath);
               else

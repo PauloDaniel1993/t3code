@@ -24,11 +24,12 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
@@ -47,9 +48,14 @@ const instanceId = ProviderInstanceId.make("codex");
 const now = DateTime.makeUnsafe("2026-10-11T00:00:00.000Z");
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:mcp-workspace-binding"),
-  threadId,
-  providerSessionId: "session:mcp-workspace-binding",
-  providerInstanceId: instanceId,
+  requestNamespace: "session:mcp-workspace-binding",
+  thread: {
+    threadId,
+    providerSessionId: "session:mcp-workspace-binding",
+    providerInstanceId: instanceId,
+  },
+  client: undefined,
+
   capabilities: new Set(["orchestration", "worktree"]),
   issuedAt: 1,
 };
@@ -143,22 +149,30 @@ const makeHarness = (handoffOnProjectRead = false) =>
       contextTransfers: [],
       subagents: [],
     } as unknown as OrchestrationV2ThreadProjection;
+    const readProject = Effect.sync(() => {
+      if (handoffOnProjectRead) {
+        thread.worktreePath = primaryWorktree;
+        thread.branch = "feature/raced";
+        thread.worktrees = [
+          { repositoryRoot: primary, path: primaryWorktree, branch: "feature/raced" },
+        ];
+      }
+      return Option.some(project);
+    });
     const stores = Layer.mergeAll(
-      Layer.mock(ProjectStore.ProjectStoreV2)({
-        get: () =>
-          Effect.sync(() => {
-            if (handoffOnProjectRead) {
-              thread.worktreePath = primaryWorktree;
-              thread.branch = "feature/raced";
-              thread.worktrees = [
-                { repositoryRoot: primary, path: primaryWorktree, branch: "feature/raced" },
-              ];
-            }
-            return Option.some(project);
-          }),
-      }),
+      Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => readProject }),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThread: () => Effect.succeed(thread) }),
     );
+    const threadReads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+      getThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
+      getProjectThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
+      getThreadShell: () => Effect.succeed({ ...thread, activeRunId: null } as never),
+      getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+    });
+    const projectReads = Layer.mock(ProjectService.ProjectService)({
+      getById: () =>
+        readProject.pipe(Effect.map(Option.map((row) => ({ ...row, id: row.projectId }) as never))),
+    });
     const folders = WorkspaceFolderFiles.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -175,10 +189,10 @@ const makeHarness = (handoffOnProjectRead = false) =>
         Layer.mergeAll(
           stores,
           folders,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            getThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
-            getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
-          }),
+          threadReads,
+          projectReads,
+          ServerSettings.layerTest(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -205,25 +219,8 @@ const makeHarness = (handoffOnProjectRead = false) =>
       Layer.provide(
         Layer.mergeAll(
           folders,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            getThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
-          }),
-          Layer.mock(ProjectService.ProjectService)({
-            getById: () =>
-              Effect.succeed(
-                Option.some({
-                  id: projectId,
-                  title: project.title,
-                  workspaceRoot: project.workspaceRoot,
-                  workspaceFile: project.workspaceFile,
-                  defaultModelSelection: null,
-                  scripts: [],
-                  createdAt: project.createdAt,
-                  updatedAt: project.updatedAt,
-                  deletedAt: null,
-                }),
-              ),
-          }),
+          threadReads,
+          projectReads,
           Layer.mock(GitWorkflowService.GitWorkflowService)({ listRefs }),
           Layer.mock(WorkspaceFolderResolver.WorkspaceFolderResolver)({
             probe: (cwd) =>

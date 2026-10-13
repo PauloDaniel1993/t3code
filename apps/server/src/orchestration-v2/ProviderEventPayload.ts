@@ -6,9 +6,11 @@ import {
 } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { sensitiveField } from "@t3tools/provider-core/server/sensitiveField";
+export { sensitiveField } from "@t3tools/provider-core/server/sensitiveField";
 import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 
-import type { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
 
 /**
  * Tool payload limits apply before persistence and before live fan-out, including
@@ -44,22 +46,6 @@ export const PROVIDER_TOOL_RUNNING_OUTPUT_BYTES = 16 * 1024;
 export const PROVIDER_TOOL_RESULT_BYTES = 64 * 1024;
 export const PROVIDER_SEARCH_QUERY_BYTES = 16 * 1024;
 export const PROVIDER_TOOL_RESULT_MAX_DEPTH = 128;
-const SENSITIVE_FIELD =
-  /(?:^|_)(?:authorizations?|cookies?|credentials?|passwords?|passwds?|secrets?|tokens?|(?:api|private|secret|access)_keys?)$/;
-const QUANTITY_FIELD =
-  /(?:^|_)(?:max|min|total|num|count)_(?:authorizations|cookies|credentials|passwords|passwds|secrets|tokens)$/;
-export function sensitiveField(key: string): boolean {
-  // Common content/type/text fields need no word-splitting allocations on the pump.
-  if (!/authorization|cookie|credential|password|passwd|secret|token|key/i.test(key)) return false;
-  const words = key
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/[^a-z0-9]+/gi, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase();
-  return SENSITIVE_FIELD.test(words) && !QUANTITY_FIELD.test(words);
-}
-
 function safeCut(value: string, index: number, tail: boolean): number {
   const marker = value.lastIndexOf("[REDACTED]", index);
   if (marker >= 0 && index > marker && index < marker + 10) index = tail ? marker + 10 : marker;

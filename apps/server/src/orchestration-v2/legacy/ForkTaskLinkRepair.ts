@@ -4,8 +4,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { isSqlError } from "effect/unstable/sql/SqlError";
+import * as SqlClient from "effect/sql/SqlClient";
+import { isSqlError } from "effect/sql/SqlError";
 
 import { EventSinkV2 } from "../EventSink.ts";
 import { ProjectionStoreV2, type ProjectionStoreV2Error } from "../ProjectionStore.ts";

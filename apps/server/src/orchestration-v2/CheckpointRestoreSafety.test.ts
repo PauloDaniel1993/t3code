@@ -18,13 +18,11 @@ import * as Path from "effect/Path";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { fileRestoreRefusalMessage, restoreIsolationRefusal } from "./CheckpointRestoreSafety.ts";
-import {
-  CheckpointRollbackServiceV2,
-  layer as rollbackLayer,
-} from "./CheckpointRollbackService.ts";
+import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
-import { layer as idAllocatorLayer } from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
@@ -103,11 +101,12 @@ it.effect.each([
       checkpointScopes: [{ id: scopeId, cwd }],
       runs: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as OrchestrationV2ThreadProjection;
-    const testLayer = rollbackLayer.pipe(
+    const layerTest = CheckpointRollbackService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
-          idAllocatorLayer,
+          ThreadCommandExecutor.layer,
+          IdAllocator.layer,
           Layer.mock(ProjectStore.ProjectStoreV2)({
             get: () => Effect.succeed(Option.some({ workspaceRoot: parent } as never)),
           }),
@@ -183,7 +182,9 @@ it.effect.each([
         ),
       ),
     );
-    const service = yield* CheckpointRollbackServiceV2.pipe(Effect.provide(testLayer));
+    const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2.pipe(
+      Effect.provide(layerTest),
+    );
     const restoreFiles = owner !== "conversation";
     const rejected = !["sibling", "stopped-provider", "shared-provider", "conversation"].includes(
       owner,

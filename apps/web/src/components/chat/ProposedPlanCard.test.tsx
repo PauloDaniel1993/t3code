@@ -1,11 +1,15 @@
 import { EnvironmentId } from "@t3tools/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { act, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({ writeFile: vi.fn(), toast: vi.fn() }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => state.writeFile }));
+vi.mock("~/state/session", () => ({
+  readEnvironmentScope: () => true,
+  useEnvironmentScope: () => true,
+}));
 vi.mock("~/state/projects", () => ({ projectEnvironment: { writeFile: {} } }));
 vi.mock("~/hooks/useCopyToClipboard", () => ({
   useCopyToClipboard: () => ({ copyToClipboard: vi.fn(), isCopied: false }),

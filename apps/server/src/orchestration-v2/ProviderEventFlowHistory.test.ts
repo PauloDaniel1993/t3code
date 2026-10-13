@@ -15,7 +15,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { EventSinkV2, layer as sinkLayer } from "./EventSink.ts";
 import { layer as eventStoreLayer } from "./EventStore.ts";
 import { ProjectionStoreV2, layer as projectionLayer } from "./ProjectionStore.ts";
@@ -29,11 +29,11 @@ import { v2Projection } from "../../../../packages/client-runtime/src/state/orch
 import { createQuestionHistoryProjector } from "../../../../packages/client-runtime/src/state/threadRequests.ts";
 
 const stores = Layer.merge(eventStoreLayer, projectionLayer).pipe(
-  Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(SqlitePersistence.layerMemory),
 );
 const testLayer = Layer.merge(
   stores,
-  sinkLayer.pipe(Layer.provide(Layer.merge(stores, SqlitePersistenceMemory))),
+  sinkLayer.pipe(Layer.provide(Layer.merge(stores, SqlitePersistence.layerMemory))),
 );
 
 const decodeThread = Schema.decodeUnknownSync(OrchestrationV2AppThread);

@@ -1,6 +1,6 @@
 import { RegistryContext } from "@effect/atom-react";
 import { EnvironmentId, type VcsStatusResult } from "@t3tools/contracts";
-import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vite-plus/test";

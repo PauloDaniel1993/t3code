@@ -7,8 +7,8 @@ import {
 import { createModelCapabilities } from "@t3tools/shared/model";
 import type * as AcpSchema from "effect-acp/compat";
 
-import { acpProviderOptionDescriptors } from "./acp/AcpSessionConfig.ts";
-import { providerModelsFromSettings } from "./providerSnapshot.ts";
+import { acpProviderOptionDescriptors } from "@t3tools/provider-acp/server/sessionConfig";
+import { providerModelsFromSettings } from "@t3tools/provider-core/server/snapshotProbe";
 
 const token = (value: string | null | undefined) => value?.trim().toLowerCase() ?? "";
 

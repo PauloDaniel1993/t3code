@@ -7,12 +7,105 @@ import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
 import type { PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
-import type { IdAllocatorV2, IdAllocatorV2Error } from "./IdAllocator.ts";
+import type * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 
 export interface ThreadDeletionPlan {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   readonly effects: ReadonlyArray<PendingOrchestrationEffectV2>;
 }
+
+/** Shared durable cancellation used by deletion and task-child archiving. */
+export const planThreadCancellation = Effect.fn("ThreadDeletion.planThreadCancellation")(
+  function* (input: {
+    readonly command: {
+      readonly commandId: import("@t3tools/contracts").CommandId;
+      readonly threadId: import("@t3tools/contracts").ThreadId;
+    };
+    readonly projection: Pick<
+      OrchestrationV2ThreadProjection,
+      "runs" | "attempts" | "nodes" | "runtimeRequests"
+    >;
+    readonly runStatuses: ReadonlyArray<OrchestrationV2ThreadProjection["runs"][number]["status"]>;
+    readonly cancelRuntimeRequests: boolean;
+    readonly reason: string;
+    readonly now: DateTime.Utc;
+    readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
+  }) {
+    const { command, projection, now, idAllocator } = input;
+    const events: Array<OrchestrationV2DomainEvent> = [];
+    const emitEvent = Effect.fnUntraced(function* <Event extends OrchestrationV2DomainEvent>(
+      event: Omit<Event, "id">,
+    ) {
+      events.push({
+        ...event,
+        id: yield* idAllocator.allocate.event({
+          threadId: event.threadId,
+          commandId: command.commandId,
+        }),
+      } as Event);
+    });
+    const activeRuns = projection.runs.filter((run) => input.runStatuses.includes(run.status));
+    const activeRunById = new Map(activeRuns.map((run) => [run.id, run]));
+    for (const run of activeRuns) {
+      yield* emitEvent({
+        type: "run.updated",
+        threadId: command.threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
+      });
+    }
+    for (const attempt of projection.attempts) {
+      const run = activeRunById.get(attempt.runId);
+      if (run === undefined || (attempt.status !== "pending" && attempt.status !== "running")) {
+        continue;
+      }
+      yield* emitEvent({
+        type: "run-attempt.updated",
+        threadId: command.threadId,
+        runId: attempt.runId,
+        nodeId: attempt.rootNodeId,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: { ...attempt, status: "cancelled", completedAt: now },
+      });
+    }
+    for (const node of projection.nodes) {
+      const run = node.runId === null ? undefined : activeRunById.get(node.runId);
+      if (run === undefined || !["pending", "running", "waiting"].includes(node.status)) {
+        continue;
+      }
+      yield* emitEvent({
+        type: "node.updated",
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: node.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: { ...node, status: "cancelled", completedAt: now },
+      });
+    }
+    for (const request of (input.cancelRuntimeRequests ? projection.runtimeRequests : []).filter(
+      (request) => request.status === "pending",
+    )) {
+      yield* emitEvent({
+        type: "runtime-request.updated",
+        threadId: command.threadId,
+        nodeId: request.nodeId,
+        occurredAt: now,
+        payload: {
+          ...request,
+          status: "cancelled",
+          responseCapability: { type: "not_resumable", reason: input.reason },
+          resolvedAt: now,
+        },
+      });
+    }
+
+    return events;
+  },
+);
 
 /** Plan the same durable cleanup for direct thread deletion and project removal. */
 export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")(function* (input: {
@@ -23,8 +116,8 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
   >;
   readonly attachmentIds: ReadonlyArray<string>;
   readonly now: DateTime.Utc;
-  readonly idAllocator: IdAllocatorV2["Service"];
-}): Effect.fn.Return<ThreadDeletionPlan, IdAllocatorV2Error> {
+  readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
+}): Effect.fn.Return<ThreadDeletionPlan, IdAllocator.IdAllocatorV2Error> {
   const { command, projection, now, idAllocator } = input;
   const events: Array<OrchestrationV2DomainEvent> = [];
   const effects: Array<PendingOrchestrationEffectV2> = [];
@@ -67,65 +160,20 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
     },
   });
 
-  const activeRuns = projection.runs.filter((run) =>
-    ["preparing", "queued", "starting", "running", "waiting"].includes(run.status),
-  );
-  const activeRunById = new Map(activeRuns.map((run) => [run.id, run]));
-  for (const run of activeRuns) {
-    yield* emitEvent({
-      type: "run.updated",
-      threadId: command.threadId,
-      runId: run.id,
-      providerInstanceId: run.providerInstanceId,
-      occurredAt: now,
-      payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
-    });
-  }
-  for (const attempt of projection.attempts) {
-    const run = activeRunById.get(attempt.runId);
-    if (run === undefined || (attempt.status !== "pending" && attempt.status !== "running")) {
-      continue;
-    }
-    yield* emitEvent({
-      type: "run-attempt.updated",
-      threadId: command.threadId,
-      runId: attempt.runId,
-      nodeId: attempt.rootNodeId,
-      providerInstanceId: run.providerInstanceId,
-      occurredAt: now,
-      payload: { ...attempt, status: "cancelled", completedAt: now },
-    });
-  }
-  for (const node of projection.nodes) {
-    const run = node.runId === null ? undefined : activeRunById.get(node.runId);
-    if (run === undefined || !["pending", "running", "waiting"].includes(node.status)) {
-      continue;
-    }
-    yield* emitEvent({
-      type: "node.updated",
-      threadId: command.threadId,
-      runId: run.id,
-      nodeId: node.id,
-      providerInstanceId: run.providerInstanceId,
-      occurredAt: now,
-      payload: { ...node, status: "cancelled", completedAt: now },
-    });
-  }
-  for (const request of projection.runtimeRequests.filter(
-    (request) => request.status === "pending",
-  )) {
-    yield* emitEvent({
-      type: "runtime-request.updated",
-      threadId: command.threadId,
-      nodeId: request.nodeId,
-      occurredAt: now,
-      payload: {
-        ...request,
-        status: "cancelled",
-        responseCapability: { type: "not_resumable", reason: "The thread was deleted." },
-        resolvedAt: now,
-      },
-    });
+  const cancellation = yield* planThreadCancellation({
+    ...input,
+    runStatuses: ["preparing", "queued", "starting", "running", "waiting"],
+    cancelRuntimeRequests: true,
+    reason: "The thread was deleted.",
+  });
+  events.push(...cancellation);
+  // Cohort disposal sees cancelled rows so it cannot revive their runs.
+  for (const event of cancellation) {
+    if (event.type === "run.updated")
+      current = {
+        ...current,
+        runs: current.runs.map((run) => (run.id === event.payload.id ? event.payload : run)),
+      };
   }
 
   const cohortRunIds = new Set([
@@ -214,6 +262,12 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
     commandId: command.commandId,
     threadId: command.threadId,
     request: { type: "terminal.cleanup" },
+  });
+  effects.push({
+    id: `effect:${command.commandId}:preview.cleanup`,
+    commandId: command.commandId,
+    threadId: command.threadId,
+    request: { type: "preview.cleanup" },
   });
   const attachmentIds = Array.from(new Set(input.attachmentIds));
   if (attachmentIds.length > 0) {

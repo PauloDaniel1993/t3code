@@ -3,9 +3,12 @@ import { ProjectId, type RepositoryIdentity } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
-import * as TestClock from "effect/testing/TestClock";
+import { TestClock } from "effect/testing";
+
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 import * as ProjectEnrichment from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
@@ -40,7 +43,7 @@ const folderResolverLayer = (
     Effect.succeed({ path, availability: "available", vcs: null }),
 ) => Layer.succeed(WorkspaceFolderResolver.WorkspaceFolderResolver, { probe });
 
-const makeLayer = (
+const layer = (
   metadataLayer: Layer.Layer<
     | ProjectFaviconResolver.ProjectFaviconResolver
     | RepositoryIdentityResolver.RepositoryIdentityResolver
@@ -83,7 +86,7 @@ it.effect("a new client receives retained folder facts while expired probes refr
       yield* Deferred.await(refreshed);
     }).pipe(
       Effect.provide(
-        makeLayer(
+        layer(
           metadata,
           {},
           folderResolverLayer((path) =>
@@ -165,7 +168,7 @@ const checkCheckoutChange = (background: boolean) =>
       assert.include(yield* Ref.get(identityCalls), true);
     }).pipe(
       Effect.provide(
-        makeLayer(
+        layer(
           metadata,
           {},
           folderResolverLayer((path) =>
@@ -238,7 +241,7 @@ it.effect("evicted folder facts do not let a new checkout reuse a warm identity"
       );
     }).pipe(
       Effect.provide(
-        makeLayer(
+        layer(
           metadata,
           { cacheCapacity: 1 },
           folderResolverLayer((path) =>
@@ -306,7 +309,7 @@ it.effect("publishes changed file health and folder probes to every subscriber, 
       assert.equal((yield* service.getWorkspaceFileStatus(projectId))?.state, "ok");
     }).pipe(
       Effect.provide(
-        makeLayer(
+        layer(
           metadata,
           {},
           folderResolverLayer(() => Ref.get(probe)),
@@ -318,7 +321,7 @@ it.effect("publishes changed file health and folder probes to every subscriber, 
 
 it.effect("preserves either enrichment field when the other resolver fails", () =>
   Effect.gen(function* () {
-    const metadataLayer = Layer.merge(
+    const layerMetadata = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: (workspaceRoot) =>
           workspaceRoot === "/repo-fails"
@@ -362,14 +365,66 @@ it.effect("preserves either enrichment field when the other resolver fails", () 
       );
       assert.isNull(repositoryFailure.repositoryIdentity);
       assert.equal(repositoryFailure.faviconPath, "/repo-fails/favicon.svg");
-    }).pipe(Effect.provide(makeLayer(metadataLayer)));
+    }).pipe(Effect.provide(layer(layerMetadata)));
+  }),
+);
+
+it.effect("does not warn about favicons for workspace roots that no longer exist", () =>
+  Effect.gen(function* () {
+    const warnings: Array<unknown> = [];
+    const logger = Logger.make(({ message }) => {
+      warnings.push(message);
+    });
+    const metadataLayer = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: (workspaceRoot) =>
+          Effect.fail(
+            workspaceRoot === "/missing"
+              ? new ProjectFaviconResolver.ProjectFaviconResolutionError({
+                  operation: "normalize-workspace",
+                  workspaceRoot,
+                  cause: new WorkspacePaths.WorkspaceRootNotExistsError({
+                    workspaceRoot,
+                    normalizedWorkspaceRoot: workspaceRoot,
+                  }),
+                })
+              : new ProjectFaviconResolver.ProjectFaviconResolutionError({
+                  operation: "stat-candidate",
+                  workspaceRoot,
+                  cause: "favicon resolver failed",
+                }),
+          ),
+      }),
+    );
+
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      yield* service.request("/missing");
+      yield* service.request("/broken");
+
+      for (let attempt = 0; attempt < 100 && warnings.length === 0; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      assert.lengthOf(warnings, 1);
+      assert.nestedPropertyVal(warnings[0], "[1].workspaceRoot", "/broken");
+    }).pipe(
+      Effect.provide(
+        layer(metadataLayer, { concurrency: 1 }).pipe(
+          Layer.provide(Logger.layer([logger], { mergeWithExisting: false })),
+        ),
+      ),
+    );
   }),
 );
 
 it.effect("publishes repository completion while favicon enrichment is still pending", () =>
   Effect.gen(function* () {
     const releaseFavicon = yield* Deferred.make<void>();
-    const metadataLayer = Layer.merge(
+    const layerMetadata = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
       }),
@@ -390,7 +445,7 @@ it.effect("publishes repository completion while favicon enrichment is still pen
       assert.isTrue(change.repositoryIdentityResolved);
       assert.equal(change.enrichment.repositoryIdentity?.canonicalKey, "example.test/v1/completed");
       assert.isNull(change.enrichment.faviconPath);
-    }).pipe(Effect.provide(makeLayer(metadataLayer)));
+    }).pipe(Effect.provide(layer(layerMetadata)));
   }),
 );
 
@@ -398,7 +453,7 @@ it.effect("keeps repository workers available when every favicon worker is hung"
   Effect.gen(function* () {
     const faviconWorkersStarted = yield* Deferred.make<void>();
     const faviconStarts = yield* Ref.make(0);
-    const metadataLayer = Layer.merge(
+    const layerMetadata = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
       }),
@@ -431,7 +486,7 @@ it.effect("keeps repository workers available when every favicon worker is hung"
       assert.equal(yield* Ref.get(faviconStarts), 2);
     }).pipe(
       Effect.provide(
-        makeLayer(metadataLayer, {
+        layer(layerMetadata, {
           cacheCapacity: 8,
           maxPending: 4,
           concurrency: 2,
@@ -445,7 +500,7 @@ it.effect("getAvailable returns immediately while repository identity is still u
   Effect.gen(function* () {
     const repositoryStarted = yield* Deferred.make<void>();
     const releaseRepository = yield* Deferred.make<void>();
-    const metadataLayer = Layer.merge(
+    const layerMetadata = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: (workspaceRoot) =>
           Deferred.succeed(repositoryStarted, undefined).pipe(
@@ -478,7 +533,7 @@ it.effect("getAvailable returns immediately while repository identity is still u
       );
       assert.equal(resolved.repositoryIdentity?.canonicalKey, "example.test/v1/pending-identity");
       assert.isTrue(resolved.repositoryIdentityResolved);
-    }).pipe(Effect.provide(makeLayer(metadataLayer)));
+    }).pipe(Effect.provide(layer(layerMetadata)));
   }),
 );
 
@@ -488,7 +543,7 @@ it.effect(
     Effect.gen(function* () {
       const repositoryStarted = yield* Deferred.make<void>();
       const releaseRepository = yield* Deferred.make<void>();
-      const metadataLayer = Layer.merge(
+      const layerMetadata = Layer.merge(
         Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
           resolve: (workspaceRoot) => {
             if (workspaceRoot === "/no-remote") {
@@ -545,7 +600,7 @@ it.effect(
         const failed = yield* service.peek("/fails");
         assert.isNull(failed.repositoryIdentity);
         assert.isFalse(failed.repositoryIdentityResolved);
-      }).pipe(Effect.provide(makeLayer(metadataLayer)));
+      }).pipe(Effect.provide(layer(layerMetadata)));
     }),
 );
 
@@ -555,7 +610,7 @@ it.effect("deduplicates requests, bounds pending work, and reloads invalidated r
     const releaseFirst = yield* Deferred.make<void>();
     const repositoryCalls = yield* Ref.make<ReadonlyArray<string>>([]);
     const version = yield* Ref.make(1);
-    const metadataLayer = Layer.merge(
+    const layerMetadata = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: (workspaceRoot) =>
           Effect.gen(function* () {
@@ -609,7 +664,7 @@ it.effect("deduplicates requests, bounds pending work, and reloads invalidated r
       ]);
     }).pipe(
       Effect.provide(
-        makeLayer(metadataLayer, {
+        layer(layerMetadata, {
           cacheCapacity: 8,
           maxPending: 2,
           concurrency: 1,
@@ -647,7 +702,7 @@ it.effect("cold folder probes resolve secondary identities without another shell
       });
     }).pipe(
       Effect.provide(
-        makeLayer(
+        layer(
           metadata,
           {},
           folderResolverLayer((path) =>
@@ -733,6 +788,95 @@ it.effect("serves folder facts once probed, and probes missing ones in the backg
         availability: "unavailable",
         unavailableReason: "missing",
       });
-    }).pipe(Effect.provide(makeLayer(metadataLayer, {}, folderResolverLayer(probe))));
+    }).pipe(Effect.provide(layer(metadataLayer, {}, folderResolverLayer(probe))));
   }),
+);
+
+it.effect("rescans a favicon only after 15 minutes", () =>
+  Effect.gen(function* () {
+    const faviconScans = yield* Ref.make(0);
+    const layerMetadata = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        // Each scan returns a new path, so a wait can tell a rescan from the cached value.
+        resolvePath: (workspaceRoot) =>
+          Ref.updateAndGet(faviconScans, (count) => count + 1).pipe(
+            Effect.map((scan) => `${workspaceRoot}/favicon-${scan}.svg`),
+          ),
+      }),
+    );
+
+    yield* Effect.gen(function* () {
+      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+      yield* service.getAvailable("/repo");
+      yield* waitForAvailable(
+        service,
+        "/repo",
+        (value) => value.faviconPath === "/repo/favicon-1.svg",
+      );
+
+      // Callers such as the shell stream read projects far more often than this.
+      for (let minute = 1; minute < 15; minute += 1) {
+        yield* TestClock.adjust("1 minute");
+        yield* service.getAvailable("/repo");
+      }
+      assert.equal(yield* Ref.get(faviconScans), 1);
+
+      yield* TestClock.adjust("1 minute");
+      yield* service.getAvailable("/repo");
+      yield* waitForAvailable(
+        service,
+        "/repo",
+        (value) => value.faviconPath === "/repo/favicon-2.svg",
+      );
+      assert.equal(yield* Ref.get(faviconScans), 2);
+    }).pipe(Effect.provide(layer(layerMetadata)));
+  }),
+);
+
+it.effect(
+  "follows repository identity changes within a minute without rescanning the favicon",
+  () =>
+    Effect.gen(function* () {
+      // 0: no repository yet, then one version per remote.
+      const remoteVersion = yield* Ref.make(0);
+      const faviconScans = yield* Ref.make(0);
+      const layerMetadata = Layer.merge(
+        Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+          resolve: (workspaceRoot) =>
+            Ref.get(remoteVersion).pipe(
+              Effect.map((version) => (version === 0 ? null : identity(workspaceRoot, version))),
+            ),
+        }),
+        Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+          resolvePath: () => Ref.update(faviconScans, (count) => count + 1).pipe(Effect.as(null)),
+        }),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+        yield* service.getAvailable("/folder");
+        yield* waitForAvailable(service, "/folder", (value) => value.repositoryIdentityResolved);
+        assert.equal((yield* service.peek("/folder")).repositoryIdentity, null);
+
+        // The folder is published as a repository, then its remote moves to another host.
+        for (const version of [1, 2]) {
+          yield* Ref.set(remoteVersion, version);
+          yield* TestClock.adjust("1 minute");
+          yield* service.getAvailable("/folder");
+          const available = yield* waitForAvailable(
+            service,
+            "/folder",
+            (value) => value.repositoryIdentity?.canonicalKey === `example.test/v${version}/folder`,
+          );
+          assert.equal(
+            available.repositoryIdentity?.canonicalKey,
+            `example.test/v${version}/folder`,
+          );
+        }
+        assert.equal(yield* Ref.get(faviconScans), 1);
+      }).pipe(Effect.provide(layer(layerMetadata)));
+    }),
 );

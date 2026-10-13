@@ -36,9 +36,10 @@ export function checkpointFolderDiffs(part: OrchestrationV2CheckpointScopePart) 
 export function collectCheckpointDiffs(
   inputs: ReadonlyArray<DiffCheckpointsInput & { readonly label?: string }>,
   diffCheckpoints: CheckpointStore["Service"]["diffCheckpoints"],
+  maxOutputBytes = CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
 ) {
   return Effect.gen(function* () {
-    let remainingBytes = CHECKPOINT_DIFF_MAX_OUTPUT_BYTES;
+    let remainingBytes = Math.min(maxOutputBytes, CHECKPOINT_DIFF_MAX_OUTPUT_BYTES);
     const diffs: Array<{ readonly label: string | undefined; readonly diff: string }> = [];
     for (const input of inputs) {
       if (remainingBytes <= 0) break;

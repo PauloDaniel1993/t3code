@@ -11,11 +11,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import * as OrchestrationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 
 const now = "2026-03-24T00:00:00.000Z";
@@ -57,8 +56,8 @@ const metaUpdated = (
 });
 
 it.layer(
-  Layer.mergeAll(ProjectStore.layer, OrchestrationEventStoreLive).pipe(
-    Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.mergeAll(ProjectStore.layer, OrchestrationEventStore.layer).pipe(
+    Layer.provideMerge(SqlitePersistence.layerMemory),
   ),
 )("ProjectStoreV2", (it) => {
   it.effect("stores a model selection without options as JSON without an options key", () =>
@@ -77,7 +76,6 @@ it.layer(
           FROM projection_projects
           WHERE project_id = ${projectId}
         `;
-      // @effect-diagnostics-next-line preferSchemaOverJson:off
       assert.strictEqual(rows[0]?.defaultModelSelection, JSON.stringify(modelSelection));
       assert.deepStrictEqual(
         Option.getOrNull(yield* projects.get(projectId))?.defaultModelSelection,

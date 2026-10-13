@@ -15,8 +15,6 @@ import {
   getAppModelOptionsForInstance,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
-  resolvePlanAgentHealPatch,
-  withoutPlanAgentSelection,
 } from "./modelSelection";
 
 function provider(input: {
@@ -672,14 +670,11 @@ describe("instance-scoped model selection", () => {
     const nativeModel = "gemini-3.1-pro";
     const settings: UnifiedSettings = {
       ...DEFAULT_UNIFIED_SETTINGS,
-      providers: {
-        ...DEFAULT_UNIFIED_SETTINGS.providers,
-        antigravity: {
-          ...DEFAULT_UNIFIED_SETTINGS.providers.antigravity,
-          customModels: ["api-only-model"],
-        },
-      },
       providerInstances: {
+        [ProviderInstanceId.make("antigravity")]: {
+          driver,
+          config: { customModels: ["api-only-model"] },
+        },
         [customId]: { driver, config: { customModels: ["unknown-model"] } },
       },
     };
@@ -899,130 +894,66 @@ describe("instance-scoped model selection", () => {
   });
 });
 
-describe("withoutPlanAgentSelection", () => {
-  const instance = ProviderInstanceId.make("opencode");
+describe("resolveAppModelSelectionState with the opencode plan agent", () => {
+  const instanceId = ProviderInstanceId.make("opencode");
   const model = "opencode/gpt-5.4";
-
-  it("drops a stored plan agent option", () => {
-    const selection = createModelSelection(instance, model, [
-      { id: "variant", value: "high" },
+  const opencode: ServerProvider = {
+    ...provider({ provider: ProviderDriverKind.make("opencode"), instanceId: "opencode" }),
+    models: [
+      {
+        slug: model,
+        name: model,
+        isCustom: false,
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "agent",
+              label: "Agent",
+              type: "select",
+              options: [
+                { id: "build", label: "Build", isDefault: true },
+                { id: "plan", label: "Plan" },
+              ],
+              currentValue: "build",
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const settings: UnifiedSettings = {
+    ...DEFAULT_UNIFIED_SETTINGS,
+    planModeEnabled: false,
+    textGenerationModelSelection: createModelSelection(instanceId, model, [
       { id: "agent", value: "plan" },
-    ]);
-    expect(withoutPlanAgentSelection(selection)).toEqual(
-      createModelSelection(instance, model, [{ id: "variant", value: "high" }]),
-    );
-  });
-
-  it("keeps non-plan agent options", () => {
-    const selection = createModelSelection(instance, model, [{ id: "agent", value: "build" }]);
-    expect(withoutPlanAgentSelection(selection)).toBe(selection);
-  });
-
-  it("omits options entirely when plan was the only stored option", () => {
-    const selection = createModelSelection(instance, model, [{ id: "agent", value: "plan" }]);
-    expect(withoutPlanAgentSelection(selection)).toEqual({ instanceId: instance, model });
-  });
-
-  it("returns null and undefined selections unchanged", () => {
-    expect(withoutPlanAgentSelection(null)).toBeNull();
-    expect(withoutPlanAgentSelection(undefined)).toBeUndefined();
-  });
-
-  it("keeps a Kimi selection with a plan-valued option unchanged", () => {
-    const kimiInstance = ProviderInstanceId.make("kimi");
-    const selection = createModelSelection(kimiInstance, "kimi-default", [
-      { id: "agent", value: "plan" },
-    ]);
-    const kimiProvider = provider({
-      provider: ProviderDriverKind.make("kimi"),
-      instanceId: "kimi",
-      models: ["kimi-default"],
-    });
-
-    expect(withoutPlanAgentSelection(selection, [kimiProvider])).toBe(selection);
-  });
-
-  it("heals a custom OpenCode instance by its provider snapshot", () => {
-    const customInstance = ProviderInstanceId.make("opencode_local");
-    const selection = createModelSelection(customInstance, model, [{ id: "agent", value: "plan" }]);
-    const openCodeProvider = provider({
-      provider: ProviderDriverKind.make("opencode"),
-      instanceId: "opencode_local",
-      models: [model],
-    });
-
-    expect(withoutPlanAgentSelection(selection, [openCodeProvider])).toEqual(
-      createModelSelection(customInstance, model, []),
-    );
-  });
-});
-
-describe("resolvePlanAgentHealPatch", () => {
-  const instance = ProviderInstanceId.make("opencode");
-  const model = "opencode/gpt-5.4";
-  const healed = createModelSelection(instance, model, [{ id: "variant", value: "high" }]);
-  const storedPlan = createModelSelection(instance, model, [
-    { id: "variant", value: "high" },
-    { id: "agent", value: "plan" },
-  ]);
-  const nullPatch = {
-    planModeEnabled: true,
-    textGenerationModelSelection: storedPlan,
-    sourceControlWriterModelSelection: null,
+    ]),
   };
 
-  it("returns null when plan mode is on", () => {
-    expect(resolvePlanAgentHealPatch(nullPatch)).toBeNull();
+  it("keeps a stored plan agent this device did not pick", () => {
+    expect(resolveAppModelSelectionState(settings, [opencode])).toEqual(
+      createModelSelection(instanceId, model, [{ id: "agent", value: "plan" }]),
+    );
   });
 
-  it("returns null when nothing needs healing", () => {
+  it("preserves the plan agent on a custom OpenCode instance without rewriting settings", () => {
+    const customId = ProviderInstanceId.make("opencode_local");
+    const selected = createModelSelection(customId, model, [{ id: "agent", value: "plan" }]);
+    const custom = { ...opencode, instanceId: customId };
     expect(
-      resolvePlanAgentHealPatch({
-        planModeEnabled: false,
-        textGenerationModelSelection: healed,
-        sourceControlWriterModelSelection: null,
-      }),
-    ).toBeNull();
+      resolveAppModelSelectionState({ ...settings, textGenerationModelSelection: selected }, [
+        custom,
+      ]),
+    ).toEqual(selected);
   });
 
-  it("patches the stored text generation selection to drop the plan agent", () => {
+  it("keeps another provider's plan-valued option when local legacy plan mode is off", () => {
+    const kimiId = ProviderInstanceId.make("kimi");
+    const selection = createModelSelection(kimiId, model, [{ id: "agent", value: "plan" }]);
+    const kimi = { ...opencode, driver: ProviderDriverKind.make("kimi"), instanceId: kimiId };
     expect(
-      resolvePlanAgentHealPatch({
-        planModeEnabled: false,
-        textGenerationModelSelection: storedPlan,
-        sourceControlWriterModelSelection: null,
-      }),
-    ).toEqual({ textGenerationModelSelection: healed });
-  });
-
-  it("patches a stored source control writer selection that uses the plan agent", () => {
-    expect(
-      resolvePlanAgentHealPatch({
-        planModeEnabled: false,
-        textGenerationModelSelection: healed,
-        sourceControlWriterModelSelection: storedPlan,
-      }),
-    ).toEqual({ sourceControlWriterModelSelection: healed });
-  });
-
-  it("does not patch a Kimi selection with a plan-valued option", () => {
-    const kimiInstance = ProviderInstanceId.make("kimi");
-    const kimiSelection = createModelSelection(kimiInstance, "kimi-default", [
-      { id: "agent", value: "plan" },
-    ]);
-    const kimiProvider = provider({
-      provider: ProviderDriverKind.make("kimi"),
-      instanceId: "kimi",
-      models: ["kimi-default"],
-    });
-
-    expect(
-      resolvePlanAgentHealPatch({
-        planModeEnabled: false,
-        providers: [kimiProvider],
-        textGenerationModelSelection: kimiSelection,
-        sourceControlWriterModelSelection: null,
-      }),
-    ).toBeNull();
+      resolveAppModelSelectionState({ ...settings, textGenerationModelSelection: selection }, [
+        kimi,
+      ]),
+    ).toEqual(selection);
   });
 });

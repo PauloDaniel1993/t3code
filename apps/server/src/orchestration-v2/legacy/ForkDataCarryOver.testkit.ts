@@ -1,9 +1,9 @@
 import * as Effect from "effect/Effect";
 import { ThreadId } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { layer as sinkLayer } from "../EventSink.ts";
 import { layer as eventStoreLayer } from "../EventStore.ts";
 import { layer as projectionLayer } from "../ProjectionStore.ts";
@@ -13,7 +13,7 @@ import { LegacyV1ThreadImporter, layer as importerLayer } from "./LegacyV1Thread
 import { layer as repairLayer } from "./ForkTaskLinkRepair.ts";
 
 const stores = Layer.mergeAll(eventStoreLayer, projectionLayer, projectLayer).pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
 );
 const sink = sinkLayer.pipe(Layer.provide(stores));
 export const TestLayer = Layer.mergeAll(

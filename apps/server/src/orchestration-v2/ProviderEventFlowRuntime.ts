@@ -1,8 +1,8 @@
 import type {
   ProviderAdapterV2EventSubscription,
   ProviderAdapterV2SessionRuntime,
-} from "./ProviderAdapter.ts";
-import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
+import { ProviderAdapterEventStreamError } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";

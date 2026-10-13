@@ -17,17 +17,17 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import type { ProviderInstance } from "../provider/ProviderDriver.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
+import { layerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
 import { userFacingDispatchErrorMessage } from "./UserFacingErrors.ts";
 
 const unverified = ProviderInstanceId.make("codex");
@@ -39,7 +39,7 @@ const adapterFor = (instanceId: ProviderInstanceId) =>
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
     openSession: () => Effect.die("A switch is judged before any provider opens"),
-  }) as ProviderAdapterV2Shape;
+  }) as ProviderAdapterV2["Service"];
 
 // The real policy; the snapshot names the primary, so the project's root is unused.
 const runtimePolicyLayer = RuntimePolicy.layerFromProjectStore.pipe(
@@ -68,14 +68,14 @@ const runtimePolicyLayer = RuntimePolicy.layerFromProjectStore.pipe(
     ),
   ),
 );
-const database = SqlitePersistenceMemory;
+const database = SqlitePersistence.layerMemory;
 const testLayer = Layer.mergeAll(
   database,
   NodeServices.layer,
   ProjectionStore.layer.pipe(Layer.provide(database)),
-  makeOrchestratorV2ReplayLayerWithRegistry(
+  layerWithRegistry(
     { name: "provider-switch-workspace-folders" },
-    ProviderAdapterRegistry.makeLayer([adapterFor(unverified), adapterFor(supported)]),
+    ProviderAdapterRegistry.layerFromAdapters([adapterFor(unverified), adapterFor(supported)]),
     { databaseLayer: database, runEffectWorker: false, runtimePolicyLayer },
   ),
 );

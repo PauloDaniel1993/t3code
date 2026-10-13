@@ -13,19 +13,19 @@ import {
 } from "@t3tools/contracts";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
-import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
-import * as FileSystem from "effect/FileSystem";
+import * as Base64Url from "effect/encoding/Base64Url";
+import * as Hex from "effect/encoding/Hex";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Layer from "effect/Layer";
-import * as Ref from "effect/Ref";
+import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 
-import { parseTurnDiffFilesFromNumstat } from "../checkpointing/Diffs.ts";
+import { isGitImport, parseTurnDiffFilesFromNumstat } from "../checkpointing/Diffs.ts";
 import {
   checkpointFolderDiffs,
   collectCheckpointDiffs,
@@ -37,7 +37,7 @@ import {
   checkpointScopeParts,
   PRIMARY_CHECKPOINT_PART_KEY,
 } from "./CheckpointScopeParts.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 
 const CHECKPOINT_REFS_PREFIX = "refs/t3/orchestration-v2/checkpoints";
 const ROOT_CHECKPOINT_SCOPE_NAME = "root";
@@ -204,22 +204,26 @@ export class CheckpointServiceV2 extends Context.Service<
   CheckpointServiceV2Shape
 >()("t3/orchestration-v2/CheckpointService/CheckpointServiceV2") {}
 
-export function checkpointRefForScopeOrdinal(input: {
-  readonly scopeId: CheckpointScopeId;
-  readonly ordinalWithinScope: number;
-  /** The part the ref holds. The primary part keeps the scope's own refs. */
-  readonly partKey?: string;
-}): CheckpointRef {
-  const scopeKey = NodeCrypto.createHash("sha256").update(input.scopeId).digest("hex").slice(0, 32);
-  const part =
-    input.partKey === undefined || input.partKey === PRIMARY_CHECKPOINT_PART_KEY
-      ? ""
-      : `/part-${input.partKey}`;
-  return CheckpointRef.make(
-    `${CHECKPOINT_REFS_PREFIX}/${Encoding.encodeBase64Url(scopeKey)}${part}/ordinal/${input.ordinalWithinScope}`,
-  );
-}
-
+export const checkpointRefForScopeOrdinal = Effect.fn("checkpointRefForScopeOrdinal")(
+  function* (input: {
+    readonly scopeId: CheckpointScopeId;
+    readonly ordinalWithinScope: number;
+    readonly partKey?: string;
+  }) {
+    const crypto = yield* Crypto.Crypto;
+    const digest = yield* crypto
+      .digest("SHA-256", new TextEncoder().encode(input.scopeId))
+      .pipe(Effect.orDie);
+    const scopeKey = Hex.encode(digest).slice(0, 32);
+    const part =
+      input.partKey === undefined || input.partKey === PRIMARY_CHECKPOINT_PART_KEY
+        ? ""
+        : `/part-${input.partKey}`;
+    return CheckpointRef.make(
+      `${CHECKPOINT_REFS_PREFIX}/${Base64Url.encode(scopeKey)}${part}/ordinal/${input.ordinalWithinScope}`,
+    );
+  },
+);
 // A scope without parts checkpoints its whole cwd as its one primary part.
 function scopeParts(
   scope: OrchestrationV2CheckpointScope,
@@ -238,7 +242,7 @@ function scopeParts(
 }
 
 function checkpointIdForScopeOrdinal(
-  idAllocator: IdAllocator.IdAllocatorV2Shape,
+  idAllocator: IdAllocator.IdAllocatorV2["Service"],
   input: {
     readonly scopeId: CheckpointScopeId;
     readonly ordinalWithinScope: number;
@@ -251,7 +255,7 @@ function checkpointIdForScopeOrdinal(
 }
 
 function makeRootRunScope(input: {
-  readonly idAllocator: IdAllocator.IdAllocatorV2Shape;
+  readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly threadId: ThreadId;
   readonly runId: RunId;
   readonly rootNodeId: NodeId;
@@ -297,6 +301,7 @@ function makeCheckpoint(input: {
   readonly appRunOrdinal: number | null;
   readonly parts: ReadonlyArray<OrchestrationV2CheckpointPart>;
   readonly files: OrchestrationV2Checkpoint["files"];
+  readonly ref: CheckpointRef;
   readonly capturedAt: DateTime.Utc;
 }): OrchestrationV2Checkpoint {
   return {
@@ -308,10 +313,7 @@ function makeCheckpoint(input: {
     parentCheckpointId: input.parentCheckpointId,
     ordinalWithinScope: input.ordinalWithinScope,
     appRunOrdinal: input.appRunOrdinal,
-    ref: checkpointRefForScopeOrdinal({
-      scopeId: input.scope.id,
-      ordinalWithinScope: input.ordinalWithinScope,
-    }),
+    ref: input.ref,
     status: checkpointBarrierStatus(input.parts),
     files: input.files,
     // The checkpoint keeps its own part table: the scope is rewritten every run.
@@ -326,42 +328,26 @@ const PART_CONCURRENCY = 4;
 export const layer: Layer.Layer<
   CheckpointServiceV2,
   never,
-  CheckpointStore.CheckpointStore | IdAllocator.IdAllocatorV2 | FileSystem.FileSystem
+  | CheckpointStore.CheckpointStore
+  | Crypto.Crypto
+  | IdAllocator.IdAllocatorV2
+  | FileSystem.FileSystem
 > = Layer.effect(
   CheckpointServiceV2,
   Effect.gen(function* () {
     const checkpointStore = yield* CheckpointStore.CheckpointStore;
+    const crypto = yield* Crypto.Crypto;
+    const checkpointRefFor = (input: Parameters<typeof checkpointRefForScopeOrdinal>[0]) =>
+      checkpointRefForScopeOrdinal(input).pipe(Effect.provideService(Crypto.Crypto, crypto));
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
-    const checkoutSemaphores = yield* Ref.make(new Map<string, Semaphore.Semaphore>());
-
-    const getCheckoutSemaphore = (key: string) =>
-      Effect.gen(function* () {
-        const existing = (yield* Ref.get(checkoutSemaphores)).get(key);
-        if (existing !== undefined) {
-          return existing;
-        }
-
-        const created = yield* Semaphore.make(1);
-        return yield* Ref.modify(checkoutSemaphores, (current) => {
-          const concurrent = current.get(key);
-          if (concurrent !== undefined) {
-            return [concurrent, current];
-          }
-          const updated = new Map(current);
-          updated.set(key, created);
-          return [created, updated];
-        });
-      });
-
-    // One lock per checkout, whatever the spelling of its path. An operation
-    // holds one part's lock at a time, so locks never wait on each other.
+    const checkoutLocks = yield* KeyedLock.make<string>();
+    // Canonical checkout paths share a lock across every scope and folder part.
     const withCheckoutLock = <A, E, R>(cwd: string, effect: Effect.Effect<A, E, R>) =>
       fileSystem.realPath(cwd).pipe(
         Effect.orElseSucceed(() => cwd),
         Effect.map((path) => (isWindowsAbsolutePath(path) ? path.toLowerCase() : path)),
-        Effect.flatMap(getCheckoutSemaphore),
-        Effect.flatMap((semaphore) => semaphore.withPermits(1)(effect)),
+        Effect.flatMap((path) => checkoutLocks.withLock(path, effect)),
       );
 
     const isGitCheckpointable = (cwd: string) =>
@@ -371,7 +357,7 @@ export const layer: Layer.Layer<
       scope: OrchestrationV2CheckpointScope,
       part: OrchestrationV2CheckpointScopePart,
       ordinalWithinScope: number,
-    ) => checkpointRefForScopeOrdinal({ scopeId: scope.id, ordinalWithinScope, partKey: part.key });
+    ) => checkpointRefFor({ scopeId: scope.id, ordinalWithinScope, partKey: part.key });
 
     const ensureScope: CheckpointServiceV2Shape["ensureScope"] = (scope) => Effect.succeed(scope);
 
@@ -387,7 +373,7 @@ export const layer: Layer.Layer<
             return;
           }
 
-          const checkpointRef = partRef(scope, part, ordinalWithinScope);
+          const checkpointRef = yield* partRef(scope, part, ordinalWithinScope);
           const exists = yield* checkpointStore.hasCheckpointRef({
             cwd: part.cwd,
             checkpointRef,
@@ -434,10 +420,10 @@ export const layer: Layer.Layer<
       if (part.vcs === null) {
         return Effect.succeed({ ...part, ref: null, status: "missing" });
       }
-      const checkpointRef = partRef(scope, part, ordinalWithinScope);
       return withCheckoutLock(
         part.cwd,
         Effect.gen(function* () {
+          const checkpointRef = yield* partRef(scope, part, ordinalWithinScope);
           const checkpointable = yield* isGitCheckpointable(part.cwd);
           const available = checkpointable
             ? yield* checkpointStore
@@ -473,6 +459,10 @@ export const layer: Layer.Layer<
             { concurrency: PART_CONCURRENCY },
           );
           return makeCheckpoint({
+            ref: yield* checkpointRefFor({
+              scopeId: input.scope.id,
+              ordinalWithinScope: input.ordinalWithinScope,
+            }),
             id: checkpointId,
             scope: input.scope,
             runId: null,
@@ -507,11 +497,15 @@ export const layer: Layer.Layer<
       if (part.vcs === null) {
         return Effect.succeed({ part: { ...part, ref: null, status: "missing" }, files: [] });
       }
-      const checkpointRef = partRef(scope, part, ordinalWithinScope);
-      const previousCheckpointRef = partRef(scope, part, Math.max(0, ordinalWithinScope - 1));
       return withCheckoutLock(
         part.cwd,
         Effect.gen(function* () {
+          const checkpointRef = yield* partRef(scope, part, ordinalWithinScope);
+          const previousCheckpointRef = yield* partRef(
+            scope,
+            part,
+            Math.max(0, ordinalWithinScope - 1),
+          );
           if (!(yield* isGitCheckpointable(part.cwd))) {
             return { part: { ...part, ref: checkpointRef, status: "missing" }, files: [] } as const;
           }
@@ -554,33 +548,49 @@ export const layer: Layer.Layer<
                 }).pipe(Effect.as(false)),
               ),
             );
+          const refs = {
+            cwd: part.cwd,
+            fromCheckpointRef: previousCheckpointRef,
+            toCheckpointRef: checkpointRef,
+          };
+          // A pull or rebase can change thousands of files the turn did not write.
+          // Keep only the files the turn's own work touched.
           const files = previousExists
-            ? yield* checkpointStore
-                .diffCheckpoints({
-                  cwd: part.cwd,
-                  fromCheckpointRef: previousCheckpointRef,
-                  toCheckpointRef: checkpointRef,
+            ? yield* Effect.all([
+                checkpointStore.diffCheckpoints({
+                  ...refs,
                   fallbackFromToHead: false,
                   ignoreWhitespace: false,
                   format: "numstat",
-                })
-                .pipe(
-                  Effect.map((diff) =>
-                    parseTurnDiffFilesFromNumstat(diff).map((file) => ({
+                }),
+                checkpointStore.listAuthoredPaths(refs).pipe(
+                  Effect.catch((cause) =>
+                    Effect.logWarning("orchestration V2 checkpoint authored paths failed", {
+                      scopeId: scope.id,
+                      checkpointRef,
+                      cause: String(cause),
+                    }).pipe(Effect.as(null)),
+                  ),
+                ),
+              ]).pipe(
+                Effect.map(([diff, authoredPaths]) =>
+                  parseTurnDiffFilesFromNumstat(diff)
+                    .filter((file) => !isGitImport(file, authoredPaths))
+                    .map((file) => ({
                       path: file.path,
                       kind: "modified",
                       additions: file.additions,
                       deletions: file.deletions,
                     })),
-                  ),
-                  Effect.catch((cause) =>
-                    Effect.logWarning("orchestration V2 checkpoint diff summary failed", {
-                      scopeId: scope.id,
-                      checkpointRef,
-                      cause: String(cause),
-                    }).pipe(Effect.as([])),
-                  ),
-                )
+                ),
+                Effect.catch((cause) =>
+                  Effect.logWarning("orchestration V2 checkpoint diff summary failed", {
+                    scopeId: scope.id,
+                    checkpointRef,
+                    cause: String(cause),
+                  }).pipe(Effect.as([])),
+                ),
+              )
             : [];
           return { part: { ...part, ref: checkpointRef, status: "ready" }, files } as const;
         }),
@@ -611,9 +621,13 @@ export const layer: Layer.Layer<
         let files = captured.flatMap(({ files }) => files);
         if (input.scope.parts !== undefined) {
           const diffInputs: Array<CheckpointStore.DiffCheckpointsInput & { label: string }> = [];
+          const authoredByFolder = new Map<
+            string,
+            { readonly paths: ReadonlySet<string> | null; readonly prefix: string }
+          >();
           for (const { part } of captured) {
             if (part.vcs !== "git" || part.status !== "ready" || part.ref === null) continue;
-            const previousCheckpointRef = partRef(
+            const previousCheckpointRef = yield* partRef(
               input.scope,
               part,
               Math.max(0, input.ordinalWithinScope - 1),
@@ -626,7 +640,27 @@ export const layer: Layer.Layer<
               }),
             ).pipe(Effect.catch(() => Effect.succeed(false)));
             if (!previousExists) continue;
+            const authoredPaths = yield* withCheckoutLock(
+              part.cwd,
+              checkpointStore.listAuthoredPaths({
+                cwd: part.cwd,
+                fromCheckpointRef: previousCheckpointRef,
+                toCheckpointRef: part.ref,
+              }),
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("orchestration V2 checkpoint authored paths failed", {
+                  scopeId: input.scope.id,
+                  checkpointRef: part.ref,
+                  cause: String(cause),
+                }).pipe(Effect.as(null)),
+              ),
+            );
             for (const folderDiff of checkpointFolderDiffs(part)) {
+              authoredByFolder.set(folderDiff.folder.label, {
+                paths: authoredPaths,
+                prefix: folderDiff.relativePath,
+              });
               diffInputs.push({
                 cwd: part.cwd,
                 fromCheckpointRef: previousCheckpointRef,
@@ -651,17 +685,38 @@ export const layer: Layer.Layer<
               ),
             ),
           );
-          files = diffs.flatMap(({ label, diff }) =>
-            parseTurnDiffFilesFromNumstat(diff).map((file) => ({
-              path: `${label}/${file.path}`,
-              kind: "modified" as const,
-              additions: file.additions,
-              deletions: file.deletions,
-            })),
-          );
+          files = diffs.flatMap(({ label, diff }) => {
+            const authored = label === undefined ? undefined : authoredByFolder.get(label);
+            const repositoryPath = (path: string) =>
+              authored?.prefix ? `${authored.prefix}/${path}` : path;
+            return parseTurnDiffFilesFromNumstat(diff)
+              .filter(
+                (file) =>
+                  !isGitImport(
+                    {
+                      ...file,
+                      path: repositoryPath(file.path),
+                      ...(file.previousPath === undefined
+                        ? {}
+                        : { previousPath: repositoryPath(file.previousPath) }),
+                    },
+                    authored?.paths ?? null,
+                  ),
+              )
+              .map((file) => ({
+                path: `${label}/${file.path}`,
+                kind: "modified" as const,
+                additions: file.additions,
+                deletions: file.deletions,
+              }));
+          });
         }
 
         return makeCheckpoint({
+          ref: yield* checkpointRefFor({
+            scopeId: input.scope.id,
+            ordinalWithinScope: input.ordinalWithinScope,
+          }),
           id: checkpointId,
           scope: input.scope,
           runId: input.runId,

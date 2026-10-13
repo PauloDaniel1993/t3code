@@ -1,5 +1,4 @@
 import { TextGenerationError, type ModelSelection } from "@t3tools/contracts";
-import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -12,19 +11,8 @@ import * as Stream from "effect/Stream";
 import * as AcpErrors from "effect-acp/errors";
 
 import { applyKimiAcpModelSelection } from "../provider/acp/KimiAcpSupport.ts";
-import type { AcpSessionRuntime } from "../provider/acp/AcpSessionRuntime.ts";
-import type * as TextGeneration from "./TextGeneration.ts";
-import {
-  buildBranchNamePrompt,
-  buildCommitMessagePrompt,
-  buildPrContentPrompt,
-  buildThreadTitlePrompt,
-} from "./TextGenerationPrompts.ts";
-import {
-  sanitizeCommitSubject,
-  sanitizePrTitle,
-  sanitizeThreadTitle,
-} from "./TextGenerationUtils.ts";
+import type { AcpSessionRuntime } from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 
 export interface KimiTextGenerationOptions {
   readonly makeRuntime: (
@@ -42,7 +30,7 @@ export const makeKimiTextGeneration = Effect.fn("makeKimiTextGeneration")(functi
   const fs = yield* FileSystem.FileSystem;
   const runJson = Effect.fn("KimiTextGeneration.runJson")(
     function* <S extends Schema.Top>(input: {
-      readonly operation: keyof TextGeneration.TextGeneration["Service"];
+      readonly operation: TextGenerationOperations.Operation;
       readonly prompt: string;
       readonly outputSchema: S;
       readonly modelSelection: ModelSelection;
@@ -205,78 +193,8 @@ export const makeKimiTextGeneration = Effect.fn("makeKimiTextGeneration")(functi
       ),
   );
 
-  const generateCommitMessage: TextGeneration.TextGeneration["Service"]["generateCommitMessage"] =
-    Effect.fn("KimiTextGeneration.generateCommitMessage")(function* (input) {
-      const generated = yield* runJson({
-        operation: "generateCommitMessage",
-        ...buildCommitMessagePrompt({
-          branch: input.branch,
-          stagedSummary: input.stagedSummary,
-          stagedPatch: input.stagedPatch,
-          includeBranch: input.includeBranch === true,
-          policy: input.policy,
-        }),
-        modelSelection: input.modelSelection,
-      });
-      return {
-        subject: sanitizeCommitSubject(generated.subject),
-        body: generated.body.trim(),
-        ...("branch" in generated && typeof generated.branch === "string"
-          ? { branch: sanitizeFeatureBranchName(generated.branch) }
-          : {}),
-      };
-    });
-  const generatePrContent: TextGeneration.TextGeneration["Service"]["generatePrContent"] =
-    Effect.fn("KimiTextGeneration.generatePrContent")(function* (input) {
-      const generated = yield* runJson({
-        operation: "generatePrContent",
-        ...buildPrContentPrompt({
-          baseBranch: input.baseBranch,
-          headBranch: input.headBranch,
-          commitSummary: input.commitSummary,
-          diffSummary: input.diffSummary,
-          diffPatch: input.diffPatch,
-          policy: input.policy,
-          changeRequestTemplate: input.changeRequestTemplate,
-        }),
-        modelSelection: input.modelSelection,
-      });
-      return { title: sanitizePrTitle(generated.title), body: generated.body.trim() };
-    });
-  const generateBranchName: TextGeneration.TextGeneration["Service"]["generateBranchName"] =
-    Effect.fn("KimiTextGeneration.generateBranchName")(function* (input) {
-      const generated = yield* runJson({
-        operation: "generateBranchName",
-        ...buildBranchNamePrompt({
-          message: input.message,
-          attachments: input.attachments,
-          naming: input.naming,
-        }),
-        modelSelection: input.modelSelection,
-      });
-      return { branch: formatGeneratedBranchName(generated.branch, input.naming) };
-    });
-  const generateThreadTitle: TextGeneration.TextGeneration["Service"]["generateThreadTitle"] =
-    Effect.fn("KimiTextGeneration.generateThreadTitle")(function* (input) {
-      const generated = yield* runJson({
-        operation: "generateThreadTitle",
-        ...buildThreadTitlePrompt({
-          message: input.message,
-          previousTitle: input.previousTitle,
-          linkedContext: input.linkedContext,
-          attachments: input.attachments,
-        }),
-        modelSelection: input.modelSelection,
-      });
-      return {
-        title: sanitizeThreadTitle(generated.title),
-        ...(generated.needsRefinement ? { needsRefinement: true } : {}),
-      };
-    });
-  return {
-    generateCommitMessage,
-    generatePrContent,
-    generateBranchName,
-    generateThreadTitle,
-  } satisfies TextGeneration.TextGeneration["Service"];
+  return TextGenerationOperations.fromRunner(
+    "KimiTextGeneration",
+    TextGenerationOperations.withoutInvestigation("Kimi", runJson),
+  );
 });

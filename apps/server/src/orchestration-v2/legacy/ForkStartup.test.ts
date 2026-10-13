@@ -1,3 +1,5 @@
+import * as Orchestrator from "../Orchestrator.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ExecutionEnvironmentDescriptor, ThreadId } from "@t3tools/contracts";
@@ -5,13 +7,13 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as NetAddress from "effect/unstable/net/NetAddress";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as HttpServer from "effect/http/HttpServer";
+import * as NetAddress from "effect/net/NetAddress";
 
 import { ServerConfig, layerTest as configLayer } from "../../config.ts";
 import { ServerRuntimeStartup, layerWithOptions } from "../../serverRuntimeStartup.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
+
 import { ServerLifecycleEvents } from "../../serverLifecycleEvents.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { ServiceLauncherClient } from "../../cloud/serviceLauncherClient.ts";
@@ -49,8 +51,9 @@ const environment = Schema.decodeSync(ExecutionEnvironmentDescriptor)({
 // Use the actual startup service, including command admission, project decoding
 // and background hydration. Only unrelated host/provider side effects are mocked.
 const hostLayer = Layer.mergeAll(
+  Layer.mock(Orchestrator.OrchestratorV2)({ recoverDelegatedTasks: Effect.void }),
   Layer.mock(Keybindings)({ start: Effect.void }),
-  ServerSettingsService.layerTest(),
+  ServerSettings.layerTest(),
   Layer.mock(ServerEnvironment)({ getDescriptor: Effect.succeed(environment) }),
   Layer.mock(ServiceLauncherClient)({ managed: false, prepareTrial: Effect.succeed(undefined) }),
   Layer.mock(AgentAwarenessRelay)({ start: () => Effect.void }),

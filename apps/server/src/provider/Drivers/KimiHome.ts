@@ -1,8 +1,9 @@
 import type { KimiSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import { expandHomePath } from "../../pathExpansion.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 export const KIMI_CODE_HOME_ENV = "KIMI_CODE_HOME";
 export const KIMI_CODE_NO_AUTO_UPDATE_ENV = "KIMI_CODE_NO_AUTO_UPDATE";
@@ -15,7 +16,7 @@ export const resolveKimiHomePath = Effect.fn("resolveKimiHomePath")(function* (
     return undefined;
   }
   const path = yield* Path.Path;
-  return path.resolve(expandHomePath(homePath));
+  return path.resolve(expandHomePath(homePath, yield* HostProcess.HomeDirectory));
 });
 
 /** Build the environment shared by every T3-managed Kimi child process. */

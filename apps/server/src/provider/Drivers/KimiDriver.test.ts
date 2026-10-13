@@ -1,3 +1,8 @@
+import * as ProjectService from "../../project/ProjectService.ts";
+import * as SecretRequests from "../../secrets/SecretRequests.ts";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import * as ProviderHostTestLayer from "../testUtils/providerHostTestLayer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -20,25 +25,28 @@ import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
-import { HttpClient } from "effect/unstable/http";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { HttpClient } from "effect/http";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
-import { layer as idAllocatorLayer } from "../../orchestration-v2/IdAllocator.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../../orchestration-v2/ProviderAdapter.ts";
+import { layer as idAllocatorLayer } from "@t3tools/provider-core/server/IdAllocator";
+import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as WorkspaceFolderFiles from "../../workspace/WorkspaceFolderFiles.ts";
 import { OrchestratorMcpService, layer as mcpLayer } from "../../mcp/OrchestratorMcpService.ts";
 import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
-import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
+import { ProviderRegistry } from "../ProviderRegistry.ts";
 import { ScheduledTaskService } from "../../scheduledTasks/ScheduledTaskService.ts";
 import { makeKimiTestHarness } from "../acp/KimiTestHarness.ts";
 import { BUILT_IN_DRIVERS } from "../builtInDrivers.ts";
-import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
-import type { ProviderMaintenanceResolutionContext } from "../providerMaintenance.ts";
+import {
+  NoOpProviderEventLoggers,
+  ProviderEventLoggers,
+} from "@t3tools/provider-core/server/ProviderEventLoggers";
+import type { ProviderMaintenanceResolutionContext } from "@t3tools/provider-core/server/maintenanceResolver";
 import { KIMI_MAINTENANCE_RESOLVER, KimiDriver } from "./KimiDriver.ts";
 
 const maintenanceContext = (
@@ -56,7 +64,7 @@ const encodeModelChoices = Schema.encodeSync(
   Schema.fromJsonString(Schema.Array(Schema.Struct({ value: Schema.String, name: Schema.String }))),
 );
 
-const driverTestLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-kimi-driver-" }).pipe(
+const driverBaseLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-kimi-driver-" }).pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(idAllocatorLayer),
   Layer.provideMerge(ServerSettingsService.layerTest({ enableProviderUpdateChecks: false })),
@@ -72,6 +80,12 @@ const driverTestLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-kimi
       HttpClient.make(() => Effect.die("Kimi fixtures must not make HTTP requests.")),
     ),
   ),
+);
+
+const driverTestLayer = ProviderHostTestLayer.layer.pipe(
+  Layer.provideMerge(driverBaseLayer),
+  Layer.provideMerge(McpProviderSessions.layer),
+  Layer.provideMerge(ProviderLatestVersions.layer),
 );
 
 const makeInstance = Effect.fn("KimiDriverTest.makeInstance")(function* (
@@ -108,6 +122,7 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
         const threadId = ThreadId.make("kimi-restart-thread");
         const modelSelection = { instanceId: h.instance.instanceId, model: "kimi-saved" };
         const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          additionalDirectories: [],
           runtimeMode: "approval-required",
           interactionMode: "default",
           cwd: h.root,
@@ -190,9 +205,13 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
             const result = yield* mcp.delegateTask(
               {
                 environmentId: EnvironmentId.make("kimi-test"),
-                threadId: parentThreadId,
-                providerInstanceId: parentInstanceId,
-                providerSessionId: "parent-session",
+                requestNamespace: "provider-session:parent-session",
+                thread: {
+                  threadId: parentThreadId,
+                  providerInstanceId: parentInstanceId,
+                  providerSessionId: "parent-session",
+                },
+                client: undefined,
                 capabilities: new Set(["orchestration"]),
                 issuedAt: 1,
               },
@@ -211,6 +230,8 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
                 Layer.provide(
                   Layer.mergeAll(
                     Layer.mock(ProjectStore.ProjectStoreV2)({}),
+                    Layer.mock(ProjectService.ProjectService)({}),
+                    Layer.mock(SecretRequests.SecretRequests)({}),
                     Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
                     Layer.mock(ProviderRegistry)({
                       getProviders: restarted.snapshot.getSnapshot.pipe(
@@ -222,6 +243,9 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
                       get: () => Effect.succeed(restarted.orchestrationAdapter),
                     }),
                     Layer.mock(ThreadManagementService)({
+                      hasReceipt: () => Effect.succeed(false),
+                      assertProviderInstanceEnabled: () => Effect.void,
+                      isProviderInstanceEnabledForProject: () => Effect.succeed(true),
                       getThreadRecords: (id) =>
                         Effect.succeed(id === parentThreadId ? parent : child),
                       dispatch: (command) =>
@@ -404,6 +428,7 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
       yield* second.instance.snapshot.refresh;
       const selection = { instanceId: first.instance.instanceId, model: "kimi-default" };
       const policy = ProviderAdapterV2RuntimePolicy.make({
+        additionalDirectories: [],
         runtimeMode: "approval-required",
         interactionMode: "default",
         cwd: first.root,

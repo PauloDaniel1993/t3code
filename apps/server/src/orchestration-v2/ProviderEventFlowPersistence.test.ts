@@ -1,3 +1,4 @@
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import {
   EventId,
   ProjectId,
@@ -16,13 +17,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { EventSinkV2, layer as eventSinkLayer } from "./EventSink.ts";
 import { EventStoreV2, layer as eventStoreLayer } from "./EventStore.ts";
-import { layer as idAllocatorLayer } from "./IdAllocator.ts";
+import { layer as idAllocatorLayer } from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2, layer as projectionStoreLayer } from "./ProjectionStore.ts";
 import { ProviderEventIngestorV2, layer as ingestorLayer } from "./ProviderEventIngestor.ts";
-import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
+import { ProviderAdapterEventStreamError } from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeProviderEventFlowStage } from "./ProviderEventFlowStage.ts";
 import { PROVIDER_TOOL_RESULT_BYTES } from "./ProviderEventPayload.ts";
 import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
@@ -30,11 +31,15 @@ import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 const driver = ProviderDriverKind.make("codex");
 
 const stores = Layer.merge(eventStoreLayer, projectionStoreLayer).pipe(
-  Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(SqlitePersistence.layerMemory),
 );
-const sink = eventSinkLayer.pipe(Layer.provide(Layer.mergeAll(stores, SqlitePersistenceMemory)));
+const sink = eventSinkLayer.pipe(
+  Layer.provide(Layer.mergeAll(stores, SqlitePersistence.layerMemory)),
+);
 const services = Layer.mergeAll(stores, sink, idAllocatorLayer);
-const testLayer = Layer.merge(services, ingestorLayer.pipe(Layer.provide(services)));
+const testLayer = Layer.merge(services, ingestorLayer.pipe(Layer.provide(services))).pipe(
+  Layer.provide(ThreadCommandExecutor.layer),
+);
 
 function makeThread(threadId: ThreadId, providerInstanceId: ProviderInstanceId, now: DateTime.Utc) {
   return {

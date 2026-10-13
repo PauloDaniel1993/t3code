@@ -4,14 +4,14 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { OrchestratorV2 } from "../Orchestrator.ts";
 import { ProviderAdapterRegistryV2 } from "../ProviderAdapterRegistry.ts";
 import { ProjectionStoreV2 } from "../ProjectionStore.ts";
 import { ProjectionMaintenanceV2 } from "../ProjectionMaintenance.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "../testkit/ProviderReplayHarness.ts";
+import { layerWithRegistry } from "../testkit/ProviderReplayHarness.ts";
 import { LegacyV1ThreadImporter } from "./LegacyV1ThreadImporter.ts";
 import { repairForkTaskLinks } from "./ForkTaskLinkRepair.ts";
 import { TestLayer, seedThreads, stamp } from "./ForkDataCarryOver.testkit.ts";
@@ -27,10 +27,10 @@ const deliveries = {
   running: null,
 } as const;
 const statuses = ["finished", "failed", "cancelled", "queued", "running"] as const;
-const runtime = makeOrchestratorV2ReplayLayerWithRegistry(
+const runtime = layerWithRegistry(
   { name: "fork-task-records" },
   Layer.mock(ProviderAdapterRegistryV2)({}),
-  { databaseLayer: SqlitePersistenceMemory, runEffectWorker: false },
+  { databaseLayer: SqlitePersistence.layerMemory, runEffectWorker: false },
 );
 
 it.effect(

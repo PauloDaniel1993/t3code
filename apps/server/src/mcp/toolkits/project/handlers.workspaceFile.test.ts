@@ -18,14 +18,15 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../../config.ts";
-import * as IdAllocator from "../../../orchestration-v2/IdAllocator.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "../../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as ProjectStore from "../../../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
-import { OrchestrationV2EventSinkLayerLive } from "../../../orchestration-v2/runtimeLayer.ts";
+import * as OrchestrationRuntime from "../../../orchestration-v2/runtimeLayer.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
-import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as ProjectEnrichmentService from "../../../project/ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "../../../project/ProjectFaviconResolver.ts";
@@ -34,7 +35,8 @@ import * as RepositoryIdentityResolver from "../../../project/RepositoryIdentity
 import * as WorkspaceFolderResolver from "../../../project/WorkspaceFolderResolver.ts";
 import * as WorkspacePaths from "../../../workspace/WorkspacePaths.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { ProjectHandlersLive } from "./handlers.ts";
+import * as ProjectHandlers from "./handlers.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
 
 const threadId = ThreadId.make("thread:mcp-project");
@@ -45,18 +47,19 @@ const caller = {
   providerInstanceId,
   runtimeMode: "full-access",
   interactionMode: "default",
+  activeRunId: "run:mcp-project",
   archivedAt: null,
   deletedAt: null,
 } as OrchestrationV2ThreadShell;
 
 const dependencies = Layer.mergeAll(
-  OrchestrationV2EventSinkLayerLive,
+  OrchestrationRuntime.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
   IdAllocator.layer,
 ).pipe(
   Layer.provideMerge(
-    LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
+    LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationRuntime.layerEventSink)),
   ),
   Layer.provideMerge(ProjectEnrichmentService.layer),
   Layer.provideMerge(WorkspacePaths.layer),
@@ -71,19 +74,21 @@ const dependencies = Layer.mergeAll(
       WorkspaceFolderResolver.layer,
     ),
   ),
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "mcp-project-file-" })),
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(NodeCrypto.layer),
+  Layer.provideMerge(ServerSettings.layerTest()),
 );
 
 const testLayer = Layer.mergeAll(
   Project.layer,
   Layer.succeed(McpInvocationContext.McpInvocationContext, {
     environmentId: EnvironmentId.make("environment:mcp-project"),
-    threadId,
-    providerSessionId: "session",
-    providerInstanceId,
+    requestNamespace: "session",
+    thread: { threadId, providerSessionId: "session", providerInstanceId },
+    client: undefined,
+
     issuedAt: 0,
     capabilities: new Set(["orchestration" as const]),
   }),
@@ -109,7 +114,9 @@ const fixture = Effect.gen(function* () {
   return { fs, at, write };
 });
 
-const toolkit = ProjectToolkit.pipe(Effect.provide(ProjectHandlersLive));
+const toolkit = ProjectToolkit.pipe(
+  Effect.provide(McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)),
+);
 
 it.layer(testLayer)("workspace-file project MCP tools", (it) => {
   it.effect("imports, reads and pages one project with ordered folder facts", () =>

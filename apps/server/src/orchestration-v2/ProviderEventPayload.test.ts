@@ -5,7 +5,7 @@ import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 
-import { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
+import { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
 
 import { boundProviderToolResult, sanitizeProviderEvent } from "./ProviderEventPayload.ts";
 

@@ -5,7 +5,7 @@ import {
   retainKnownRuns,
   retainKnownSubagents,
 } from "@t3tools/client-runtime/state/subagent-retention";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useEffect } from "react";
 import { create } from "zustand";
 import { environmentThreadDetails } from "../state/threads";

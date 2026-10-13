@@ -16,7 +16,8 @@ import {
   type WorkspaceThread,
   type ThreadWorkspace,
 } from "@t3tools/shared/workspaceFolders";
-import { isAbsolutePath, resolvePathLinkTarget } from "~/terminal-links";
+import { isAbsolutePath } from "@t3tools/shared/path";
+import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { useMemo } from "react";
 
 export interface WorkspaceFileContext {
