@@ -47,6 +47,14 @@ function reportFailure(result: { readonly _tag: string; readonly cause?: Cause.C
   }
 }
 
+async function finishWorkspaceAction(action: () => Promise<void>, onSettled: () => void) {
+  try {
+    await action();
+  } finally {
+    onSettled();
+  }
+}
+
 function RepositoryControls(props: {
   readonly target: ScopedThreadRef;
   readonly checkout: WorkspaceGitCheckout;
@@ -362,36 +370,37 @@ export function WorkspaceGitOverviewSheet(props: {
     const execute = async () => {
       if (disabled || !appAtomRegistry.get(actionPermission)) return;
       setBusy(true);
-      try {
-        const result = await run({
-          environmentId: props.target.environmentId,
-          cwds: eligibleCheckouts.map((checkout) => checkout.cwd),
-          input: {
-            actionId: uuidv4(),
-            threadId: props.target.threadId,
-            members: eligibleCheckouts.map((checkout) => checkout.repositoryRoot),
-            action,
-            ...(action === "commit" ? { commitMessage: message.trim() } : {}),
-          },
-        });
-        reportFailure(result);
-        if (result._tag === "Success") {
-          setCommitOpen(false);
-          const completed = result.value.results.filter(
-            (member) => member.outcome._tag === "completed",
-          ).length;
-          Alert.alert(
-            completed === result.value.results.length
-              ? "Workspace action completed"
-              : completed > 0
-                ? "Workspace action partially completed"
-                : "Workspace action did not complete",
-            workspaceActionOutcomeSummary(result.value),
-          );
-        }
-      } finally {
-        setBusy(false);
-      }
+      await finishWorkspaceAction(
+        async () => {
+          const result = await run({
+            environmentId: props.target.environmentId,
+            cwds: eligibleCheckouts.map((checkout) => checkout.cwd),
+            input: {
+              actionId: uuidv4(),
+              threadId: props.target.threadId,
+              members: eligibleCheckouts.map((checkout) => checkout.repositoryRoot),
+              action,
+              ...(action === "commit" ? { commitMessage: message.trim() } : {}),
+            },
+          });
+          reportFailure(result);
+          if (result._tag === "Success") {
+            setCommitOpen(false);
+            const completed = result.value.results.filter(
+              (member) => member.outcome._tag === "completed",
+            ).length;
+            Alert.alert(
+              completed === result.value.results.length
+                ? "Workspace action completed"
+                : completed > 0
+                  ? "Workspace action partially completed"
+                  : "Workspace action did not complete",
+              workspaceActionOutcomeSummary(result.value),
+            );
+          }
+        },
+        () => setBusy(false),
+      );
     };
     if (action !== "commit" && statuses.some((status) => status?.isDefaultRef))
       Alert.alert("Default branches", "This action includes a repository on its default branch.", [

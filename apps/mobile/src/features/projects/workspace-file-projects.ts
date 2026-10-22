@@ -74,3 +74,14 @@ export function workspaceFileErrorMessage(error: unknown): string {
   }
   return error instanceof Error ? error.message : "Could not use the workspace file.";
 }
+
+export async function workspaceFileActionError(
+  action: () => Promise<void>,
+): Promise<string | null> {
+  try {
+    await action();
+    return null;
+  } catch (error) {
+    return workspaceFileErrorMessage(error);
+  }
+}

@@ -13,7 +13,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { ServerPathBrowser } from "../projects/ServerPathBrowser";
 import { WorkspaceProjectFolders } from "../projects/WorkspaceProjectFolders";
 import {
-  workspaceFileErrorMessage,
+  workspaceFileActionError,
   workspaceFileMutationOutcome,
 } from "../projects/workspace-file-projects";
 import { resolveAddProjectPath } from "@t3tools/client-runtime/operations/projects";
@@ -39,18 +39,16 @@ export function ProjectWorkspaceFileSettings(props: {
     if (busy || (workspaceFilePath !== null && !enabled)) return;
     setBusy(true);
     setError(null);
-    try {
+    const error = await workspaceFileActionError(async () => {
       const result = await update({
         environmentId: project.environmentId,
         input: { projectId: project.id, workspaceFilePath },
       });
       workspaceFileMutationOutcome(result, false);
       setPicking(false);
-    } catch (cause) {
-      setError(workspaceFileErrorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
+    });
+    if (error !== null) setError(error);
+    setBusy(false);
   };
   const choosePath = () => {
     const resolved = resolveAddProjectPath({

@@ -119,6 +119,16 @@ function firstRouteParam(value: string | string[] | undefined): string | null {
   return first === undefined || first.trim().length === 0 ? null : first;
 }
 
+function runTerminalAction(action: () => void, title: string, fallbackMessage: string): boolean {
+  try {
+    action();
+    return true;
+  } catch (error) {
+    Dialog.alert(title, error instanceof Error ? error.message : fallbackMessage);
+    return false;
+  }
+}
+
 function ThreadRouteFallbackLayout(props: { readonly children: ReactNode }) {
   const goBack = useWorkspaceBackNavigation("threads");
   const { layout } = useAdaptiveWorkspaceLayout();
@@ -705,38 +715,37 @@ function ThreadRouteContent(
     });
     if (folderPath !== undefined) {
       const thread = selectedThreadDetail?.thread ?? selectedThread;
-      try {
-        const location = resolveTerminalOpenLocation({
-          terminalLocation: null,
-          activeSessionLocation: null,
-          workspaceRoot: selectedThreadProject.workspaceRoot,
-          threadShellWorktreePath: selectedThread.worktreePath,
-          threadDetailWorktreePath: selectedThreadDetail?.thread.worktreePath ?? null,
-          thread,
-          folderPath,
-        });
-        stagePendingTerminalLaunch({
-          target: {
-            environmentId: selectedThread.environmentId,
-            threadId: selectedThread.id,
-            terminalId: nextId,
-          },
-          launch: {
-            ...location,
-            env: projectScriptRuntimeEnv({
-              project: { cwd: selectedThreadProject.workspaceRoot },
-              thread,
-              folderPath,
-            }),
-          },
-        });
-      } catch (error) {
-        Dialog.alert(
-          "Folder unavailable",
-          error instanceof Error ? error.message : "Could not open the folder.",
-        );
-        return;
-      }
+      const opened = runTerminalAction(
+        () => {
+          const location = resolveTerminalOpenLocation({
+            terminalLocation: null,
+            activeSessionLocation: null,
+            workspaceRoot: selectedThreadProject.workspaceRoot,
+            threadShellWorktreePath: selectedThread.worktreePath,
+            threadDetailWorktreePath: selectedThreadDetail?.thread.worktreePath ?? null,
+            thread,
+            folderPath,
+          });
+          stagePendingTerminalLaunch({
+            target: {
+              environmentId: selectedThread.environmentId,
+              threadId: selectedThread.id,
+              terminalId: nextId,
+            },
+            launch: {
+              ...location,
+              env: projectScriptRuntimeEnv({
+                project: { cwd: selectedThreadProject.workspaceRoot },
+                thread,
+                folderPath,
+              }),
+            },
+          });
+        },
+        "Folder unavailable",
+        "Could not open the folder.",
+      );
+      if (!opened) return;
     }
     void navigation.navigate("ThreadTerminal", {
       environmentId: String(selectedThread.environmentId),
@@ -765,69 +774,68 @@ function ThreadRouteContent(
       return;
     }
 
-    try {
-      const thread = selectedThreadDetail?.thread ?? selectedThread;
-      const preferredWorktreePath = thread.worktreePath;
-      const folderPath = script.runOnWorktreeCreate ? undefined : script.folderPath;
-      const cwd = projectScriptCwd({
-        project: { cwd: selectedThreadProject.workspaceRoot },
-        thread,
-        worktreePath: preferredWorktreePath,
-        folderPath,
-      });
-      const env = projectScriptRuntimeEnv({
-        project: { cwd: selectedThreadProject.workspaceRoot },
-        thread,
-        worktreePath: preferredWorktreePath,
-        folderPath,
-      });
-      const targetTerminalId = resolveProjectScriptTerminalId({
-        existingTerminalIds: terminalMenuSessions.map((session) => session.terminalId),
-        ...(knownTerminalSessions === null ||
-        !readEnvironmentScope(selectedThread.environmentId, AuthTerminalReadScope)
-          ? { uniqueSuffix: uuidv4() }
-          : {}),
-        hasRunningTerminal: terminalMenuSessions.some(
-          (session) =>
-            session.status === "running" ||
-            session.status === "starting" ||
-            session.cwd === null ||
-            !isSamePath(session.cwd, cwd),
-        ),
-      });
-      const terminalWorktreePath =
-        folderPath && preferredWorktreePath !== null ? cwd : preferredWorktreePath;
-      stagePendingTerminalLaunch({
-        target: {
-          environmentId: selectedThread.environmentId,
-          threadId: selectedThread.id,
+    runTerminalAction(
+      () => {
+        const thread = selectedThreadDetail?.thread ?? selectedThread;
+        const preferredWorktreePath = thread.worktreePath;
+        const folderPath = script.runOnWorktreeCreate ? undefined : script.folderPath;
+        const cwd = projectScriptCwd({
+          project: { cwd: selectedThreadProject.workspaceRoot },
+          thread,
+          worktreePath: preferredWorktreePath,
+          folderPath,
+        });
+        const env = projectScriptRuntimeEnv({
+          project: { cwd: selectedThreadProject.workspaceRoot },
+          thread,
+          worktreePath: preferredWorktreePath,
+          folderPath,
+        });
+        const targetTerminalId = resolveProjectScriptTerminalId({
+          existingTerminalIds: terminalMenuSessions.map((session) => session.terminalId),
+          ...(knownTerminalSessions === null ||
+          !readEnvironmentScope(selectedThread.environmentId, AuthTerminalReadScope)
+            ? { uniqueSuffix: uuidv4() }
+            : {}),
+          hasRunningTerminal: terminalMenuSessions.some(
+            (session) =>
+              session.status === "running" ||
+              session.status === "starting" ||
+              session.cwd === null ||
+              !isSamePath(session.cwd, cwd),
+          ),
+        });
+        const terminalWorktreePath =
+          folderPath && preferredWorktreePath !== null ? cwd : preferredWorktreePath;
+        stagePendingTerminalLaunch({
+          target: {
+            environmentId: selectedThread.environmentId,
+            threadId: selectedThread.id,
+            terminalId: targetTerminalId,
+          },
+          launch: {
+            cwd,
+            worktreePath: terminalWorktreePath,
+            env,
+            initialInput: projectScriptTerminalInput(script.command),
+          },
+        });
+        terminalDebugLog("project-script:staged", {
+          scriptId: script.id,
           terminalId: targetTerminalId,
-        },
-        launch: {
           cwd,
           worktreePath: terminalWorktreePath,
-          env,
-          initialInput: projectScriptTerminalInput(script.command),
-        },
-      });
-      terminalDebugLog("project-script:staged", {
-        scriptId: script.id,
-        terminalId: targetTerminalId,
-        cwd,
-        worktreePath: terminalWorktreePath,
-      });
+        });
 
-      void navigation.navigate("ThreadTerminal", {
-        environmentId: String(selectedThread.environmentId),
-        threadId: String(selectedThread.id),
-        terminalId: targetTerminalId,
-      });
-    } catch (error) {
-      Dialog.alert(
-        "Action unavailable",
-        error instanceof Error ? error.message : "Could not run the action.",
-      );
-    }
+        void navigation.navigate("ThreadTerminal", {
+          environmentId: String(selectedThread.environmentId),
+          threadId: String(selectedThread.id),
+          terminalId: targetTerminalId,
+        });
+      },
+      "Action unavailable",
+      "Could not run the action.",
+    );
   };
   const threadGitControlProps = {
     environmentId: environmentIdRaw ?? "",

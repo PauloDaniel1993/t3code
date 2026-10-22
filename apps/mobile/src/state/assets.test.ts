@@ -121,7 +121,7 @@ it.each(["draft-workspace-file", "workspace-scope-file"] as const)(
     state.session = { authenticated: true, scopes: [] };
     expect(useAssetUrlState(environmentId, scopedResource)).toEqual({
       _tag: "Failure",
-      reason: "failed",
+      reason: "missing-file-access",
     });
     expect(state.assetQuery).not.toHaveBeenCalled();
     state.session = { authenticated: true, scopes: [AuthFilesystemReadScope] };

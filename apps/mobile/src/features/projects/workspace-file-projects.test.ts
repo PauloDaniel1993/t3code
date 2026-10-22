@@ -4,6 +4,7 @@ import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 import {
   resolveMobileAddProjectTarget,
+  workspaceFileActionError,
   workspaceFileErrorMessage,
   workspaceFileMutationOutcome,
 } from "./workspace-file-projects";
@@ -140,6 +141,31 @@ describe("mobile add-project target", () => {
 });
 
 describe("workspace-file mutation outcomes", () => {
+  it("completes successful workspace actions without an error", async () => {
+    await expect(workspaceFileActionError(async () => {})).resolves.toBeNull();
+  });
+
+  it("preserves diagnostics for synchronous and asynchronous action failures", async () => {
+    const error = new ProjectMutationError({
+      commandId: CommandId.make("command:invalid"),
+      message: "Failed to mutate project",
+      diagnostic: {
+        code: "malformed-jsonc",
+        message: "Expected a closing brace",
+        line: 4,
+        column: 2,
+      },
+    });
+    await expect(
+      workspaceFileActionError(() => {
+        throw error;
+      }),
+    ).resolves.toBe("Expected a closing brace (line 4, column 2)");
+    await expect(workspaceFileActionError(() => Promise.reject(error))).resolves.toBe(
+      "Expected a closing brace (line 4, column 2)",
+    );
+  });
+
   it("uses the server-derived title and folder definition", () => {
     const project: Project = {
       id: projectId,

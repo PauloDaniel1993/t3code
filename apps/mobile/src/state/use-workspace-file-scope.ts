@@ -8,7 +8,8 @@ export function useWorkspaceFileScope(input: Parameters<typeof workspaceFileScop
   const projectId = input.project?.id;
   const workspaceFile = input.project?.workspaceFile;
   const threadId = input.thread?.id;
-  const workspaceFolderCount = input.thread?.workspaceFolderCount;
+  const workspaceFolderCount =
+    input.thread?.workspaceFolderCount ?? input.thread?.workspaceFolders?.length;
   const workspacePrimaryPath = input.thread?.workspacePrimaryPath;
   return useMemo(
     () =>

@@ -7,6 +7,7 @@ import type {
   WorkspaceScope,
   WorkspaceScopeFolder,
   OrchestrationV2ThreadWorktree,
+  OrchestrationV2ThreadWorkspaceFolder,
 } from "@t3tools/contracts";
 import {
   parseCanonicalPath,
@@ -67,6 +68,7 @@ export function workspaceFileScope(input: {
     readonly id: ThreadId;
     readonly workspaceFolderCount?: number;
     readonly workspacePrimaryPath?: string;
+    readonly workspaceFolders?: ReadonlyArray<OrchestrationV2ThreadWorkspaceFolder>;
   } | null;
 }): WorkspaceScope | null {
   if (
@@ -74,7 +76,8 @@ export function workspaceFileScope(input: {
     input.project === null ||
     (!input.project.workspaceFile &&
       input.thread?.workspaceFolderCount === undefined &&
-      input.thread?.workspacePrimaryPath === undefined)
+      input.thread?.workspacePrimaryPath === undefined &&
+      input.thread?.workspaceFolders === undefined)
   ) {
     return null;
   }

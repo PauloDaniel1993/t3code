@@ -3,7 +3,7 @@ import { environmentSession } from "../../state/session";
 import type { EnvironmentId, WorkspaceScope } from "@t3tools/contracts";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { ScreenContent } from "../../components/ui/ScreenContent";
-import { useCallback, useMemo, useState, type ComponentProps } from "react";
+import { useMemo, useState, type ComponentProps } from "react";
 import { Platform, Pressable, View, type NativeSyntheticEvent } from "react-native";
 import {
   Screen,
@@ -61,20 +61,17 @@ export function ThreadFileNavigatorPane(props: {
     scope: canReadFiles ? (props.scope ?? null) : null,
     searchQuery,
   });
-  const handlePreviewFile = useCallback(
-    (relativePath: string) => {
-      const scope = entriesQuery.scopeForPath(relativePath);
-      if (props.scope && scope === null) return;
-      preloadWorkspaceFileContents({
-        cwd: props.cwd,
-        environmentId: props.environmentId,
-        relativePath,
-        scope,
-        theme: highlightTheme,
-      });
-    },
-    [highlightTheme, props.cwd, props.environmentId, props.scope, entriesQuery.scopeForPath],
-  );
+  const handlePreviewFile = (relativePath: string) => {
+    const scope = entriesQuery.scopeForPath(relativePath);
+    if (props.scope && scope === null) return;
+    preloadWorkspaceFileContents({
+      cwd: props.cwd,
+      environmentId: props.environmentId,
+      relativePath,
+      scope,
+      theme: highlightTheme,
+    });
+  };
   const nativeHeaderRightBarButtonItems = useMemo(
     () =>
       [

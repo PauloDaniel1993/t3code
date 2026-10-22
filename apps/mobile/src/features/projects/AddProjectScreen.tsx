@@ -77,7 +77,7 @@ import { ServerPathBrowser as FolderBrowser } from "./ServerPathBrowser";
 import { WorkspaceProjectFolders } from "./WorkspaceProjectFolders";
 import {
   resolveMobileAddProjectTarget,
-  workspaceFileErrorMessage,
+  workspaceFileActionError,
   workspaceFileMutationOutcome,
 } from "./workspace-file-projects";
 import { useProjects, useServerConfigs, waitForProject } from "../../state/entities";
@@ -1072,7 +1072,7 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
     if (!environment || !canCreateProject || isBrowseNavigating || isSubmitting) return;
     setError(null);
     setIsSubmitting(true);
-    try {
+    const error = await workspaceFileActionError(async () => {
       const resolved = resolveAddProjectPath({
         rawPath: pathInput,
         platform: environment.platform,
@@ -1140,16 +1140,14 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
           "The project is saved on the environment but has not reached this device yet. It will appear in the project list once the connection catches up.",
         );
       setSavedProject(project);
-    } catch (cause) {
-      setError(workspaceFileErrorMessage(cause));
-    } finally {
-      setIsSubmitting(false);
-    }
+    });
+    if (error !== null) setError(error);
+    setIsSubmitting(false);
   };
   const continueToProject = async () => {
     if (!environment || !savedProject || isSubmitting) return;
     setIsSubmitting(true);
-    try {
+    const error = await workspaceFileActionError(async () => {
       const project = await waitForProject({
         environmentId: environment.environmentId,
         projectId: savedProject.id,
@@ -1163,11 +1161,9 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
         projectId: project.id,
         title: project.title,
       });
-    } catch (cause) {
-      setError(workspaceFileErrorMessage(cause));
-    } finally {
-      setIsSubmitting(false);
-    }
+    });
+    if (error !== null) setError(error);
+    setIsSubmitting(false);
   };
 
   return (

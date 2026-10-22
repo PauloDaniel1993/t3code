@@ -39,6 +39,19 @@ describe("mobile workspace file addressing", () => {
     expect(workspaceFileScope({ enabled: true, project, thread: null })).toEqual({
       projectId: project.id,
     });
+    expect(
+      workspaceFileScope({
+        enabled: true,
+        project: { id: project.id },
+        thread: {
+          id: thread.id,
+          workspaceFolders: [
+            { path: "/workspace/web", name: "web", label: "web" },
+            { path: "/workspace/api", name: "api", label: "api" },
+          ],
+        },
+      }),
+    ).toEqual(scope);
   });
 
   it("opens a secondary result by its owner rather than the search folder", () => {
