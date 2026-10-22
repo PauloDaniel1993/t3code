@@ -4,6 +4,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { ComponentProps, FunctionComponent, ReactElement } from "react";
 
 type TerminalFont = { family?: string; size?: number };
 const DEFAULT_TERMINAL_FONT_SIZE = 12;
@@ -207,6 +208,7 @@ vi.mock("@effect/atom-react", () => ({
 
 vi.mock("~/terminal/ghostty/surface", () => {
   class GhosttyTerminalSurface {
+    readonly input = { readOnly: false };
     cols = 80;
     rows = 24;
     readonly createdFont: TerminalFont | undefined;
@@ -280,6 +282,11 @@ vi.mock("../state/server", () => ({
   serverEnvironment: { configValueAtom: () => Symbol("config") },
 }));
 
+vi.mock("../state/session", () => ({
+  useEnvironmentScope: () => true,
+  readEnvironmentScope: () => true,
+}));
+
 vi.mock("../state/terminal", () => ({
   terminalEnvironment: { resize: Symbol("resize"), write: Symbol("write") },
 }));
@@ -324,9 +331,15 @@ function flushAnimationFrames(): void {
   }
 }
 
-function renderViewport(): void {
+function renderViewport(props = viewportProps): void {
   hooks.beginRender();
-  TerminalViewport(viewportProps);
+  // The keyed wrapper remounts the session on launch changes; drive that child
+  // so these headless tests exercise the surface's actual effect lifecycle.
+  const session: ReactElement<
+    ComponentProps<typeof TerminalViewport>,
+    FunctionComponent<ComponentProps<typeof TerminalViewport>>
+  > = TerminalViewport(props);
+  session.type(session.props);
   hooks.flushEffects();
 }
 
@@ -429,9 +442,7 @@ describe("TerminalViewport appearance typography", () => {
   });
 
   it("uses the dedicated terminal font when advanced typography is enabled", async () => {
-    hooks.beginRender();
-    TerminalViewport({ ...viewportProps, advancedTypography: true });
-    hooks.flushEffects();
+    renderViewport({ ...viewportProps, advancedTypography: true });
     await settleSetup();
     flushAnimationFrames();
 

@@ -1,7 +1,7 @@
 import type { EnvironmentId, ProjectEntry, WorkspaceScopeFolder } from "@t3tools/contracts";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { projectEnvironment } from "~/state/projects";
@@ -19,7 +19,9 @@ export function useDirectoryEntries(
 ) {
   const workspaceKey = workspaceFileContextKey(cwd, workspace);
   const workspaceRef = useRef(workspace);
-  workspaceRef.current = workspace;
+  useLayoutEffect(() => {
+    workspaceRef.current = workspace;
+  }, [workspace]);
   const [folders, setFolders] = useState<readonly WorkspaceScopeFolder[]>([]);
   const [directories, setDirectories] = useState(new Map<string, readonly ProjectEntry[]>());
   const [errors, setErrors] = useState(new Map<string, string>());

@@ -6,6 +6,7 @@ import {
 import { useState } from "react";
 import { workspaceFileErrorMessage } from "../../hooks/useImportWorkspaceFile";
 import { ensureBrowseDirectoryPath } from "../../lib/projectPaths";
+import { withAsyncCleanup } from "../../lib/withAsyncCleanup";
 import { readLocalApi } from "../../localApi";
 import type { SidebarProjectGroupMember } from "../../sidebarProjectGrouping";
 import { useEnvironments } from "../../state/environments";
@@ -38,19 +39,22 @@ export function ProjectWorkspaceFileSettings({
   const changeLink = async (workspaceFilePath: string | null) => {
     setBusy(true);
     setError(null);
-    try {
-      const result = await update({
-        environmentId: project.environmentId,
-        input: { projectId: project.id, workspaceFilePath },
-      });
-      if (result._tag === "Failure") {
-        if (isAtomCommandInterrupted(result))
-          throw new Error("The workspace file update was interrupted. Try again.");
-        throw squashAtomCommandFailure(result);
-      }
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        const result = await update({
+          environmentId: project.environmentId,
+          input: { projectId: project.id, workspaceFilePath },
+        });
+        if (result._tag === "Failure") {
+          if (isAtomCommandInterrupted(result))
+            throw new Error("The workspace file update was interrupted. Try again.");
+          throw squashAtomCommandFailure(result);
+        }
+      },
+      () => {
+        setBusy(false);
+      },
+    );
   };
   const runChange = async (workspaceFilePath: string | null) => {
     try {

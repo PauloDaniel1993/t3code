@@ -9,6 +9,7 @@ import { FileIcon, FolderIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useWorkspaceFileNativePicker } from "../hooks/useWorkspaceFileNativePicker";
 import { workspaceFileErrorMessage } from "../hooks/useImportWorkspaceFile";
+import { withAsyncCleanup } from "../lib/withAsyncCleanup";
 import {
   appendBrowsePathSegment,
   ensureBrowseDirectoryPath,
@@ -85,29 +86,39 @@ export function WorkspaceFilePickerDialog(props: {
     }
     setPending(true);
     setError(null);
-    try {
-      await props.onSelect(resolved.path);
-      props.onOpenChange(false);
-    } catch (cause) {
-      setError(workspaceFileErrorMessage(cause));
-    } finally {
-      setPending(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await props.onSelect(resolved.path);
+          props.onOpenChange(false);
+        } catch (cause) {
+          setError(workspaceFileErrorMessage(cause));
+        }
+      },
+      () => {
+        setPending(false);
+      },
+    );
   };
   const chooseNative = async () => {
     if (!pickNative || pending) return;
     setPending(true);
     setError(null);
     let selected: string | null = null;
-    try {
-      selected = await pickNative(
-        (browse.data?.parentPath ?? browsePath.directoryPath) || props.cwd || "~/",
-      );
-    } catch (cause) {
-      setError(workspaceFileErrorMessage(cause));
-    } finally {
-      setPending(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          selected = await pickNative(
+            (browse.data?.parentPath ?? browsePath.directoryPath) || props.cwd || "~/",
+          );
+        } catch (cause) {
+          setError(workspaceFileErrorMessage(cause));
+        }
+      },
+      () => {
+        setPending(false);
+      },
+    );
     if (selected) await submit(selected);
   };
   const selectedPath = !hasTrailingPathSeparator(query) ? (exactEntry?.fullPath ?? query) : query;

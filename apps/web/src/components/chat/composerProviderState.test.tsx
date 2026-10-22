@@ -141,7 +141,7 @@ describe("getComposerProviderState", () => {
 
   it("drops the plan agent from dispatch when legacy plan mode is disabled", () => {
     const state = getComposerProviderState({
-      provider: PROVIDER,
+      provider: ProviderDriverKind.make("opencode"),
       model: MODEL,
       models: modelWith([
         selectDescriptor("agent", [

@@ -1,4 +1,5 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { withAsyncCleanup } from "../lib/withAsyncCleanup";
 import {
   formatSidebarTaskStatus,
   resolveSidebarTaskState,
@@ -311,22 +312,30 @@ function TaskPeek({
   const steer = async () => {
     if (busy || text.trim() === "" || blocked || native) return;
     setBusy(true);
-    try {
-      const result = await send({
-        environmentId: shell.environmentId,
-        input: {
-          threadId: shell.id,
-          message: { messageId: newMessageId(), role: "user", text: text.trim(), attachments: [] },
-          runtimeMode: shell.runtimeMode,
-          interactionMode: shell.interactionMode,
-          dispatchMode: state === "running" ? "steer" : "auto",
-        },
-      });
-      reportFailure(result);
-      if (result._tag === "Success") setText("");
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        const result = await send({
+          environmentId: shell.environmentId,
+          input: {
+            threadId: shell.id,
+            message: {
+              messageId: newMessageId(),
+              role: "user",
+              text: text.trim(),
+              attachments: [],
+            },
+            runtimeMode: shell.runtimeMode,
+            interactionMode: shell.interactionMode,
+            dispatchMode: state === "running" ? "steer" : "auto",
+          },
+        });
+        reportFailure(result);
+        if (result._tag === "Success") setText("");
+      },
+      () => {
+        setBusy(false);
+      },
+    );
   };
   return createPortal(
     <div
@@ -400,28 +409,31 @@ function TaskPeek({
             disabled={busy}
             onClick={async () => {
               setBusy(true);
-              try {
-                const result =
-                  shell.latestRun?.status === "queued"
-                    ? await cancelQueued({
-                        environmentId: shell.environmentId,
-                        input: { threadId: shell.id, runId: shell.latestRun.runId },
-                      })
-                    : await interrupt({
-                        environmentId: shell.environmentId,
-                        input: {
-                          threadId: shell.id,
-                          ...(shell.runtime?.activeRunId == null
-                            ? shell.latestRun == null
-                              ? {}
-                              : { runId: shell.latestRun.runId }
-                            : { runId: shell.runtime.activeRunId }),
-                        },
-                      });
-                reportFailure(result);
-              } finally {
-                setBusy(false);
-              }
+              await withAsyncCleanup(
+                async () => {
+                  const result =
+                    shell.latestRun?.status === "queued"
+                      ? await cancelQueued({
+                          environmentId: shell.environmentId,
+                          input: { threadId: shell.id, runId: shell.latestRun.runId },
+                        })
+                      : await interrupt({
+                          environmentId: shell.environmentId,
+                          input: {
+                            threadId: shell.id,
+                            ...(shell.runtime?.activeRunId == null
+                              ? shell.latestRun == null
+                                ? {}
+                                : { runId: shell.latestRun.runId }
+                              : { runId: shell.runtime.activeRunId }),
+                          },
+                        });
+                  reportFailure(result);
+                },
+                () => {
+                  setBusy(false);
+                },
+              );
             }}
           >
             Cancel task

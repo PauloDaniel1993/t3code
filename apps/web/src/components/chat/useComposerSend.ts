@@ -1304,7 +1304,12 @@ export function useComposerSend(input: ComposerSendInput) {
     }
 
     if (failure !== null) {
-      if (isLocalDraftThread && draftId && draftThread) {
+      if (
+        isLocalDraftThread &&
+        draftId &&
+        draftThread &&
+        useComposerDraftStore.getState().getDraftSession(draftId)
+      ) {
         restoreFailedDraftThread(
           draftId,
           draftThread,
@@ -1331,16 +1336,18 @@ export function useComposerSend(input: ComposerSendInput) {
           threadContexts: sendSnapshot.threadContexts,
         },
         isOriginalRoute: () => currentRouteThreadKeyRef.current === routeThreadKey,
-        onRestored: (draft) => {
+        onRestored: (draft, preserveCursor) => {
           promptRef.current = draft.prompt;
           composerImagesRef.current = draft.images;
           composerFilesRef.current = draft.files;
           composerTerminalContextsRef.current = draft.terminalContexts;
-          composerRef.current?.resetCursorState({
-            prompt: draft.prompt,
-            cursor: collapseExpandedComposerCursor(draft.prompt, draft.prompt.length),
-            detectTrigger: true,
-          });
+          if (!preserveCursor) {
+            composerRef.current?.resetCursorState({
+              prompt: draft.prompt,
+              cursor: collapseExpandedComposerCursor(draft.prompt, draft.prompt.length),
+              detectTrigger: true,
+            });
+          }
         },
       });
       if (!recovered) {

@@ -42,6 +42,7 @@ import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useNewThreadTaskAvailability } from "~/hooks/useNewThreadTaskAvailability";
 import { cn, newMessageId } from "~/lib/utils";
+import { withAsyncCleanup } from "~/lib/withAsyncCleanup";
 import { selectActiveRightPanel, useRightPanelStore } from "~/rightPanelStore";
 import { useThreadShell } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
@@ -345,14 +346,12 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     [selectedMap],
   );
   const hiddenLinkCount = graph === null ? 0 : graph.edges.length - graph.backboneEdges.length;
-  const graphRevision = graph?.revision ?? null;
+  // Status and label changes keep the same topology, so retain its solver input.
+  const [layoutGraph, setLayoutGraph] = useState(graph);
+  if (layoutGraph?.revision !== graph?.revision) setLayoutGraph(graph);
   const layout = useMemo(
-    () => (graph !== null ? layoutStarMap(graph) : null),
-    // 7.7: keyed on the graph's content revision string, NOT on graph identity.
-    // A snapshot that changes only statuses or labels produces a new graph
-    // object with the SAME revision, and the ~300-iteration solver must not
-    // re-run; panel resize never reaches this memo at all — the camera adapts.
-    [graphRevision],
+    () => (layoutGraph !== null ? layoutStarMap(layoutGraph) : null),
+    [layoutGraph],
   );
   const selectedNode =
     state.selectedTicket !== null && graph !== null
@@ -392,66 +391,69 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     startInFlightRef.current = true;
     const submittedMapId = selectedMap.id;
     setIsStartingTasks(true);
-    try {
-      const result = await startTurn({
-        environmentId: thread.environmentId,
-        input: {
-          threadId: thread.id,
-          message: {
-            messageId: newMessageId(),
-            role: "user",
-            text: buildStartTicketsAsTasksPrompt(
-              {
-                ...selectedMap,
-                mapRelativePath: starMapTaskSourcePath(
-                  selectedMap.mapRelativePath,
-                  props.cwd,
-                  props.workspace,
-                ),
-              },
-              tickets.map((ticket) => ({
-                ...ticket,
-                relativePath: starMapTaskSourcePath(
-                  ticket.relativePath,
-                  props.cwd,
-                  props.workspace,
-                ),
-              })),
-            ),
-            attachments: [],
+    await withAsyncCleanup(
+      async () => {
+        const result = await startTurn({
+          environmentId: thread.environmentId,
+          input: {
+            threadId: thread.id,
+            message: {
+              messageId: newMessageId(),
+              role: "user",
+              text: buildStartTicketsAsTasksPrompt(
+                {
+                  ...selectedMap,
+                  mapRelativePath: starMapTaskSourcePath(
+                    selectedMap.mapRelativePath,
+                    props.cwd,
+                    props.workspace,
+                  ),
+                },
+                tickets.map((ticket) => ({
+                  ...ticket,
+                  relativePath: starMapTaskSourcePath(
+                    ticket.relativePath,
+                    props.cwd,
+                    props.workspace,
+                  ),
+                })),
+              ),
+              attachments: [],
+            },
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            dispatchMode: "queue",
           },
-          runtimeMode: thread.runtimeMode,
-          interactionMode: thread.interactionMode,
-          dispatchMode: "queue",
-        },
-      });
-      if (result._tag === "Success") {
-        // Only this batch leaves the selection; picks made while it was in
-        // flight, on this map or another, stay.
-        setSelection((current) =>
-          removeSubmittedTickets(
-            current,
-            submittedMapId,
-            tickets.map((ticket) => ticket.id),
-          ),
-        );
-        toastManager.add({
-          type: "success",
-          title: `Sent ${tickets.length} ${tickets.length === 1 ? "ticket" : "tickets"} to this thread`,
-          description: "Its agent starts one task per ticket and picks each model by complexity.",
         });
-      } else if (!isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        toastManager.add({
-          type: "error",
-          title: "Could not start the tickets",
-          description: error instanceof Error ? error.message : "The message was not sent.",
-        });
-      }
-    } finally {
-      startInFlightRef.current = false;
-      setIsStartingTasks(false);
-    }
+        if (result._tag === "Success") {
+          // Only this batch leaves the selection; picks made while it was in
+          // flight, on this map or another, stay.
+          setSelection((current) =>
+            removeSubmittedTickets(
+              current,
+              submittedMapId,
+              tickets.map((ticket) => ticket.id),
+            ),
+          );
+          toastManager.add({
+            type: "success",
+            title: `Sent ${tickets.length} ${tickets.length === 1 ? "ticket" : "tickets"} to this thread`,
+            description: "Its agent starts one task per ticket and picks each model by complexity.",
+          });
+        } else if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add({
+            type: "error",
+            title: "Could not start the tickets",
+            description: error instanceof Error ? error.message : "The message was not sent.",
+          });
+        }
+      },
+      () => {
+        startInFlightRef.current = false;
+        setIsStartingTasks(false);
+      },
+    );
   };
   const [ticketListOpen, setTicketListOpen] = useState(false);
   const ticketListId = useId();
@@ -468,7 +470,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   // Latest-layout ref so the native pointer handlers below always read the
   // current positions without re-registering on every snapshot.
   const layoutRef = useRef(layout);
-  layoutRef.current = layout;
+  useLayoutEffect(() => {
+    layoutRef.current = layout;
+  }, [layout]);
   // Camera survives Map/List toggles, per map — the toggle must not teleport.
   const cameraStashRef = useRef<{ mapId: string; camera: StarMapCamera } | null>(null);
   const selectedMapId = state.selectedMapId;

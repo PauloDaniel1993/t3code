@@ -25,6 +25,7 @@ import { useWorkspaceStatuses } from "../../state/workspaceVcs";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vcsEnvironment } from "../../state/vcs";
 import { randomUUID, cn } from "../../lib/utils";
+import { withAsyncCleanup } from "../../lib/withAsyncCleanup";
 import GitActionsControl from "../GitActionsControl";
 import { type WorkspaceFoldersProject, type WorkspaceFolderRow } from "../workspaceFolders.logic";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
@@ -143,64 +144,72 @@ export function WorkspaceVersionControl(props: {
     setError(null);
     setResults([]);
     setProgress({});
-    try {
-      const result = await runWorkspaceAction({
-        environmentId,
-        input: {
-          actionId: randomUUID(),
-          threadId,
-          action,
-          ...(action === "commit" ? { commitMessage: message.trim() } : {}),
-          members,
-          cwds: statusCwds.filter(
-            (cwd, index): cwd is string => available[index] === true && cwd !== null,
-          ),
-          onProgress: (event) => {
-            if (
-              event.kind !== "phase_started" &&
-              event.kind !== "action_finished" &&
-              event.kind !== "action_failed"
-            )
-              return;
-            const label =
-              event.kind === "phase_started"
-                ? event.label
-                : event.kind === "action_finished"
-                  ? event.result.toast.title
-                  : event.message;
-            setProgress((current) =>
-              current[event.cwd] === label ? current : { ...current, [event.cwd]: label },
-            );
-          },
-        },
-      });
-      if (result._tag === "Failure") {
-        setError(String(squashAtomCommandFailure(result)));
-        return;
-      }
-      setResults(result.value.results);
-      setPendingAction(null);
-      setMessage("");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not run the workspace action.");
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const result = await runWorkspaceAction({
+            environmentId,
+            input: {
+              actionId: randomUUID(),
+              threadId,
+              action,
+              ...(action === "commit" ? { commitMessage: message.trim() } : {}),
+              members,
+              cwds: statusCwds.filter(
+                (cwd, index): cwd is string => available[index] === true && cwd !== null,
+              ),
+              onProgress: (event) => {
+                if (
+                  event.kind !== "phase_started" &&
+                  event.kind !== "action_finished" &&
+                  event.kind !== "action_failed"
+                )
+                  return;
+                const label =
+                  event.kind === "phase_started"
+                    ? event.label
+                    : event.kind === "action_finished"
+                      ? event.result.toast.title
+                      : event.message;
+                setProgress((current) =>
+                  current[event.cwd] === label ? current : { ...current, [event.cwd]: label },
+                );
+              },
+            },
+          });
+          if (result._tag === "Failure") {
+            setError(String(squashAtomCommandFailure(result)));
+            return;
+          }
+          setResults(result.value.results);
+          setPendingAction(null);
+          setMessage("");
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : "Could not run the workspace action.");
+        }
+      },
+      () => {
+        setBusy(false);
+      },
+    );
   };
   const switchTo = async (name: string, members?: Array<string>) => {
     if (busy || !props.thread || !appAtomRegistry.get(branchPermissionAtom)) return;
     setBusy(true);
     setError(null);
-    try {
-      const result = await switchBranch({
-        environmentId,
-        input: { threadId, branch: name, ...(members ? { members } : {}) },
-      });
-      if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
-      else setBranchOpen(false);
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        const result = await switchBranch({
+          environmentId,
+          input: { threadId, branch: name, ...(members ? { members } : {}) },
+        });
+        if (result._tag === "Failure") setError(String(squashAtomCommandFailure(result)));
+        else setBranchOpen(false);
+      },
+      () => {
+        setBusy(false);
+      },
+    );
   };
   return (
     <>

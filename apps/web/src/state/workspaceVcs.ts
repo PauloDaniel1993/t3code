@@ -56,12 +56,14 @@ export function useSidebarBranchAgreement(
     );
   }, [environmentId, key, lease]);
   const secondary = useAtomValue(atom);
-  const state =
-    members && members.length >= 2 && secondary.length === members.length - 1
+  const state = useMemo(() => {
+    const tuple = JSON.parse(key) as Array<OrchestrationV2ThreadWorktree>;
+    return tuple.length >= 2 && secondary.length === tuple.length - 1
       ? workspaceBranchState(
-          members.map((member) => ({ expectedBranch: member.branch })),
+          tuple.map((member) => ({ expectedBranch: member.branch })),
           [primary, ...secondary],
         )
       : null;
+  }, [key, primary, secondary]);
   return useRetainedValue(JSON.stringify([environmentId, key]), state?.complete ? state : null);
 }

@@ -1,6 +1,12 @@
-import type {
-  OrchestrationV2ProviderFailureClass,
-  OrchestrationV2ThreadProjection,
+import {
+  MessageId,
+  NodeId,
+  ProviderDriverKind,
+  ProviderSessionId,
+  RunId,
+  TurnItemId,
+  type OrchestrationV2ProviderFailureClass,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { deriveThreadRuntime } from "@t3tools/client-runtime/state/thread-execution";
 import * as DateTime from "effect/DateTime";
@@ -12,21 +18,125 @@ import {
   shouldShowThreadErrorBanner,
 } from "./ThreadErrorBanner";
 import { dismissThreadError, presentThreadError } from "./threadErrorDismissal";
+import { makeThreadProjectionFixture } from "../../test-fixtures";
 
 const at = (minute: number) => DateTime.makeUnsafe(Date.UTC(2026, 2, 29, 0, minute));
 
 type RunStatus = "queued" | "running" | "completed" | "failed";
 
 interface ThreadParts {
-  runs?: ReadonlyArray<object>;
-  turnItems?: ReadonlyArray<object>;
-  providerSessions?: ReadonlyArray<object>;
+  runs?: OrchestrationV2ThreadProjection["runs"];
+  turnItems?: OrchestrationV2ThreadProjection["turnItems"];
+  providerSessions?: OrchestrationV2ThreadProjection["providerSessions"];
 }
+
+const baseProjection = makeThreadProjectionFixture();
 
 function session(lastError: string | null, updatedAtMinute: number): ThreadParts {
   return {
     providerSessions: [
-      { id: "session-1", providerInstanceId: "codex", lastError, updatedAt: at(updatedAtMinute) },
+      {
+        id: ProviderSessionId.make("session-1"),
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: baseProjection.thread.providerInstanceId,
+        status: lastError === null ? "ready" : "error",
+        cwd: "/workspace",
+        model: null,
+        capabilities: {
+          sessions: {
+            supportsMultipleProviderThreadsPerSession: false,
+            supportsModelSwitchInSession: false,
+            supportsProviderSwitchingViaHandoff: false,
+            supportsRuntimeModeSwitchInSession: false,
+            pendingRequestsSurviveRestart: false,
+          },
+          threads: {
+            canCreateEmptyThread: false,
+            canReadThreadSnapshot: false,
+            canRollbackThread: false,
+            canForkThread: false,
+            canForkFromTurn: false,
+            canForkFromSubagentThread: false,
+            exposesNativeThreadId: false,
+          },
+          turns: {
+            exposesNativeTurnId: false,
+            emitsTurnStarted: false,
+            emitsTurnCompleted: false,
+            supportsInterrupt: false,
+            supportsActiveSteering: false,
+            supportsSteeringByInterruptRestart: false,
+            supportsQueuedMessages: false,
+            terminalStatusQuality: "none",
+          },
+          streaming: {
+            streamsAssistantText: false,
+            streamsReasoning: false,
+            streamsToolOutput: false,
+            streamsPlanText: false,
+            emitsMessageCompleted: false,
+          },
+          tools: {
+            exposesToolItemIds: false,
+            emitsToolStarted: false,
+            emitsToolCompleted: false,
+            emitsToolOutput: false,
+            supportsMcpTools: false,
+            supportsDynamicToolCallbacks: false,
+          },
+          approvals: {
+            supportsCommandApproval: false,
+            supportsFileReadApproval: false,
+            supportsFileChangeApproval: false,
+            supportsApplyPatchApproval: false,
+            approvalsHaveNativeRequestIds: false,
+            approvalCallbacksAreLiveOnly: false,
+            approvalsCanOriginateFromSubagents: false,
+          },
+          planning: {
+            emitsPlanUpdated: false,
+            emitsTodoList: false,
+            emitsProposedPlan: false,
+            supportsStructuredQuestions: false,
+            planDeltasHaveItemIds: false,
+          },
+          subagents: {
+            supportsSubagents: false,
+            exposesSubagentThreadIds: false,
+            emitsSubagentLifecycle: false,
+            canWaitForSubagents: false,
+            canCloseSubagents: false,
+            canForkSubagentThread: false,
+          },
+          context: {
+            acceptsSystemContext: false,
+            acceptsDeveloperContext: false,
+            acceptsSyntheticUserContext: false,
+            canGenerateSummaries: false,
+            canConsumeHandoffSummaries: false,
+            supportsDeltaHandoff: false,
+            supportsFullThreadHandoff: false,
+            maxRecommendedHandoffChars: null,
+          },
+          checkpointing: {
+            appCanCheckpointFilesystem: false,
+            supportsNestedCheckpointScopes: false,
+            providerCanRollbackConversation: false,
+            providerRollbackReturnsSnapshot: false,
+            providerCanReadConversationSnapshot: false,
+          },
+          identity: {
+            nativeThreadIds: "none",
+            nativeTurnIds: "none",
+            nativeItemIds: "none",
+            nativeRequestIds: "none",
+          },
+          runtimePolicy: { enforcement: "client-boundary" },
+        },
+        lastError,
+        createdAt: at(0),
+        updatedAt: at(updatedAtMinute),
+      },
     ],
   };
 }
@@ -36,13 +146,21 @@ function run(id: string, ordinal: number, status: RunStatus): ThreadParts {
   return {
     runs: [
       {
-        id,
+        id: RunId.make(id),
+        threadId: baseProjection.thread.id,
         ordinal,
+        providerInstanceId: baseProjection.thread.providerInstanceId,
+        modelSelection: baseProjection.thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make(`message-${id}`),
+        activeAttemptId: null,
+        checkpointId: null,
+        contextHandoffId: null,
         status,
         requestedAt: at(minute),
         startedAt: status === "queued" ? null : at(minute),
         completedAt: status === "running" || status === "queued" ? null : at(minute + 1),
-        rootNodeId: `root-${id}`,
+        rootNodeId: NodeId.make(`root-${id}`),
       },
     ],
   };
@@ -57,9 +175,17 @@ function failure(
   return {
     turnItems: [
       {
-        id: `error-${runId}`,
-        runId,
-        nodeId: `root-${runId}`,
+        id: TurnItemId.make(`error-${runId}`),
+        threadId: baseProjection.thread.id,
+        runId: RunId.make(runId),
+        nodeId: NodeId.make(`root-${runId}`),
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        title: null,
+        startedAt: at(0),
+        completedAt: at(1),
         type: "error",
         status: "failed",
         ordinal: 1,
@@ -74,18 +200,15 @@ function failedRun(id: string, ordinal: number, message: string): ThreadParts[] 
   return [run(id, ordinal, "failed"), failure(id, message)];
 }
 
-/** A projection with only the parts the error banner reads. */
 function thread(...parts: ReadonlyArray<ThreadParts | ThreadParts[]>) {
   const flat = parts.flat();
   return {
-    thread: { providerInstanceId: "codex", activeProviderThreadId: null },
+    ...baseProjection,
     runs: flat.flatMap((part) => part.runs ?? []),
     turnItems: flat.flatMap((part) => part.turnItems ?? []),
     providerSessions: flat.flatMap((part) => part.providerSessions ?? []),
-    messages: [],
-    providerThreads: [],
     updatedAt: at(0),
-  } as unknown as OrchestrationV2ThreadProjection;
+  } satisfies OrchestrationV2ThreadProjection;
 }
 
 /**

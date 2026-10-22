@@ -49,8 +49,19 @@ vi.mock("../state/entities", () => ({
     ) ?? null,
 }));
 vi.mock("../state/server", () => ({
+  serverEnvironment: { configValueAtom: () => "configs" },
   environmentServerConfigsAtom: "configs",
   primaryServerKeybindingsAtom: "bindings",
+}));
+vi.mock("../state/presentation", () => ({
+  environmentPresentations: {
+    providersByEnvironmentAtom: "providers",
+    serverConfigsAtom: "configs",
+  },
+}));
+vi.mock("../state/session", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../state/session")>()),
+  readEnvironmentScope: () => true,
 }));
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: unknown) =>

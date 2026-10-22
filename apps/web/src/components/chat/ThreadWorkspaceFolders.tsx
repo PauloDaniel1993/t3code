@@ -1,6 +1,7 @@
 import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
 import { useState } from "react";
+import { withAsyncCleanup } from "../../lib/withAsyncCleanup";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { projectEnvironment } from "../../state/projects";
 import { WorkspaceFolderGroups } from "../WorkspaceFolderGroups";
@@ -72,15 +73,18 @@ function WorkspaceFileRecovery({
   const mutate = async (workspaceFilePath: string | null) => {
     if (busy) return;
     setBusy(true);
-    try {
-      const result = await update({
-        environmentId,
-        input: { projectId: project.id, workspaceFilePath },
-      });
-      if (result._tag === "Success") setMode(null);
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        const result = await update({
+          environmentId,
+          input: { projectId: project.id, workspaceFilePath },
+        });
+        if (result._tag === "Success") setMode(null);
+      },
+      () => {
+        setBusy(false);
+      },
+    );
   };
   return (
     <div className="mx-2 my-2 rounded-lg border border-warning/30 p-2 text-2xs">

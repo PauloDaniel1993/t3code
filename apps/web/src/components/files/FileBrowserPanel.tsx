@@ -10,7 +10,7 @@ import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
 import { ChevronsDownUp, ChevronsUpDown } from "lucide";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { InputGroup, InputGroupInput } from "~/components/ui/input-group";
@@ -314,7 +314,9 @@ export default function FileBrowserPanel({
     folders,
     searchFolders: pathSearch.folders,
   });
-  selectionRef.current = { onOpenFile, workspace, folders, searchFolders: pathSearch.folders };
+  useLayoutEffect(() => {
+    selectionRef.current = { onOpenFile, workspace, folders, searchFolders: pathSearch.folders };
+  }, [onOpenFile, workspace, folders, pathSearch.folders]);
   const { model } = useFileTree({
     composition: {
       contextMenu: {

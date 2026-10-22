@@ -76,7 +76,7 @@ export function recoverFailedSendDraft(options: {
   messageId: MessageId;
   failedDraft: FailedSendDraft;
   isOriginalRoute: () => boolean;
-  onRestored: (draft: FailedSendDraft) => void;
+  onRestored: (draft: FailedSendDraft, preserveCursor: boolean) => void;
 }) {
   // Read the sending thread's latest projection, even after navigation. A transport
   // failure alone cannot tell us whether the server committed the message.
@@ -168,7 +168,7 @@ export function recoverFailedSendDraft(options: {
     mergeById(current?.threadContexts ?? [], failed.threadContexts, (item) => item.contextId),
   );
   const draft = store.getComposerDraft(target);
-  if (draft && options.isOriginalRoute()) options.onRestored(draft);
+  if (draft && options.isOriginalRoute()) options.onRestored(draft, prompt.length > 0);
   // The mounted composer saves its own images. Offscreen reads must not delay
   // the send error or spinner; re-read ownership after promotion or typing.
   if (!options.isOriginalRoute()) {

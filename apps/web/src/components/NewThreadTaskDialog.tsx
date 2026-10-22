@@ -12,6 +12,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { useCallback, useId, useMemo, useRef, useState } from "react";
 import { useEnvironmentSettings } from "../hooks/useSettings";
+import { withAsyncCleanup } from "../lib/withAsyncCleanup";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../modelSelection";
 import {
   applyProviderInstanceSettings,
@@ -135,16 +136,21 @@ export function NewThreadTaskDialog(props: {
     submittingRef.current = true;
     setSubmitting(true);
     setFailure(null);
-    try {
-      const error = await onRequest(draft, model);
-      if (error === null) onClose();
-      else setFailure(error);
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : "Could not request a task.");
-    } finally {
-      submittingRef.current = false;
-      setSubmitting(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const error = await onRequest(draft, model);
+          if (error === null) onClose();
+          else setFailure(error);
+        } catch (error) {
+          setFailure(error instanceof Error ? error.message : "Could not request a task.");
+        }
+      },
+      () => {
+        submittingRef.current = false;
+        setSubmitting(false);
+      },
+    );
   }
 
   return (

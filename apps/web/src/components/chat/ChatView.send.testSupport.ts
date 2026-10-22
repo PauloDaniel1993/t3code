@@ -26,7 +26,10 @@ import * as ChatLogic from "../ChatView.logic";
 import { toastManager } from "../ui/toast";
 import { stackedThreadToast } from "../ui/toastHelpers";
 import * as Recovery from "./failedSendRecovery";
-import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
+import {
+  ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+  threadContextsOutsideEnvironment,
+} from "@t3tools/shared/composerContextReferences";
 import { fileAttachmentCapabilityBlockReason } from "./composerAttachmentFiles";
 import composerSendSource from "./useComposerSend.ts?raw";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
@@ -130,6 +133,7 @@ export function createSendHarness(
     truncate,
     PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
     ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+    threadContextsOutsideEnvironment,
     AuthOrchestrationOperateScope,
     DEFAULT_MODEL,
     readEnvironmentScope: () => true,
