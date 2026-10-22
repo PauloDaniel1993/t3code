@@ -1,8 +1,9 @@
-import { fileBasename, workspaceRelativeFilePath } from "@t3tools/shared/path";
+import { fileBasename, isAbsolutePath, workspaceRelativeFilePath } from "@t3tools/shared/path";
 import {
   inlineCodeFilePathCandidate,
   isRelativeFilePath,
   normalizeMarkdownLinkDestination,
+  parseMarkdownFileLink,
   resolveMarkdownFileLinkTarget,
 } from "@t3tools/shared/markdownLinks";
 import { parseFileUrlHref, splitFilePathPosition } from "@t3tools/shared/fileLinks";
@@ -13,6 +14,7 @@ import { isTerminalLinkActivation } from "./terminal-links";
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 export interface MarkdownFileLinkMeta {
   filePath: string;
+  workspaceLookupPath: string | null;
   targetPath: string;
   displayPath: string;
   workspaceRelativePath: string | null;
@@ -77,11 +79,6 @@ export function resolveInlineCodeFileLinkMeta(
   );
 }
 
-/**
- * Prose in a workspace file names other files from the repo root (`docs/ai/design.md`),
- * unlike an explicit link. Single-segment names (`design.md:12`) and `./`, `../`
- * paths still read as siblings, and files outside the workspace keep their own base.
- */
 function inlineCodePathNamesFromWorkspaceRoot(
   candidate: string,
   cwd: string | undefined,
@@ -100,10 +97,20 @@ export function resolveMarkdownFileLinkMeta(
 ): MarkdownFileLinkMeta | null {
   const targetPath = resolveMarkdownFileLinkTarget(href, cwd, baseDir);
   if (!targetPath) return null;
-  return buildFileLinkMetaFromTarget(targetPath, cwd);
+  const source = href ? parseMarkdownFileLink(href) : null;
+  return {
+    ...buildFileLinkMetaFromTarget(targetPath, cwd),
+    workspaceLookupPath:
+      source !== null &&
+      !isAbsolutePath(source.path) &&
+      baseDir !== undefined &&
+      workspaceRelativeFilePath(baseDir, cwd) === "."
+        ? source.path
+        : null,
+  };
 }
 
-function buildFileLinkMetaFromTarget(targetPath: string, cwd?: string): MarkdownFileLinkMeta {
+function buildFileLinkMetaFromTarget(targetPath: string, cwd?: string) {
   const { path, line, column } = splitFilePathPosition(targetPath);
   return {
     filePath: path,

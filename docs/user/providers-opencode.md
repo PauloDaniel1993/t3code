@@ -67,6 +67,6 @@ from the catalog. If OpenCode rejects that model, select an available one and re
 
 ## Multi-root projects
 
-In a [multi-root project](./project-settings.md#vs-code-workspace-files), OpenCode can't yet run a
-thread that reaches folders outside its primary folder, and OpenCode 2 doesn't support such
-threads. Choose Codex or Claude for those threads. Other threads are unaffected.
+In a [multi-root project](./project-settings.md#vs-code-workspace-files), OpenCode 1.x and 2.x
+aren't yet available for threads that reach folders outside their primary folder. Choose Codex or
+Claude for those threads. Other threads are unaffected.

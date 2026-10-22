@@ -18,6 +18,8 @@ import {
   v2PullRequestThread,
 } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as Option from "effect/Option";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { refreshPushedPullRequests } from "./refreshPushedPullRequests.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -91,6 +93,9 @@ const layerDependenciesFor = (
   resolvedCheckouts: Array<string> = [],
 ) =>
   Layer.mergeAll(
+    Layer.mock(ProjectService.ProjectService)({
+      getShell: () => Effect.succeed(Option.some(project)),
+    }),
     Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
       resolve: (cwd) =>
         Effect.sync(() => {
@@ -151,19 +156,6 @@ describe("createdPullRequestKey", () => {
         undefined,
       ),
     ).toBeNull();
-  });
-
-  it("yields nothing when no pull request came out of the action", () => {
-    expect(
-      createdPullRequestKey(prResult({ status: "skipped_not_requested" }), project),
-    ).toBeNull();
-    expect(
-      createdPullRequestKey(
-        prResult({ status: "created", url: "https://github.com/a/b/pull/1" }),
-        project,
-      ),
-    ).toBeNull();
-    expect(createdPullRequestKey(prResult({ status: "created", number: 1 }), project)).toBeNull();
   });
 });
 
@@ -231,7 +223,7 @@ describe("linkCreatedPullRequest", () => {
         commandId,
       }).pipe(Effect.provide(dependencies));
 
-      expect(resolvedCheckouts).toEqual([OTHER_CHECKOUT, project.workspaceRoot]);
+      expect(resolvedCheckouts).toEqual([OTHER_CHECKOUT]);
       expect(
         (yield* Ref.get(commands)).map((command) =>
           command.type === "thread.pull-request.link"

@@ -68,6 +68,16 @@ const make = Effect.gen(function* () {
       );
     const refreshError = (cause: unknown) =>
       new RunFinalizationError({ ...input, operation: "refresh-workspace", cause });
+    const refresh = (input: Parameters<typeof observer.refresh>[0]) =>
+      observer.refresh(input).pipe(
+        Effect.catchTags({
+          RunFinalizationRefreshError: (cause) =>
+            Effect.logWarning("Failed to refresh workspace after checkpoint capture", {
+              ...input,
+              cause,
+            }),
+        }),
+      );
     const { run, scope } = yield* projections
       .getCheckpointCaptureContext(input.threadId, input)
       .pipe(Effect.mapError(refreshError));
@@ -82,10 +92,7 @@ const make = Effect.gen(function* () {
           );
     yield* Effect.forEach(
       locations,
-      (cwd) =>
-        observer
-          .refresh({ cwd, threadId: input.threadId, runId: input.runId })
-          .pipe(Effect.mapError(refreshError)),
+      (cwd) => refresh({ cwd, threadId: input.threadId, runId: input.runId }),
       { concurrency: 4, discard: true },
     );
     const thread = yield* projections
@@ -99,14 +106,12 @@ const make = Effect.gen(function* () {
     yield* Effect.forEach(
       roots,
       (member) =>
-        observer
-          .refresh({
-            cwd: member.path,
-            threadId: input.threadId,
-            runId: input.runId,
-            vcsOnly: true,
-          })
-          .pipe(Effect.mapError(refreshError)),
+        refresh({
+          cwd: member.path,
+          threadId: input.threadId,
+          runId: input.runId,
+          vcsOnly: true,
+        }),
       { concurrency: 4, discard: true },
     );
   });
@@ -124,8 +129,8 @@ export const layerObserver = Layer.effect(
     const pullRequests = yield* PullRequestService.PullRequestService;
     return {
       refreshAfterTurn: pullRequests.refreshAfterTurn,
-      refresh: ({ cwd, threadId, runId, vcsOnly }) =>
-        Effect.gen(function* () {
+      refresh: Effect.fn("RunFinalizationService.refresh")(
+        function* ({ cwd, threadId, runId, vcsOnly }) {
           if (vcsOnly) {
             yield* vcsStatus.refreshLocalStatus(cwd);
             return;
@@ -147,7 +152,10 @@ export const layerObserver = Layer.effect(
               }),
             ),
           );
-        }).pipe(Effect.mapError((cause) => new RunFinalizationRefreshError({ cwd, cause }))),
+        },
+        (effect, { cwd }) =>
+          effect.pipe(Effect.mapError((cause) => new RunFinalizationRefreshError({ cwd, cause }))),
+      ),
     };
   }),
 );

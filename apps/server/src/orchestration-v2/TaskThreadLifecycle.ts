@@ -7,8 +7,8 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
-import type { IdAllocatorV2 } from "@t3tools/provider-core/server/IdAllocator";
-import type { ProjectionStoreV2 } from "./ProjectionStore.ts";
+import type { IdAllocatorV2, IdAllocatorV2Error } from "@t3tools/provider-core/server/IdAllocator";
+import type { ProjectionStoreV2, ProjectionStoreV2Error } from "./ProjectionStore.ts";
 
 type Plan = {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -25,7 +25,7 @@ export function withTaskThreadLifecycle<E, R>(
   projectionStore: ProjectionStoreV2["Service"],
   idAllocator: IdAllocatorV2["Service"],
   plan: (command: OrchestrationV2ServerCommand) => Effect.Effect<Plan, E, R>,
-) {
+): (parentPlan: Plan) => Effect.Effect<Plan, E | ProjectionStoreV2Error | IdAllocatorV2Error, R> {
   return Effect.fnUntraced(function* (parentPlan: Plan) {
     // Upstream has already validated the parent before any child effects are planned.
     if (
@@ -47,7 +47,7 @@ export function withTaskThreadLifecycle<E, R>(
       const thread = yield* projectionStore
         .getThread(id)
         .pipe(
-          Effect.catchTag("ProjectionStoreThreadNotFoundError", () => Effect.succeed(undefined)),
+          Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(undefined) }),
         );
       if (
         thread !== undefined &&
@@ -72,7 +72,12 @@ export function withTaskThreadLifecycle<E, R>(
         commandId: CommandId.make(`${command.commandId}:task:${child.id}`),
       };
       // Native archive/delete planners own run cancellation and durable cleanup.
-      const childPlan = yield* plan(childCommand);
+      const childPlan = yield* withTaskThreadLifecycle(
+        childCommand,
+        projectionStore,
+        idAllocator,
+        plan,
+      )(yield* plan(childCommand));
       events.push(...childPlan.events);
       effects.push(...childPlan.effects);
     }

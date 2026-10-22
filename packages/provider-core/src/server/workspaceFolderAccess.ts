@@ -15,8 +15,8 @@ export const WORKSPACE_FOLDER_ACCESS = {
   acpRegistry: "unverified",
   antigravity: "unverified",
   opencode: "unverified",
-  // OpenCode 2 and Grok have no way to be given folders beyond cwd.
-  opencode2: "unsupported",
+  // OpenCode 2 accepts directory rules; live folder verification is still pending.
+  opencode2: "unverified",
   grok: "unsupported",
   pi: "unverified",
 } as const satisfies Record<string, ProviderWorkspaceFolderAccess>;

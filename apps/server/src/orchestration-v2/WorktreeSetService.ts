@@ -188,6 +188,7 @@ export class WorktreeSetService extends Context.Service<
       readonly threadId: ThreadId;
       readonly set: WorktreeSet;
       readonly expectedWorktreePath?: string | null | undefined;
+      readonly expectedBranch?: string | null | undefined;
     }) => Effect.Effect<
       WorktreeSetBinding,
       | Orchestrator.OrchestratorV2Error
@@ -581,23 +582,17 @@ const make = Effect.gen(function* () {
     member: PlannedMember,
     baseBranch: string,
   ) {
-    yield* git.fetchRemote({
-      cwd: member.repositoryRoot,
-      remoteName: "origin",
-      refName: baseBranch,
-    });
-    const remoteBaseExists = yield* git.remoteBranchExists({
+    const remote = yield* git.fetchWorktreeBaseCommit({
       cwd: member.repositoryRoot,
       refName: baseBranch,
-      remoteName: "origin",
     });
-    if (!remoteBaseExists) return { ref: member.startRef, fromOrigin: false };
-    const remote = yield* git.resolveRemoteTrackingCommit({
-      cwd: member.repositoryRoot,
-      refName: baseBranch,
-      fallbackRemoteName: "origin",
-    });
-    return { ref: remote.commitSha, fromOrigin: true };
+    return remote === null
+      ? { ref: member.startRef, fromOrigin: false, baseRefName: baseBranch }
+      : {
+          ref: remote.commitSha,
+          fromOrigin: true,
+          baseRefName: `refs/remotes/${remote.remoteRefName}`,
+        };
   });
 
   const create: WorktreeSetService["Service"]["create"] = Effect.fn("WorktreeSetService.create")(
@@ -608,7 +603,12 @@ const make = Effect.gen(function* () {
         // without the base there, start from the local base.
         const fetching = yield* Effect.forEach(planned.members, (member) =>
           planned.startFromOrigin && member.baseBranch !== null
-            ? git.remoteExists({ cwd: member.repositoryRoot, remoteName: "origin" })
+            ? git
+                .resolveWorktreeBaseRemote({
+                  cwd: member.repositoryRoot,
+                  refName: member.baseBranch,
+                })
+                .pipe(Effect.map((remote) => remote !== null))
             : Effect.succeed(false),
         );
         const fetches = fetching.some(Boolean);
@@ -616,7 +616,11 @@ const make = Effect.gen(function* () {
         const starts = yield* Effect.forEach(planned.members, (member, index) =>
           fetching[index] === true && member.baseBranch !== null
             ? originStart(member, member.baseBranch)
-            : Effect.succeed({ ref: member.startRef, fromOrigin: false }),
+            : Effect.succeed({
+                ref: member.startRef,
+                fromOrigin: false,
+                baseRefName: member.baseBranch,
+              }),
         );
         if (fetches) yield* progress.stage("fetch", "done");
 
@@ -636,7 +640,9 @@ const make = Effect.gen(function* () {
                 cwd: member.repositoryRoot,
                 refName: starts[planned.members.indexOf(member)]!.ref,
                 newRefName: member.branch,
-                ...(member.baseBranch === null ? {} : { baseRefName: member.baseBranch }),
+                ...(starts[planned.members.indexOf(member)]!.baseRefName === null
+                  ? {}
+                  : { baseRefName: starts[planned.members.indexOf(member)]!.baseRefName! }),
                 path: member.path,
               },
               {
@@ -719,6 +725,7 @@ const make = Effect.gen(function* () {
         ...(input.expectedWorktreePath === undefined
           ? {}
           : { expectedWorktreePath: input.expectedWorktreePath }),
+        ...(input.expectedBranch === undefined ? {} : { expectedBranch: input.expectedBranch }),
       });
       return binding;
     },

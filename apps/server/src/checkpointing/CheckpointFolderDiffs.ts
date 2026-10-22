@@ -39,23 +39,29 @@ export function collectCheckpointDiffs(
   maxOutputBytes = CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
 ) {
   return Effect.gen(function* () {
-    let remainingBytes = Math.min(maxOutputBytes, CHECKPOINT_DIFF_MAX_OUTPUT_BYTES);
-    const diffs: Array<{ readonly label: string | undefined; readonly diff: string }> = [];
+    const budget = Math.min(maxOutputBytes, CHECKPOINT_DIFF_MAX_OUTPUT_BYTES);
+    let remainingBytes = budget;
+    const diffs: Array<{ readonly label: string | undefined; diff: string }> = [];
     for (const input of inputs) {
-      if (remainingBytes <= 0) break;
       const { label, ...diffInput } = input;
-      const output = yield* diffCheckpoints({ ...diffInput, maxOutputBytes: remainingBytes });
+      // One extra byte distinguishes an exact fit from truncated output, even across folders.
+      const output = yield* diffCheckpoints({ ...diffInput, maxOutputBytes: remainingBytes + 1 });
       const outputBytes = Buffer.byteLength(output, "utf8");
-      // A git byte cap can split UTF-8; decoding its replacement character may
-      // grow the returned string. Keep the encoded result inside the budget too.
-      const diff =
-        outputBytes > remainingBytes
-          ? new TextDecoder().decode(Buffer.from(output).subarray(0, remainingBytes), {
-              stream: true,
-            })
-          : output;
-      remainingBytes -= Math.min(outputBytes, remainingBytes);
-      diffs.push({ label, diff });
+      diffs.push({ label, diff: output });
+      if (outputBytes > remainingBytes) {
+        const marker = "\n\n[truncated]";
+        let available = Math.max(0, budget - Buffer.byteLength(marker));
+        for (const entry of diffs) {
+          const bytes = Buffer.byteLength(entry.diff);
+          entry.diff = new TextDecoder().decode(Buffer.from(entry.diff).subarray(0, available), {
+            stream: true,
+          });
+          available = Math.max(0, available - bytes);
+        }
+        diffs[diffs.length - 1]!.diff += marker;
+        break;
+      }
+      remainingBytes -= outputBytes;
     }
     return diffs;
   });

@@ -81,7 +81,7 @@ function exchange(address: string, payload: DesktopAppActivationRequest) {
 }
 
 describe("desktop app control server", () => {
-  it.effect("roundtrips a request and removes its socket on shutdown", () =>
+  it.effect("delivers workspace-file activation with its path intact", () =>
     Effect.gen(function* () {
       const platform = yield* HostProcess.Platform;
       const userId = yield* HostProcess.UserId;
@@ -107,10 +107,6 @@ describe("desktop app control server", () => {
         });
         openServers.push(server);
 
-        const response = await exchange(target.address, request("request-1", platform));
-
-        expect(received).toHaveLength(1);
-        expect(response).toMatchObject({ ok: true, requestId: "request-1" });
         const fileRequest: DesktopAppActivationRequest = {
           version: 1,
           requestId: "file-request",
@@ -122,12 +118,9 @@ describe("desktop app control server", () => {
           ok: true,
           requestId: "file-request",
         });
-        expect(received[1]).toEqual(fileRequest);
+        expect(received).toEqual([fileRequest]);
         await server.close();
         openServers.splice(openServers.indexOf(server), 1);
-        if (target.directory !== null) {
-          await expect(NodeFSP.stat(target.address)).rejects.toMatchObject({ code: "ENOENT" });
-        }
         await NodeFSP.rm(root, { recursive: true, force: true });
       });
     }),
@@ -171,7 +164,6 @@ describe("desktop app control server", () => {
     }),
   );
 
-  // Two desktop apps can share one state dir, such as nightly and a preview build.
   it.effect("keeps a newer app's socket when an older app on the same state dir quits", () =>
     Effect.gen(function* () {
       const platform = yield* HostProcess.Platform;

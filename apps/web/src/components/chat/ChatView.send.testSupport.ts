@@ -9,6 +9,7 @@ import {
   AuthOrchestrationOperateScope,
   DEFAULT_MODEL,
   type ScopedThreadRef,
+  type ServerConfig,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -27,15 +28,22 @@ import { stackedThreadToast } from "../ui/toastHelpers";
 import * as Recovery from "./failedSendRecovery";
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 import { fileAttachmentCapabilityBlockReason } from "./composerAttachmentFiles";
-import chatViewSource from "../ChatView.tsx?raw";
+import composerSendSource from "./useComposerSend.ts?raw";
+import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
+import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
+import {
+  prepareTurnAttachments,
+  resolveMultipleModelTargets,
+  restoreComposerDraft,
+} from "./chatViewSend";
 
 // Run the production handler itself, including its awaits and failure branches.
 // Only the surrounding view's hook bindings are supplied by this headless harness;
 // it avoids mounting unrelated timelines, terminals and browser panels.
-const handlerStart = chatViewSource.indexOf("  const onSend = async (");
-const handlerEnd = chatViewSource.indexOf("\n  const onRespondToApproval", handlerStart);
-if (handlerStart < 0 || handlerEnd < 0) throw new Error("ChatView send handler was not found");
-const handler = NodeModule.stripTypeScriptTypes(chatViewSource.slice(handlerStart, handlerEnd));
+const handlerStart = composerSendSource.indexOf("  const onSend = async (");
+const handlerEnd = composerSendSource.indexOf("\n  return { onSend };", handlerStart);
+if (handlerStart < 0 || handlerEnd < 0) throw new Error("Composer send handler was not found");
+const handler = NodeModule.stripTypeScriptTypes(composerSendSource.slice(handlerStart, handlerEnd));
 
 export function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -97,6 +105,27 @@ export function createSendHarness(
     scopeThreadRef,
     scopedThreadKey,
     fileAttachmentCapabilityBlockReason,
+    deriveThreadTitleSeed,
+    wasBootstrapThreadDeleted,
+    prepareTurnAttachments,
+    resolveMultipleModelTargets,
+    restoreComposerDraft,
+    readPendingEnvironmentChange: () => null,
+    readEnvironmentPresentation: (id: ScopedThreadRef["environmentId"]) => ({
+      serverConfig: (
+        appAtomRegistry.get("configs" as never) as ReadonlyMap<
+          ScopedThreadRef["environmentId"],
+          ServerConfig
+        >
+      ).get(id),
+    }),
+    providerInstanceEntries: [],
+    planModeEnabled: false,
+    pendingApprovalsRef: { current: [] },
+    respondingRequestIdsRef: { current: [] },
+    queuedRunEdit: { isEditing: false },
+    beginWorktreeSetup: vi.fn(),
+    anchorNewTurn: vi.fn(),
     assistantCitationsToPlainText,
     truncate,
     PROVIDER_SEND_TURN_MAX_ATTACHMENTS,

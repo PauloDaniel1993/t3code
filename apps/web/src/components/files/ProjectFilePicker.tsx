@@ -91,45 +91,38 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
   );
   const { resolvedTheme } = useTheme();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
-  const matches = useMemo(
-    () => getProjectFilePickerMatches(result.entries, result.matchedQuery),
-    [result.entries, result.matchedQuery],
-  );
+  const matches = getProjectFilePickerMatches(result.entries, result.matchedQuery);
   const hasMatchedQuery = /\S/.test(result.matchedQuery);
-  const items = useMemo<CommandPaletteActionItem[]>(
-    () =>
-      matches.map((match) => ({
-        kind: "action",
-        value: `file:${match.path}`,
-        searchTerms: [match.name, match.path],
-        title: (
-          <HighlightedFuzzyText
-            active={hasMatchedQuery}
-            value={match.name}
-            indices={match.nameMatchIndices}
-          />
-        ),
-        description: (
-          <HighlightedFuzzyText
-            active={hasMatchedQuery}
-            value={match.path}
-            indices={match.pathMatchIndices}
-          />
-        ),
-        icon: <PierreEntryIcon pathValue={match.path} kind="file" theme={resolvedTheme} />,
-        run: async () => {
-          useRightPanelStore
-            .getState()
-            .openFile(
-              target.threadRef,
-              match.path,
-              undefined,
-              workspaceResultFolderPath(match.path, result.folders),
-            );
-        },
-      })),
-    [hasMatchedQuery, matches, resolvedTheme, target.threadRef, result.folders],
-  );
+  const items: CommandPaletteActionItem[] = matches.map((match) => ({
+    kind: "action",
+    value: `file:${match.path}`,
+    searchTerms: [match.name, match.path],
+    title: (
+      <HighlightedFuzzyText
+        active={hasMatchedQuery}
+        value={match.name}
+        indices={match.nameMatchIndices}
+      />
+    ),
+    description: (
+      <HighlightedFuzzyText
+        active={hasMatchedQuery}
+        value={match.path}
+        indices={match.pathMatchIndices}
+      />
+    ),
+    icon: <PierreEntryIcon pathValue={match.path} kind="file" theme={resolvedTheme} />,
+    run: async () => {
+      useRightPanelStore
+        .getState()
+        .openFile(
+          target.threadRef,
+          match.path,
+          undefined,
+          workspaceResultFolderPath(match.path, result.folders),
+        );
+    },
+  }));
 
   const emptyStateMessage = getEmptyStateMessage(query, result.error, result.isPending);
 

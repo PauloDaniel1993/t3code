@@ -2,7 +2,7 @@ import { nativeAgentOutcomeSummary } from "@t3tools/client-runtime/state/native-
 import type { OrchestrationV2Subagent } from "@t3tools/contracts";
 import { View } from "react-native";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 
 export function NativeAgentOutcomeSummary(props: {
   readonly agents: ReadonlyArray<Pick<OrchestrationV2Subagent, "status">>;

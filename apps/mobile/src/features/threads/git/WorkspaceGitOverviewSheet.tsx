@@ -6,18 +6,14 @@ import {
   workspaceActionState,
 } from "@t3tools/client-runtime/state/vcs";
 import type { WorkspaceGitCheckout } from "@t3tools/shared/workspaceFolders";
-import {
-  resolveThreadPullRequestChains,
-  threadPullRequestKeyOf,
-} from "@t3tools/shared/threadPullRequests";
 import { useMemo, useState } from "react";
 import { Atom } from "effect/reactivity";
 import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
 import { Screen, ScreenStack, ScreenStackHeaderConfig } from "react-native-screens";
 import * as Cause from "effect/Cause";
-import { AppText as Text, AppTextInput } from "../../../components/AppText";
-import { MaterialButton } from "../../../components/MaterialButton";
-import { AndroidSheetHeader } from "../../../components/AndroidScreenHeader";
+import { AppText as Text, AppTextInput } from "../../../components/ui/AppText";
+import { Button } from "../../../components/ui/Button";
+import { AndroidSheetHeader } from "../../../components/ui/AndroidScreenHeader";
 import { withUniwind } from "uniwind";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { uuidv4 } from "../../../lib/uuid";
@@ -28,7 +24,16 @@ import { vcsActionManager, vcsEnvironment, workspaceVcs } from "../../../state/v
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { resolveGitOverviewReviewNavigationAction } from "./git-overview-navigation";
 import { workspaceGitSummary } from "./workspace-git-model";
-import { SheetListRow } from "./gitSheetComponents";
+import { ListRow } from "../../../components/ui/ListRow";
+import { ListSection } from "../../../components/ui/ListSection";
+import { useRemoteEnvironmentRuntime } from "../../../state/use-remote-environment-registry";
+import { useOpenPullRequest } from "../../../native/useOpenPullRequest";
+import {
+  LinkedPullRequestRow,
+  linkedPullRequestKey,
+  useLinkedPullRequestLines,
+} from "../LinkedPullRequestList";
+import { useLinkedPullRequestActions } from "../useLinkedPullRequestActions";
 
 const ThemedScreen = withUniwind(Screen);
 const ThemedHeader = withUniwind(ScreenStackHeaderConfig, {
@@ -120,7 +125,7 @@ function RepositoryControls(props: {
       </Text>
       {actionState.isRunning ? <Text className="text-sm">{actionState.currentLabel}</Text> : null}
       {props.drifted && checkout.expectedBranch ? (
-        <MaterialButton
+        <Button
           label={`Switch back to ${checkout.expectedBranch}`}
           disabled={busy || !canSwitchBranch}
           onPress={() => {
@@ -154,7 +159,7 @@ function RepositoryControls(props: {
         />
       ) : null}
       <View className="flex-row flex-wrap gap-2">
-        <MaterialButton
+        <Button
           label="Commit"
           disabled={busy || !canRunAction || !status?.hasWorkingTreeChanges}
           onPress={() =>
@@ -163,12 +168,12 @@ function RepositoryControls(props: {
               : setCommitOpen(!commitOpen)
           }
         />
-        <MaterialButton
+        <Button
           label="Push"
           disabled={busy || !canRunAction || !status?.hasPrimaryRemote || !status.refName}
           onPress={() => void runAction("push")}
         />
-        <MaterialButton
+        <Button
           label={status?.pr?.state === "open" ? `PR #${status.pr.number}` : "Create PR"}
           disabled={
             busy ||
@@ -193,7 +198,7 @@ function RepositoryControls(props: {
             onChangeText={setMessage}
             editable={!busy}
           />
-          <MaterialButton
+          <Button
             label={`Commit ${checkout.label}`}
             disabled={busy || !canRunAction}
             onPress={() => void runAction("commit")}
@@ -221,48 +226,54 @@ function PrimaryRepositoryTools(props: {
   return (
     <View className="gap-1">
       <Text className="font-t3-semibold">Primary repository</Text>
-      <SheetListRow
-        icon="arrow.down.circle"
-        title="Pull latest"
-        subtitle={`${props.status?.behindCount ?? 0} commits behind upstream`}
-        disabled={props.busy || !canPull || !props.status?.hasUpstream}
-        onPress={() => {
-          if (!appAtomRegistry.get(pullPermission)) return;
-          void vcsActionManager.track(
-            appAtomRegistry,
-            { environmentId: props.target.environmentId, cwd: props.checkout.cwd },
-            { operation: "pull", label: "Pulling latest changes" },
-            async () => {
-              const result = await pull({
-                environmentId: props.target.environmentId,
-                input: { cwd: props.checkout.cwd },
-              });
-              reportFailure(result);
-              return result;
-            },
-          );
-        }}
-      />
-      <SheetListRow
-        icon="text.bubble"
-        title="Review changes"
-        subtitle="Inspect turn diffs, working tree changes, and base branch diff"
-        disabled={props.busy || !props.status?.isRepo}
-        onPress={() =>
-          navigation.dispatch(
-            resolveGitOverviewReviewNavigationAction(props.presentation) === "replace"
-              ? StackActions.replace("ThreadReview", props.target)
-              : CommonActions.navigate("ThreadReview", props.target),
-          )
-        }
-      />
-      <SheetListRow
-        icon="point.topleft.down.curvedto.point.bottomright.up"
-        title="Branches & worktrees"
-        subtitle="Switch branch, create branch, or move the primary to a worktree"
-        disabled={props.busy || !canChangeThreadBranch || !props.status?.isRepo}
-        onPress={() => navigation.navigate("GitBranches", props.target)}
-      />
+      <ListSection>
+        <ListRow
+          icon="arrow.down.circle"
+          label="Pull latest"
+          description={`${props.status?.behindCount ?? 0} commits behind upstream`}
+          disabled={props.busy || !canPull || !props.status?.hasUpstream}
+          onPress={() => {
+            if (!appAtomRegistry.get(pullPermission)) return;
+            void vcsActionManager.track(
+              appAtomRegistry,
+              { environmentId: props.target.environmentId, cwd: props.checkout.cwd },
+              { operation: "pull", label: "Pulling latest changes" },
+              async () => {
+                const result = await pull({
+                  environmentId: props.target.environmentId,
+                  input: { cwd: props.checkout.cwd },
+                });
+                reportFailure(result);
+                return result;
+              },
+            );
+          }}
+        />
+      </ListSection>
+      <ListSection>
+        <ListRow
+          icon="text.bubble"
+          label="Review changes"
+          description="Inspect turn diffs, working tree changes, and base branch diff"
+          disabled={props.busy || !props.status?.isRepo}
+          onPress={() =>
+            navigation.dispatch(
+              resolveGitOverviewReviewNavigationAction(props.presentation) === "replace"
+                ? StackActions.replace("ThreadReview", props.target)
+                : CommonActions.navigate("ThreadReview", props.target),
+            )
+          }
+        />
+      </ListSection>
+      <ListSection>
+        <ListRow
+          icon="point.topleft.down.curvedto.point.bottomright.up"
+          label="Branches & worktrees"
+          description="Switch branch, create branch, or move the primary to a worktree"
+          disabled={props.busy || !canChangeThreadBranch || !props.status?.isRepo}
+          onPress={() => navigation.navigate("GitBranches", props.target)}
+        />
+      </ListSection>
     </View>
   );
 }
@@ -289,7 +300,17 @@ export function WorkspaceGitOverviewSheet(props: {
     workspace.checkouts,
   );
   const repoCount = participation.ready ? eligibleCheckouts.length : workspace.checkouts.length;
-  const linkedPrChains = resolveThreadPullRequestChains(workspace.thread?.pullRequests ?? []);
+  const runtime = useRemoteEnvironmentRuntime(props.target.environmentId);
+  const linkedPrLines = useLinkedPullRequestLines(workspace.shell, runtime);
+  const linkedPrActions = useLinkedPullRequestActions({
+    thread: workspace.shell,
+    project: workspace.project,
+    runtime,
+  });
+  const openPullRequest = useOpenPullRequest({
+    replace: props.presentation !== "inspector",
+    context: workspace.shell ?? undefined,
+  });
   const actionPermission = workspaceVcs.runAction.permissionAtom(props.target.environmentId);
   const branchPermission = workspaceVcs.switchBranch.permissionAtom(props.target.environmentId);
   const canRunAction = useAtomValue(actionPermission);
@@ -385,19 +406,21 @@ export function WorkspaceGitOverviewSheet(props: {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ padding: 16, paddingBottom: 40, gap: 12 }}
     >
-      <SheetListRow
-        icon="arrow.triangle.branch"
-        title={`${workspace.thread?.worktrees?.length ? (workspace.thread.branch ?? summary.branch) : !participation.ready ? "Loading branches…" : summary.branch} · ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`}
-        subtitle={
-          summary.drifted
-            ? `${summary.drifted} repositories drifted. Batch actions paused.`
-            : workspace.thread?.worktrees?.length
-              ? "Change the branch across the worktree set"
-              : "Each repository uses its current checkout"
-        }
-        disabled={busy || !canSwitchBranch || !workspace.thread?.worktrees?.length}
-        onPress={() => setBranchOpen(!branchOpen)}
-      />
+      <ListSection>
+        <ListRow
+          icon="arrow.triangle.branch"
+          label={`${workspace.thread?.worktrees?.length ? (workspace.thread.branch ?? summary.branch) : !participation.ready ? "Loading branches…" : summary.branch} · ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`}
+          description={
+            summary.drifted
+              ? `${summary.drifted} repositories drifted. Batch actions paused.`
+              : workspace.thread?.worktrees?.length
+                ? "Change the branch across the worktree set"
+                : "Each repository uses its current checkout"
+          }
+          disabled={busy || !canSwitchBranch || !workspace.thread?.worktrees?.length}
+          onPress={() => setBranchOpen(!branchOpen)}
+        />
+      </ListSection>
       {branchOpen ? (
         <View className="gap-2">
           <AppTextInput
@@ -409,7 +432,7 @@ export function WorkspaceGitOverviewSheet(props: {
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <MaterialButton
+          <Button
             label="Switch all repositories"
             disabled={busy || !canSwitchBranch || !branch.trim()}
             onPress={() => {
@@ -442,39 +465,37 @@ export function WorkspaceGitOverviewSheet(props: {
           />
         </View>
       ) : null}
-      <SheetListRow
-        icon="doc.text"
-        title={
-          participation.ready
-            ? `${summary.files.length} files changed across ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`
-            : "Loading workspace changes…"
-        }
-        subtitle={
-          participation.ready
-            ? `+${summary.files.reduce((sum, file) => sum + file.insertions, 0)} / −${summary.files.reduce((sum, file) => sum + file.deletions, 0)}`
-            : "Checking repository status"
-        }
-        onPress={() =>
-          navigation.dispatch(
-            resolveGitOverviewReviewNavigationAction(props.presentation ?? "sheet") === "replace"
-              ? StackActions.replace("WorkspaceChanges", props.target)
-              : CommonActions.navigate("WorkspaceChanges", props.target),
-          )
-        }
-      />
+      <ListSection>
+        <ListRow
+          icon="doc.text"
+          label={
+            participation.ready
+              ? `${summary.files.length} files changed across ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`
+              : "Loading workspace changes…"
+          }
+          description={
+            participation.ready
+              ? `+${summary.files.reduce((sum, file) => sum + file.insertions, 0)} / −${summary.files.reduce((sum, file) => sum + file.deletions, 0)}`
+              : "Checking repository status"
+          }
+          onPress={() =>
+            navigation.dispatch(
+              resolveGitOverviewReviewNavigationAction(props.presentation ?? "sheet") === "replace"
+                ? StackActions.replace("WorkspaceChanges", props.target)
+                : CommonActions.navigate("WorkspaceChanges", props.target),
+            )
+          }
+        />
+      </ListSection>
       {repoCount > 0 ? (
         <View className="flex-row flex-wrap gap-2">
-          <MaterialButton
+          <Button
             label="Commit all"
             disabled={disabled || summary.files.length === 0}
             onPress={() => setCommitOpen(!commitOpen)}
           />
-          <MaterialButton
-            label="Push all"
-            disabled={disabled}
-            onPress={() => void runBatch("push")}
-          />
-          <MaterialButton
+          <Button label="Push all" disabled={disabled} onPress={() => void runBatch("push")} />
+          <Button
             label={`Create PRs (${repoCount})`}
             disabled={disabled}
             onPress={() => void runBatch("create-prs")}
@@ -500,7 +521,7 @@ export function WorkspaceGitOverviewSheet(props: {
             editable={!busy}
             multiline
           />
-          <MaterialButton
+          <Button
             label="Commit all repositories"
             disabled={disabled || !message.trim()}
             onPress={() => void runBatch("commit")}
@@ -526,7 +547,7 @@ export function WorkspaceGitOverviewSheet(props: {
       {outcomes.map((member) =>
         member.outcome._tag === "completed" &&
         member.outcome.result.toast.cta.kind === "open_pr" ? (
-          <MaterialButton
+          <Button
             key={member.repositoryRoot}
             label={`Open PR · ${member.label}`}
             onPress={() => {
@@ -592,35 +613,31 @@ export function WorkspaceGitOverviewSheet(props: {
           presentation={props.presentation ?? "sheet"}
         />
       ) : null}
-      {linkedPrChains.length ? (
-        <View className="gap-2">
-          <Text className="font-t3-semibold">Linked pull requests</Text>
-          {linkedPrChains.map((chain) => (
-            <View key={threadPullRequestKeyOf(chain.layers[0]!)}>
-              {chain.layers.length > 1 ? (
-                <Text className="text-sm text-foreground-muted">
-                  {chain.kind === "native" ? "Stack" : "Branch stack"} · {chain.layers.length} PRs ·
-                  bottom to top
-                </Text>
-              ) : null}
-              {chain.layers.map((link) => (
-                <SheetListRow
-                  key={threadPullRequestKeyOf(link)}
-                  icon="arrow.triangle.pull"
-                  title={`#${link.number} ${link.snapshot?.title ?? "Pull request"}`}
-                  subtitle={`${link.repository} · ${link.snapshot === null ? "Status pending" : link.snapshot.isDraft && link.snapshot.state === "open" ? "Draft" : link.snapshot.state}`}
-                  onPress={() => void tryOpenExternalUrl(link.url, "pull-request")}
-                />
-              ))}
-            </View>
-          ))}
-        </View>
+      {linkedPrActions.canLink ? (
+        <ListSection>
+          <ListRow
+            icon="link"
+            label="Link pull request"
+            description="Attach a pull request by URL or number"
+            onPress={linkedPrActions.promptLink}
+          />
+        </ListSection>
       ) : null}
-      <MaterialButton
-        label="Refresh repositories"
-        disabled={busy}
-        onPress={() => void refreshAll()}
-      />
+      {linkedPrLines.length > 0 ? (
+        <ListSection title="Linked pull requests">
+          {linkedPrLines.map((line, index) => (
+            <LinkedPullRequestRow
+              key={linkedPullRequestKey(line)}
+              line={line}
+              separator={index < linkedPrLines.length - 1}
+              surfaceClassName="text-grouped-card"
+              openPullRequest={openPullRequest}
+              actions={linkedPrActions}
+            />
+          ))}
+        </ListSection>
+      ) : null}
+      <Button label="Refresh repositories" disabled={busy} onPress={() => void refreshAll()} />
     </ScrollView>
   );
   if (Platform.OS === "ios")

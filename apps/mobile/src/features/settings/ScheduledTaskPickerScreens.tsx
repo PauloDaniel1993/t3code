@@ -3,7 +3,7 @@ import * as Haptics from "expo-haptics";
 import { useMemo, useState } from "react";
 import { workspaceFolderScope } from "@t3tools/client-runtime/workspace-folder-access";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import {
   buildModelOptions,
   groupByProvider,
@@ -70,6 +70,12 @@ export function ScheduledTaskModelPickerRouteScreen() {
       projectId={projectId}
       providerGroups={providerGroups}
       selectedModel={selectedModel}
+      prompt={editor.draft.prompt}
+      onPromptChange={(prompt) =>
+        setEditor((current) =>
+          current ? { ...current, draft: { ...current.draft, prompt } } : current,
+        )
+      }
       onSelectModel={(option) =>
         setEditor((current) =>
           current

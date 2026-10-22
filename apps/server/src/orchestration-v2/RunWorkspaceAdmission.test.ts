@@ -118,6 +118,54 @@ const folders = Effect.gen(function* () {
 });
 
 it.layer(testLayer)("run workspace admission", (it) => {
+  it.effect(
+    "prepares isolated delegated work with its own set while preserving the folder snapshot",
+    () =>
+      Effect.gen(function* () {
+        const { at } = yield* folders;
+        const workspaceFolders = [
+          { path: at.app, name: "app", label: "app", checkoutRoot: at.app, checkoutPrefix: "" },
+          { path: at.lib, name: "lib", label: "lib", checkoutRoot: at.lib, checkoutPrefix: "" },
+        ];
+        const threadId = ThreadId.make("thread:admission-delegated-set");
+        yield* createThread(threadId, {
+          workspaceFolders,
+          branch: "parent",
+          worktreePath: at.app,
+          worktrees: [
+            { repositoryRoot: at.app, path: at.app, branch: "parent" },
+            { repositoryRoot: at.lib, path: at.lib, branch: "parent-lib" },
+          ],
+        });
+        yield* send(threadId, "parent", { type: "start_immediately" });
+        const [parentRun] = yield* runs(threadId);
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const result = yield* orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make("delegate:isolated-set"),
+          parentThreadId: threadId,
+          parentRunId: parentRun!.id,
+          parentNodeId: parentRun!.rootNodeId!,
+          task: "Work in an isolated workspace",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        const created = result.storedEvents.find(
+          (stored) => stored.event.type === "thread.created",
+        );
+        assert.isDefined(created);
+        const child = yield* orchestrator.getThreadProjection(created!.event.threadId);
+        assert.deepEqual(child.thread.workspaceFolders, workspaceFolders);
+        assert.isNull(child.thread.worktreePath);
+        assert.isUndefined(child.thread.worktrees);
+        assert.equal(child.runs[0]?.status, "preparing");
+      }),
+  );
+
   it.effect("records once per run which snapshot folders it can't reach", () =>
     Effect.gen(function* () {
       const { at, snapshot, remove } = yield* folders;

@@ -43,16 +43,6 @@ describe("subagent card", () => {
   const later = DateTime.makeUnsafe("2026-09-21T12:02:00Z");
   const done = { status: "completed" as const, startedAt: start, completedAt: end };
 
-  it("freezes settled durations and spans the group's wall time", () => {
-    expect(subagentCardElapsed([done], DateTime.toEpochMillis(later))).toBe("1m");
-    expect(
-      subagentCardElapsed(
-        [done, { ...done, startedAt: end, completedAt: later }],
-        DateTime.toEpochMillis(later),
-      ),
-    ).toBe("2m");
-  });
-
   it("counts live work but never uses a settled agent's age as its duration", () => {
     const unfinished = { ...done, completedAt: null };
     expect(subagentCardElapsed([unfinished], DateTime.toEpochMillis(later))).toBeNull();

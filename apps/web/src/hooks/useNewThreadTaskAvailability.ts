@@ -4,11 +4,10 @@ import { AuthOrchestrationOperateScope, type ScopedThreadRef } from "@t3tools/co
 import { Atom } from "effect/reactivity";
 import { useMemo } from "react";
 import { getNewThreadTaskUnavailableReason } from "../components/NewThreadTaskDialog.logic";
-import { useEnvironment } from "../state/environments";
 import { environmentPresentations } from "../state/presentation";
 import { environmentThreadDetails } from "../state/threads";
 import { useEnvironmentScope } from "../state/session";
-import { EMPTY_SERVER_PROVIDERS } from "../state/server";
+import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../state/server";
 
 /** Mounts only the requested parent stream and ignores updates to its conversation entities. */
 export function useNewThreadTaskParent(threadRef: ScopedThreadRef) {
@@ -30,8 +29,16 @@ export function useNewThreadTaskAvailability(threadRef: ScopedThreadRef | null) 
   const environmentId = threadRef?.environmentId ?? null;
   const threadId = threadRef?.threadId ?? null;
   const canOperate = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
-  const environment = useEnvironment(environmentId);
-  const providers = environment?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
+  const providersAtom = useMemo(
+    () =>
+      Atom.make((get) =>
+        environmentId === null
+          ? EMPTY_SERVER_PROVIDERS
+          : (get(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS),
+      ),
+    [environmentId],
+  );
+  const providers = useAtomValue(providersAtom);
   // Subscribe to the reason alone, so streaming tokens do not repaint the header or palette.
   const problemAtom = useMemo(
     () =>
@@ -45,10 +52,10 @@ export function useNewThreadTaskAvailability(threadRef: ScopedThreadRef | null) 
           projection: thread?.projection ?? null,
           status: get(environmentThreadDetails.statusAtom(ref)),
           connected: presentation?.connection.phase === "connected",
-          providers: presentation?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS,
+          providers: get(providersAtom),
         });
       }),
-    [environmentId, threadId],
+    [environmentId, threadId, providersAtom],
   );
   const problem = useAtomValue(problemAtom);
   return {

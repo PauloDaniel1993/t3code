@@ -24,9 +24,6 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
 
-/**
- * ERRORS
- */
 export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyResolveError>()(
   "RuntimePolicyResolveError",
   {
@@ -98,9 +95,6 @@ export const RuntimePolicyV2Override = Schema.Struct({
 });
 export type RuntimePolicyV2Override = typeof RuntimePolicyV2Override.Type;
 
-/**
- * SERVICE DEFINITION
- */
 export interface RuntimePolicyV2Shape {
   /**
    * The policy a run of this thread hands its provider: the thread's primary
@@ -129,9 +123,6 @@ export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePol
   "t3/orchestration-v2/RuntimePolicy/RuntimePolicyV2",
 ) {}
 
-/**
- * IMPLEMENTATIONS
- */
 export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2, {
   resolve: (input) =>
     Effect.succeed(

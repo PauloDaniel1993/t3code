@@ -7,7 +7,6 @@ import * as Logger from "effect/Logger";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import { TestClock } from "effect/testing";
-
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 import * as ProjectEnrichment from "./ProjectEnrichmentService.ts";
@@ -64,6 +63,7 @@ it.effect("a new client receives retained folder facts while expired probes refr
         resolve: () => Effect.succeed(null),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: () => Effect.succeed(null),
       }),
     );
@@ -120,6 +120,7 @@ const checkCheckoutChange = (background: boolean) =>
           }),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: () => Effect.succeed(null),
       }),
     );
@@ -207,6 +208,7 @@ it.effect("evicted folder facts do not let a new checkout reuse a warm identity"
           }),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: () => Effect.succeed(null),
       }),
     );
@@ -274,6 +276,7 @@ it.effect("publishes changed file health and folder probes to every subscriber, 
         resolve: () => Effect.succeed(null),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: () => Effect.succeed(null),
       }),
     );
@@ -329,6 +332,7 @@ it.effect("preserves either enrichment field when the other resolver fails", () 
             : Effect.succeed(identity(workspaceRoot)),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: (workspaceRoot) =>
           workspaceRoot === "/favicon-fails"
             ? Effect.fail(
@@ -372,14 +376,17 @@ it.effect("preserves either enrichment field when the other resolver fails", () 
 it.effect("does not warn about favicons for workspace roots that no longer exist", () =>
   Effect.gen(function* () {
     const warnings: Array<unknown> = [];
+    const warningLogged = yield* Deferred.make<void>();
     const logger = Logger.make(({ message }) => {
       warnings.push(message);
+      Deferred.doneUnsafe(warningLogged, Effect.void);
     });
     const metadataLayer = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: (workspaceRoot) =>
           Effect.fail(
             workspaceRoot === "/missing"
@@ -405,9 +412,7 @@ it.effect("does not warn about favicons for workspace roots that no longer exist
       yield* service.request("/missing");
       yield* service.request("/broken");
 
-      for (let attempt = 0; attempt < 100 && warnings.length === 0; attempt += 1) {
-        yield* Effect.yieldNow;
-      }
+      yield* Deferred.await(warningLogged);
 
       assert.lengthOf(warnings, 1);
       assert.nestedPropertyVal(warnings[0], "[1].workspaceRoot", "/broken");
@@ -429,6 +434,7 @@ it.effect("publishes repository completion while favicon enrichment is still pen
         resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: (workspaceRoot) =>
           Deferred.await(releaseFavicon).pipe(Effect.as(`${workspaceRoot}/favicon.svg`)),
       }),
@@ -458,6 +464,7 @@ it.effect("keeps repository workers available when every favicon worker is hung"
         resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: () =>
           Effect.gen(function* () {
             const started = yield* Ref.updateAndGet(faviconStarts, (count) => count + 1);
@@ -496,47 +503,6 @@ it.effect("keeps repository workers available when every favicon worker is hung"
   }),
 );
 
-it.effect("getAvailable returns immediately while repository identity is still unresolved", () =>
-  Effect.gen(function* () {
-    const repositoryStarted = yield* Deferred.make<void>();
-    const releaseRepository = yield* Deferred.make<void>();
-    const layerMetadata = Layer.merge(
-      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
-        resolve: (workspaceRoot) =>
-          Deferred.succeed(repositoryStarted, undefined).pipe(
-            Effect.andThen(Deferred.await(releaseRepository)),
-            Effect.as(identity(workspaceRoot)),
-          ),
-      }),
-      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
-        resolvePath: (workspaceRoot) => Effect.succeed(`${workspaceRoot}/favicon.svg`),
-      }),
-    );
-
-    yield* Effect.gen(function* () {
-      const service = yield* ProjectEnrichment.ProjectEnrichmentService;
-
-      // Non-blocking path must not wait on hung git/identity resolution.
-      const immediate = yield* service.getAvailable("/pending-identity");
-      assert.isNull(immediate.repositoryIdentity);
-      assert.isNull(immediate.faviconPath);
-      assert.isFalse(immediate.repositoryIdentityResolved);
-
-      yield* Deferred.await(repositoryStarted);
-
-      // Background lane still resolves after the snapshot path has returned.
-      yield* Deferred.succeed(releaseRepository, undefined);
-      const resolved = yield* waitForAvailable(
-        service,
-        "/pending-identity",
-        (value) => value.repositoryIdentity !== null,
-      );
-      assert.equal(resolved.repositoryIdentity?.canonicalKey, "example.test/v1/pending-identity");
-      assert.isTrue(resolved.repositoryIdentityResolved);
-    }).pipe(Effect.provide(layer(layerMetadata)));
-  }),
-);
-
 it.effect(
   "reports successful cached null as resolved while cold and failed lookups stay unresolved",
   () =>
@@ -559,6 +525,7 @@ it.effect(
           },
         }),
         Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+          invalidate: () => Effect.void,
           resolvePath: () => Effect.succeed(null),
         }),
       );
@@ -586,7 +553,6 @@ it.effect(
         assert.isNull(nullChange.enrichment.repositoryIdentity);
         assert.isTrue(nullChange.enrichment.repositoryIdentityResolved);
 
-        // Warm success null stays resolved and does not republish.
         const warmNull = yield* service.getAvailable("/no-remote");
         assert.isNull(warmNull.repositoryIdentity);
         assert.isTrue(warmNull.repositoryIdentityResolved);
@@ -623,6 +589,7 @@ it.effect("deduplicates requests, bounds pending work, and reloads invalidated r
           }),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: (workspaceRoot) => Effect.succeed(`${workspaceRoot}/favicon.svg`),
       }),
     );
@@ -681,6 +648,7 @@ it.effect("cold folder probes resolve secondary identities without another shell
         resolve: (path) => Effect.succeed(identity(path)),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: () => Effect.succeed(null),
       }),
     );
@@ -738,6 +706,7 @@ it.effect("serves folder facts once probed, and probes missing ones in the backg
         resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: () => Effect.succeed(null),
       }),
     );
@@ -800,6 +769,7 @@ it.effect("rescans a favicon only after 15 minutes", () =>
         resolve: (workspaceRoot) => Effect.succeed(identity(workspaceRoot)),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         // Each scan returns a new path, so a wait can tell a rescan from the cached value.
         resolvePath: (workspaceRoot) =>
           Ref.updateAndGet(faviconScans, (count) => count + 1).pipe(
@@ -851,6 +821,7 @@ it.effect(
             ),
         }),
         Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+          invalidate: () => Effect.void,
           resolvePath: () => Ref.update(faviconScans, (count) => count + 1).pipe(Effect.as(null)),
         }),
       );

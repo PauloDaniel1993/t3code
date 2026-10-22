@@ -1,18 +1,24 @@
 import {
   OrchestrationV2ThreadShell,
+  RepositoryIdentity,
+  ProjectWorkspaceFolder,
   ThreadPullRequestLink,
+  WorkspaceFileStatus,
   type OrchestrationProjectShell,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
   type ProjectId,
-  type ProjectWorkspaceFolder,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 const sameThreadShell = Schema.toEquivalence(OrchestrationV2ThreadShell);
 const sameLinks = Schema.toEquivalence(Schema.UndefinedOr(Schema.Array(ThreadPullRequestLink)));
+const sameRepositoryIdentity = Schema.toEquivalence(
+  Schema.UndefinedOr(Schema.NullOr(RepositoryIdentity)),
+);
+const sameWorkspaceFolder = Schema.toEquivalence(ProjectWorkspaceFolder);
+const sameWorkspaceFileStatus = Schema.toEquivalence(Schema.UndefinedOr(WorkspaceFileStatus));
 
-/** Whether two rows' pull request links are equal, including both absent. */
 export function sameThreadPullRequests(
   left: OrchestrationV2ThreadShell["pullRequests"],
   right: OrchestrationV2ThreadShell["pullRequests"],
@@ -21,9 +27,8 @@ export function sameThreadPullRequests(
 }
 
 /**
- * Keep the previous object for each row a full snapshot left unchanged, so the list only
- * re-renders rows that changed. Links are compared apart from the rest of the row because a
- * deferred snapshot arrives without them; such a row keeps its links until they fill in.
+ * Links are compared apart from the rest of the row because a deferred snapshot arrives without
+ * them; such a row keeps its links until they fill in.
  */
 export function reuseUnchangedThreadShells(
   previous: OrchestrationV2ShellSnapshot | null,
@@ -31,7 +36,7 @@ export function reuseUnchangedThreadShells(
 ): OrchestrationV2ShellSnapshot {
   if (previous === null || previous.threads.length === 0) return next;
   const previousById = new Map(previous.threads.map((thread) => [thread.id, thread] as const));
-  let reused = 0;
+  let changed = false;
   const threads = next.threads.map((thread) => {
     const prior = previousById.get(thread.id);
     if (prior === undefined) return thread;
@@ -39,11 +44,11 @@ export function reuseUnchangedThreadShells(
       thread.pullRequests === undefined && prior.pullRequests !== undefined
         ? { ...thread, pullRequests: prior.pullRequests }
         : thread;
-    if (!sameThreadShell(prior, candidate)) return thread;
-    reused += 1;
-    return prior;
+    const retained = sameThreadShell(prior, candidate) ? prior : candidate;
+    if (retained !== thread) changed = true;
+    return retained;
   });
-  return reused === 0 ? next : { ...next, threads };
+  return changed ? { ...next, threads } : next;
 }
 
 function upsertById<T extends { readonly id: unknown }>(
@@ -87,7 +92,7 @@ function mergeFolderFacts(
       ? (next.unavailableReason ?? previous?.unavailableReason)
       : undefined;
   const remoteDescription = next.remoteDescription ?? previous?.remoteDescription;
-  return {
+  const merged = {
     ...definition,
     ...(availability === undefined ? {} : { availability }),
     ...(unavailableReason === undefined ? {} : { unavailableReason }),
@@ -104,6 +109,7 @@ function mergeFolderFacts(
                 },
         }),
   };
+  return previous !== undefined && sameWorkspaceFolder(previous, merged) ? previous : merged;
 }
 
 function folderKey(folder: ProjectWorkspaceFolder): string | undefined {
@@ -152,17 +158,6 @@ export interface MergeShellSnapshotOptions {
   readonly enrichedProjectIds?: ReadonlyArray<ProjectId>;
 }
 
-/**
- * Merge an incoming full shell snapshot into prior client state.
- *
- * Authoritative snapshots (no options) replace structure and sequence even when
- * lower than cache, while retaining a prior non-null identity when the candidate
- * is still unresolved/null for the same root.
- *
- * Enrichment snapshots (options present) only patch project display facts for
- * matching current projects. They never replace projects, threads, archives,
- * or sequence, regardless of the incoming snapshot sequence.
- */
 export function mergeShellSnapshotProjects(
   previous: OrchestrationV2ShellSnapshot | null | undefined,
   next: OrchestrationV2ShellSnapshot,
@@ -191,7 +186,10 @@ export function mergeShellSnapshotProjects(
             resolvedRootSet?.has(project.workspaceRoot) === true ||
             (project.repositoryIdentity == null && candidate.repositoryIdentity != null)
           ) {
-            enriched = { ...enriched, repositoryIdentity: candidate.repositoryIdentity };
+            // Preserve project references when an enrichment refresh repeats known facts.
+            if (!sameRepositoryIdentity(project.repositoryIdentity, candidate.repositoryIdentity)) {
+              enriched = { ...enriched, repositoryIdentity: candidate.repositoryIdentity };
+            }
           }
         }
         if (
@@ -202,33 +200,34 @@ export function mergeShellSnapshotProjects(
           const factsByPath = new Map(
             candidate.folders?.map((folder) => [folderKey(folder), folder]),
           );
-          enriched = {
-            ...enriched,
-            ...(project.folders === undefined
-              ? {}
-              : {
-                  folders: project.folders.map((folder, index) => {
-                    const facts = factsByPath.get(folderKey(folder));
-                    return facts === undefined
-                      ? folder
-                      : mergeFolderFacts(
-                          folder,
-                          {
-                            ...facts,
-                            ...folder,
-                            availability: facts.availability,
-                            unavailableReason: facts.unavailableReason,
-                            remoteDescription: facts.remoteDescription,
-                            vcs: facts.vcs,
-                          },
-                          index === 0,
-                        );
-                  }),
-                }),
-            ...(candidate.workspaceFileStatus === undefined
-              ? {}
-              : { workspaceFileStatus: candidate.workspaceFileStatus }),
-          };
+          if (project.folders !== undefined) {
+            const folders = project.folders.map((folder, index) => {
+              const facts = factsByPath.get(folderKey(folder));
+              return facts === undefined
+                ? folder
+                : mergeFolderFacts(
+                    folder,
+                    {
+                      ...facts,
+                      ...folder,
+                      availability: facts.availability,
+                      unavailableReason: facts.unavailableReason,
+                      remoteDescription: facts.remoteDescription,
+                      vcs: facts.vcs,
+                    },
+                    index === 0,
+                  );
+            });
+            if (folders.some((folder, index) => folder !== project.folders?.[index])) {
+              enriched = { ...enriched, folders };
+            }
+          }
+          if (
+            candidate.workspaceFileStatus !== undefined &&
+            !sameWorkspaceFileStatus(project.workspaceFileStatus, candidate.workspaceFileStatus)
+          ) {
+            enriched = { ...enriched, workspaceFileStatus: candidate.workspaceFileStatus };
+          }
         }
         return enriched;
       }),
@@ -245,7 +244,6 @@ export function mergeShellSnapshotProjects(
   };
 }
 
-/** Applies one committed V2 shell delta while preserving active/archive exclusivity. */
 export function applyShellStreamEvent(
   snapshot: OrchestrationV2ShellSnapshot,
   event: Exclude<
@@ -275,8 +273,6 @@ export function applyShellStreamEvent(
         snapshotSequence: event.sequence,
       };
     case "thread.updated": {
-      // An unchanged shell keeps its object and the list, so subscribers that
-      // compare by reference skip the update. Only the cursor moves.
       const existing =
         event.location === "active"
           ? snapshot.threads.find((thread) => thread.id === event.thread.id)

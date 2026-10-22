@@ -1,7 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import {
   CommandId,
+  AuthStandardClientScopes,
+  AuthSessionId,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentAuthenticatedPrincipal,
+  EnvironmentHttpApi,
+  type ProjectMutation,
   EventId,
   type OrchestrationV2AppThread,
   ProjectId,
@@ -18,6 +24,13 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpPlatform from "effect/http/HttpPlatform";
+import * as Etag from "effect/http/Etag";
+import * as ProjectHttp from "./http.ts";
+import * as ServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
@@ -133,6 +146,7 @@ const dependencies = Layer.mergeAll(
         resolve: () => Effect.succeed(null),
       }),
       Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
         resolvePath: () => Effect.succeed(null),
       }),
       WorkspaceFolderResolver.layer,
@@ -245,13 +259,15 @@ it.layer(dependencies)("ProjectService workspace files", (it) => {
             Effect.provideService(ProjectService.ProjectService, service),
             Effect.provide(
               Layer.mock(ThreadManagementService.ThreadManagementService)({
-                getShellSnapshot: () =>
-                  Effect.succeed({
-                    schemaVersion: 1,
-                    snapshotSequence: 0,
-                    threads: [],
-                    archivedThreads: [],
-                  }),
+                readShellSnapshot: () =>
+                  Effect.succeed(
+                    Effect.succeed({
+                      schemaVersion: 1,
+                      snapshotSequence: 0,
+                      threads: [],
+                      archivedThreads: [],
+                    }),
+                  ),
               }),
             ),
           );
@@ -1185,3 +1201,128 @@ it.layer(dependencies)("ProjectService workspace files", (it) => {
     }),
   );
 });
+
+class WorkspaceMutationTestApi extends HttpApi.make("environment").add(
+  EnvironmentHttpApi.groups.projects,
+) {}
+
+it.effect(
+  "transports workspace import, conflicts, unlink and internal failures through the public HTTP API",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.make;
+      const dir = yield* workspace(["app", "lib"]);
+      const filePath = yield* dir.writeFile("transport.code-workspace", ["app", "lib"]);
+      const projectId = ProjectId.make("project:workspace-transport");
+      let startupFailed = false;
+      const routes = HttpApiBuilder.layer(WorkspaceMutationTestApi).pipe(
+        Layer.provide(ProjectHttp.layer),
+        Layer.provide(Layer.succeed(ProjectService.ProjectService, service)),
+        Layer.provide(
+          Layer.succeed(ServerRuntimeStartup.ServerRuntimeStartup, {
+            awaitCommandReady: Effect.void,
+            markHttpListening: Effect.void,
+            enqueueCommand: (effect) =>
+              Effect.suspend(() =>
+                startupFailed
+                  ? Effect.fail(
+                      new ServerRuntimeStartup.ServerRuntimeStartupError({
+                        mode: "web",
+                        host: null,
+                        port: 0,
+                        cause: "private startup detail",
+                      }),
+                    )
+                  : Effect.void,
+              ).pipe(Effect.andThen(effect)),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
+            effect.pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+                sessionId: AuthSessionId.make("workspace-transport"),
+                subject: "test",
+                method: "bearer-access-token",
+                scopes: new Set(AuthStandardClientScopes),
+              }),
+            ),
+          ),
+        ),
+        Layer.provide(HttpPlatform.layer),
+        Layer.provide(Etag.layerWeak),
+        Layer.provide(NodeServices.layer),
+      );
+      const web = yield* Effect.acquireRelease(
+        Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
+        (web) => Effect.promise(() => web.dispose()),
+      );
+      const mutate = (payload: ProjectMutation) =>
+        Effect.promise(() =>
+          web.handler(
+            new Request(
+              `http://workspace.test${EnvironmentHttpApi.groups.projects.endpoints.mutate.path}`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+              },
+            ),
+          ),
+        );
+      assert.equal(
+        (yield* mutate({
+          type: "project.import-workspace-file",
+          commandId: commandId("transport-import"),
+          projectId,
+          workspaceFilePath: filePath,
+        })).status,
+        200,
+      );
+      const conflict = yield* mutate({
+        type: "project.import-workspace-file",
+        commandId: commandId("transport-conflict"),
+        projectId: ProjectId.make("project:workspace-transport-other"),
+        workspaceFilePath: filePath,
+      });
+      assert.equal(conflict.status, 400);
+      expect(yield* Effect.promise(() => conflict.json())).toMatchObject({
+        code: "invalid_request",
+        reason: "invalid_command",
+        diagnostic: { code: "conflict" },
+        conflictingProjectId: projectId,
+      });
+      assert.equal(
+        (yield* mutate({
+          type: "project.update",
+          commandId: commandId("transport-unlink"),
+          projectId,
+          workspaceFilePath: null,
+        })).status,
+        200,
+      );
+      assert.isUndefined(Option.getOrThrow(yield* service.getById(projectId)).workspaceFile);
+      const missing = yield* mutate({
+        type: "project.import-workspace-file",
+        commandId: commandId("transport-missing"),
+        projectId: ProjectId.make("project:workspace-transport-missing"),
+        workspaceFilePath: `${filePath}.missing`,
+      });
+      assert.equal(missing.status, 400);
+      expect(yield* Effect.promise(() => missing.json())).toMatchObject({
+        code: "invalid_request",
+        diagnostic: { code: "file-not-found" },
+      });
+      startupFailed = true;
+      const internal = yield* mutate({
+        type: "project.update",
+        commandId: commandId("transport-startup"),
+        projectId,
+        title: "Unavailable",
+      });
+      assert.equal(internal.status, 500);
+      const body = yield* Effect.promise(() => internal.json());
+      expect(body).toMatchObject({ code: "internal_error", reason: "project_mutation_failed" });
+      assert.notInclude(JSON.stringify(body), "private startup detail");
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+);

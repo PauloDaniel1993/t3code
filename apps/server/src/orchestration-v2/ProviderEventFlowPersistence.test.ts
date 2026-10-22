@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { EventSinkV2, layer as eventSinkLayer } from "./EventSink.ts";
 import { EventStoreV2, layer as eventStoreLayer } from "./EventStore.ts";
 import { layer as idAllocatorLayer } from "@t3tools/provider-core/server/IdAllocator";
@@ -39,6 +40,7 @@ const sink = eventSinkLayer.pipe(
 const services = Layer.mergeAll(stores, sink, idAllocatorLayer);
 const testLayer = Layer.merge(services, ingestorLayer.pipe(Layer.provide(services))).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
+  Layer.provide(Layer.mock(GitVcsDriver)({ resolveBranchName: () => Effect.succeed(null) })),
 );
 
 function makeThread(threadId: ThreadId, providerInstanceId: ProviderInstanceId, now: DateTime.Utc) {

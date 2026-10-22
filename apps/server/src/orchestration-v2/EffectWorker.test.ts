@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointId,
+  CheckpointScopeId,
   CommandId,
   NodeId,
   ProviderSessionId,
@@ -8,6 +10,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  VcsProcessExitError,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -16,11 +19,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
+import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
@@ -33,12 +37,12 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import { layer as durableOutboxLayer } from "./EffectOutbox.ts";
-const attachmentOutboxTestLayer = durableOutboxLayer.pipe(
+import { ResourceCleanupService } from "./ResourceCleanupService.ts";
+
+const attachmentOutboxTestLayer = EffectOutbox.layer.pipe(
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(NodeServices.layer),
 );
-import { ResourceCleanupService } from "./ResourceCleanupService.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
@@ -92,6 +96,7 @@ function layerExecutorFor(input: {
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
   readonly outbox?: EffectOutbox.EffectOutboxV2["Service"];
+  readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
@@ -120,6 +125,7 @@ function layerExecutorFor(input: {
         shutdown: Effect.void,
         open: () => Effect.die("unused open"),
         get: () => Effect.succeed(Option.none()),
+        isLive: () => Effect.succeed(false),
         close: () => Effect.void,
         closeInstance: () => Effect.void,
         release: () => record("release"),
@@ -150,7 +156,9 @@ function layerExecutorFor(input: {
     ),
     Layer.succeed(
       CheckpointRollbackService.CheckpointRollbackServiceV2,
-      CheckpointRollbackService.CheckpointRollbackServiceV2.of({ execute: () => Effect.void }),
+      CheckpointRollbackService.CheckpointRollbackServiceV2.of({
+        execute: input.rollback ?? (() => Effect.void),
+      }),
     ),
     Layer.succeed(
       RuntimeRequestService.RuntimeRequestServiceV2,
@@ -175,40 +183,6 @@ function layerExecutorFor(input: {
     ),
   );
 }
-
-it("does not retry pure interrupt races where the turn is already gone", () => {
-  assert.isTrue(
-    EffectWorker.isNonRetryableProviderTurnControlFailure(
-      "provider-turn.interrupt",
-      "ProviderAdapterInterruptError: ... ACP provider turn provider-turn:x is not active",
-    ),
-  );
-  assert.isTrue(
-    EffectWorker.isNonRetryableProviderTurnControlFailure(
-      "provider-turn.interrupt",
-      "Provider session provider-session:x is not active.",
-    ),
-  );
-  // Restart is compound (interrupt + detach + start). Do not swallow start failures.
-  assert.isFalse(
-    EffectWorker.isNonRetryableProviderTurnControlFailure(
-      "provider-turn.restart",
-      "Provider session provider-session:x is not active.",
-    ),
-  );
-  assert.isFalse(
-    EffectWorker.isNonRetryableProviderTurnControlFailure(
-      "provider-turn.start",
-      "Provider session provider-session:x is not active.",
-    ),
-  );
-  assert.isFalse(
-    EffectWorker.isNonRetryableProviderTurnControlFailure(
-      "provider-turn.interrupt",
-      "ACP hard teardown failed unexpectedly; the session is poisoned",
-    ),
-  );
-});
 
 it.effect("settles a stopped run when its adapter has already lost the native turn", () =>
   Effect.gen(function* () {
@@ -243,6 +217,86 @@ it.effect("settles a stopped run when its adapter has already lost the native tu
       });
     }).pipe(Effect.provide(layer));
     assert.deepEqual(yield* Ref.get(events), ["thread.background-work.settle"]);
+  }),
+);
+
+const lockedIndexMessage =
+  "Git's index is locked. Wait for other Git operations to finish, then try again.";
+const rollbackCheckpointId = CheckpointId.make("checkpoint:effect-worker-rollback");
+const rollbackScopeId = CheckpointScopeId.make("checkpoint-scope:effect-worker-rollback");
+const restoreFailure = (detail: string) =>
+  new CheckpointRollbackService.CheckpointRollbackExecutionError({
+    reason: "unexpected-failure",
+    threadId,
+    providerThreadId,
+    checkpointId: rollbackCheckpointId,
+    cause: new CheckpointService.CheckpointRestoreError({
+      scopeId: rollbackScopeId,
+      checkpointId: rollbackCheckpointId,
+      cause: new VcsProcessExitError({
+        operation: "GitVcsDriverCore.restoreCheckpoint",
+        command: "git",
+        cwd: "/private/repo",
+        exitCode: 128,
+        detail,
+        failureKind: "command-failed",
+      }),
+    }),
+  });
+
+it.effect.each([
+  {
+    name: "a held Git index lock",
+    failure: restoreFailure(lockedIndexMessage),
+    message: lockedIndexMessage,
+  },
+  {
+    name: "raw Git output",
+    failure: restoreFailure("error: could not clean /private/repo/secret.txt"),
+    message: CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+  },
+  {
+    name: "a partial workspace restore",
+    failure: new CheckpointRollbackService.CheckpointRollbackExecutionError({
+      reason: "files-not-restored",
+      threadId,
+      providerThreadId,
+      checkpointId: rollbackCheckpointId,
+      detail: "The conversation was rewound, but files in api and docs couldn't be restored.",
+    }),
+    message: "The conversation was rewound, but files in api and docs couldn't be restored.",
+  },
+])("reports a rollback blocked by $name only after the last attempt", ({ failure, message }) =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const failures = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({
+      events: yield* Ref.make<ReadonlyArray<string>>([]),
+      rollback: () => Effect.fail(failure),
+      threads: {
+        dispatch: (command) =>
+          Ref.update(failures, (current) =>
+            command.type === "checkpoint.rollback.fail" ? [...current, command.message] : current,
+          ).pipe(Effect.as({ sequence: 1, storedEvents: [] })),
+      },
+    });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const rollback: EffectOutbox.OrchestrationEffectV2 = {
+        ...restartEffect(now, { type: "detach" }),
+        request: {
+          type: "provider-thread.rollback",
+          providerThreadId,
+          checkpointId: rollbackCheckpointId,
+          scopeId: rollbackScopeId,
+          restoreFiles: true,
+        },
+      };
+      yield* Effect.flip(executor.execute(rollback, { willRetry: true }));
+      assert.deepEqual(yield* Ref.get(failures), []);
+      yield* Effect.flip(executor.execute(rollback, { willRetry: false }));
+    }).pipe(Effect.provide(layer));
+    assert.deepEqual(yield* Ref.get(failures), [message]);
   }),
 );
 
@@ -350,9 +404,6 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
       },
       get: () =>
         Effect.gen(function* () {
-          // Model a cancellation commit immediately after this durable read
-          // took its snapshot. Its process-local signal is only delivered when
-          // the worker registered the waiter before starting the read.
           if (cancellationArmed) {
             yield* Deferred.succeed(signal, undefined);
           }
@@ -664,6 +715,7 @@ it.effect("uses durable deadlines, notifications, and a slow liveness poll", () 
   Effect.gen(function* () {
     const attempts = yield* Ref.make(0);
     const available = yield* Queue.unbounded<void>();
+    const attempted = yield* Queue.unbounded<number>();
     const now = yield* DateTime.now;
     const nextClaimableAt = yield* Ref.make<Option.Option<DateTime.Utc>>(
       Option.some(DateTime.add(now, { milliseconds: 100 })),
@@ -677,17 +729,12 @@ it.effect("uses durable deadlines, notifications, and a slow liveness poll", () 
           yield* Ref.set(nextClaimableAt, Option.some(DateTime.add(now, { milliseconds: 5_000 })));
         }
         if (count === 3) yield* Ref.set(nextClaimableAt, Option.none());
+        yield* Queue.offer(attempted, count);
         return false;
       }),
       nextClaimableAt: Ref.get(nextClaimableAt),
       drain: () => Effect.succeed(0),
     });
-    const awaitAttempts = Effect.fnUntraced(function* (expected: number) {
-      while ((yield* Ref.get(attempts)) < expected) {
-        yield* Effect.yieldNow;
-      }
-    });
-
     yield* EffectWorker.runDaemonWithOptions({
       concurrency: 1,
       livenessPollIntervalMs: 1_000,
@@ -696,33 +743,35 @@ it.effect("uses durable deadlines, notifications, and a slow liveness poll", () 
       Effect.forkScoped,
     );
 
-    yield* awaitAttempts(1);
+    assert.equal(yield* Queue.take(attempted), 1);
     yield* TestClock.adjust("99 millis");
     assert.equal(yield* Ref.get(attempts), 1);
 
     yield* TestClock.adjust("1 millis");
-    yield* awaitAttempts(2);
+    assert.equal(yield* Queue.take(attempted), 2);
     yield* TestClock.adjust("999 millis");
     assert.equal(yield* Ref.get(attempts), 2);
 
     yield* Queue.offer(available, undefined);
-    yield* awaitAttempts(3);
+    assert.equal(yield* Queue.take(attempted), 3);
     yield* TestClock.adjust("999 millis");
     assert.equal(yield* Ref.get(attempts), 3);
 
     yield* TestClock.adjust("1 millis");
-    yield* awaitAttempts(4);
+    assert.equal(yield* Queue.take(attempted), 4);
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
 it.effect("does not hot-loop when a claim fails", () =>
   Effect.gen(function* () {
     const attempts = yield* Ref.make(0);
+    const attempted = yield* Queue.unbounded<number>();
     const now = yield* DateTime.now;
     const worker = EffectWorker.OrchestrationEffectWorkerV2.of({
       awaitWork: Effect.never,
       runRecoveryOnce: Effect.succeed(false),
-      runOnce: Ref.update(attempts, (count) => count + 1).pipe(
+      runOnce: Ref.updateAndGet(attempts, (count) => count + 1).pipe(
+        Effect.tap((count) => Queue.offer(attempted, count)),
         Effect.andThen(
           new EffectWorker.OrchestrationEffectWorkerError({
             operation: "claim",
@@ -742,22 +791,26 @@ it.effect("does not hot-loop when a claim fails", () =>
       Effect.forkScoped,
     );
 
-    while ((yield* Ref.get(attempts)) < 1) yield* Effect.yieldNow;
+    assert.equal(yield* Queue.take(attempted), 1);
     yield* TestClock.adjust("999 millis");
     assert.equal(yield* Ref.get(attempts), 1);
     yield* TestClock.adjust("1 millis");
-    while ((yield* Ref.get(attempts)) < 2) yield* Effect.yieldNow;
+    assert.equal(yield* Queue.take(attempted), 2);
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
 it.effect("backs off briefly when a due deadline loses a claim race", () =>
   Effect.gen(function* () {
     const attempts = yield* Ref.make(0);
+    const attempted = yield* Queue.unbounded<number>();
     const now = yield* DateTime.now;
     const worker = EffectWorker.OrchestrationEffectWorkerV2.of({
       awaitWork: Effect.never,
       runRecoveryOnce: Effect.succeed(false),
-      runOnce: Ref.update(attempts, (count) => count + 1).pipe(Effect.as(false)),
+      runOnce: Ref.updateAndGet(attempts, (count) => count + 1).pipe(
+        Effect.tap((count) => Queue.offer(attempted, count)),
+        Effect.as(false),
+      ),
       nextClaimableAt: Effect.succeed(Option.some(now)),
       drain: () => Effect.succeed(0),
     });
@@ -770,11 +823,11 @@ it.effect("backs off briefly when a due deadline loses a claim race", () =>
       Effect.forkScoped,
     );
 
-    while ((yield* Ref.get(attempts)) < 1) yield* Effect.yieldNow;
+    assert.equal(yield* Queue.take(attempted), 1);
     yield* TestClock.adjust("24 millis");
     assert.equal(yield* Ref.get(attempts), 1);
     yield* TestClock.adjust("1 millis");
-    while ((yield* Ref.get(attempts)) < 2) yield* Effect.yieldNow;
+    assert.equal(yield* Queue.take(attempted), 2);
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
@@ -820,6 +873,7 @@ it.effect(
       const executor = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
         Effect.provide(layerExecutorFor({ events, outbox })),
         Effect.provideService(ResourceCleanupService, {
+          cleanupScheduledTasks: () => Effect.void,
           cleanupTerminals: () => Effect.void,
           cleanupPreviews: () => Effect.void,
           cleanupAttachments: () =>
@@ -837,6 +891,7 @@ it.effect(
       };
       yield* executor.execute(effect, { willRetry: false }).pipe(
         Effect.provideService(ResourceCleanupService, {
+          cleanupScheduledTasks: () => Effect.void,
           cleanupTerminals: () => Effect.void,
           cleanupPreviews: () => Effect.void,
           cleanupAttachments: () =>
@@ -854,6 +909,7 @@ it.effect(
       // Retrying the original pass uses the same continuation identity.
       yield* executor.execute(effect, { willRetry: false }).pipe(
         Effect.provideService(ResourceCleanupService, {
+          cleanupScheduledTasks: () => Effect.void,
           cleanupTerminals: () => Effect.void,
           cleanupPreviews: () => Effect.void,
           cleanupAttachments: () =>

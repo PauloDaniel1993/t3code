@@ -35,6 +35,12 @@ vi.mock("./Sidebar.logic", async (importOriginal) => {
 });
 vi.mock("../state/entities", () => ({
   useThreadShells: () => sidebarHarness.threads,
+  useQuietThreadShells: () => sidebarHarness.threads,
+  useServerConfigs: () => config,
+  useThreadShell: (ref: ScopedThreadRef) =>
+    sidebarHarness.threads.find(
+      (thread) => thread.environmentId === ref.environmentId && thread.id === ref.threadId,
+    ) ?? null,
   useProjects: () => sidebarHarness.projects,
   useAllEnvironmentProjectSnapshotsReady: () => false,
   readThreadShell: (ref: ScopedThreadRef) =>
@@ -87,10 +93,14 @@ vi.mock("../state/query", () => ({
 }));
 vi.mock("../state/queries", () => ({ useThreadSearch: () => ({ matches: [] }) }));
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => noop }));
+vi.mock("../state/use-orchestration-command", () => ({ useOrchestrationCommand: () => noop }));
 const noop = () => {};
 vi.mock("../state/terminalSessions", () => ({ useThreadRunningTerminalIds: () => emptyIds }));
 const emptyIds: string[] = [];
-vi.mock("../hooks/useThreadActions", () => ({ useThreadActions: () => actions }));
+vi.mock("../hooks/useThreadActions", () => ({
+  useThreadActions: () => actions,
+  useAcknowledgeThreadWoke: () => noop,
+}));
 const actions = {
   archiveThread: sidebarHarness.archive,
   deleteThread: sidebarHarness.remove,
@@ -104,6 +114,7 @@ const actions = {
   setThreadAutoSettle: noop,
   reorderPinnedThread: noop,
   reorderActiveThread: noop,
+  moveThreadsToSection: noop,
   markThreadUnread: noop,
 };
 vi.mock("../hooks/useHandleNewThread", () => ({
@@ -135,7 +146,18 @@ const drafts = {
   clearDraftThread: noop,
 };
 vi.mock("@tanstack/react-router", () => ({
-  useParams: () => sidebarHarness.routeTarget,
+  useParams: (options: {
+    select?: (params: { environmentId?: string; threadId?: string; draftId?: string }) => unknown;
+  }) => {
+    const target = sidebarHarness.routeTarget;
+    const params =
+      target?.kind === "server"
+        ? target.threadRef
+        : target?.kind === "draft"
+          ? { draftId: target.draftId }
+          : {};
+    return options.select ? options.select(params) : params;
+  },
   useRouter: () => router,
 }));
 const router = { navigate: sidebarHarness.navigate, state: { location: { pathname: "/" } } };
@@ -165,6 +187,8 @@ vi.mock("./ThreadStatusIndicators", () => ({
   ThreadPullRequestBadgeControl: () => null,
   ThreadPullRequestsMiniList: () => null,
   ThreadWorktreeIndicator: () => null,
+  ThreadTerminalStatusButton: () => null,
+  ThreadSearchPullRequestNumber: () => null,
   nextThreadChangeRequestSnapshot: () => null,
   prStatusIndicator: () => null,
   resolveThreadPullRequestBadge: () => null,

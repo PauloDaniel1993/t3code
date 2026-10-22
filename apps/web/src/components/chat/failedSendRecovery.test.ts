@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// ChatView.send.testSupport cuts the real onSend body from ChatView.tsx?raw,
+// ChatView.send.testSupport cuts the real onSend body from useComposerSend.ts?raw,
 // strips its TypeScript, and supplies hook bindings to a headless function.
 // After an upstream merge, fix the extraction markers or missing bindings there
 // if these tests break; keep exercising production onSend instead of copying it.

@@ -17,6 +17,8 @@ import * as Stream from "effect/Stream";
 
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Option from "effect/Option";
@@ -133,6 +135,11 @@ const external = Layer.mergeAll(
       Effect.succeed(Option.some({ id, defaultModelSelection: modelSelection } as never)),
   }),
   Layer.mock(SecretRequests.SecretRequests)({}),
+  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+    namedProjectsRoot: "/unused-projects",
+    isScratchProject: () => Effect.succeed(false),
+  }),
+  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
   ServerSettings.layerTest(),
   Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
 );

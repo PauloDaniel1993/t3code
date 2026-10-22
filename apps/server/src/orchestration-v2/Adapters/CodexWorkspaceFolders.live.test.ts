@@ -141,7 +141,7 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
             expectedWritable = true,
           ) {
             const file = path.join(extra, `${phase}.txt`);
-            const marker = yield* (yield* Crypto.Crypto).randomUUIDv4;
+            const marker = yield* (yield* Crypto.Crypto).randomUUIDv4();
             yield* fs.writeFileString(file, `marker=${marker}\n`);
             const now = yield* DateTime.now;
             const messages: Array<string> = [];

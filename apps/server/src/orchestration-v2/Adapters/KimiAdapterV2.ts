@@ -77,13 +77,14 @@ export function makeKimiAcpAdapterFlavor(options: KimiAdapterV2Options): AcpAdap
             }),
         })),
       ),
-    applyModelSelection: ({ runtime, modelSelection }) =>
+    applyModelSelection: ({ runtime, startResult, modelSelection }) =>
       Effect.gen(function* () {
         // Publish fresh discovery even when the requested model was removed.
         yield* (
           options.onSessionConfigurationUpdate?.(
             yield* runtime.getConfigOptions,
             yield* runtime.getModeState,
+            startResult.sessionSetupResult.models,
           ) ?? Effect.void
         );
         return yield* applyKimiAcpModelSelection({ runtime, model: modelSelection.model });

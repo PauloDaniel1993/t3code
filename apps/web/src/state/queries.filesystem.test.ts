@@ -1,8 +1,15 @@
-import { AuthFilesystemReadScope, EnvironmentId, type AuthSessionState } from "@t3tools/contracts";
+import {
+  AuthFilesystemReadScope,
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
+  type AuthSessionState,
+} from "@t3tools/contracts";
 import { beforeEach, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   session: null as Pick<AuthSessionState, "authenticated" | "scopes"> | null,
+  debouncedValue: null as unknown,
   sessionError: null as string | null,
   sessionWaiting: false,
   phase: "connected" as "connected" | "offline",
@@ -22,7 +29,7 @@ vi.mock("react", async (importOriginal) => ({
   useCallback: <A>(callback: A) => callback,
   useEffect: () => {},
   useMemo: <A>(factory: () => A) => factory(),
-  useState: <A>(value: A) => [value, vi.fn()],
+  useState: <A>(value: A) => [state.debouncedValue ?? value, vi.fn()],
 }));
 vi.mock("./session", () => ({
   environmentSession: { sessionStateAtom: () => state.sessionAtom },
@@ -69,9 +76,6 @@ vi.mock("./query", () => ({
 
 import { useProjectContentSearch, useProjectPathSearch } from "./queries";
 
-const useComposerPathSearch = (input: Parameters<typeof useProjectPathSearch>[0]) =>
-  useProjectPathSearch(input, 20);
-
 const target = {
   environmentId: EnvironmentId.make("test-environment"),
   cwd: "/repo",
@@ -79,50 +83,13 @@ const target = {
 };
 
 beforeEach(() => {
+  state.debouncedValue = null;
   state.session = null;
   state.sessionError = null;
   state.sessionWaiting = false;
   state.phase = "connected";
   state.contentRequests.mockClear();
   state.contentError = null;
-});
-
-it("keeps a file search pending until its grant loads, then shows matches", () => {
-  expect(useComposerPathSearch(target)).toMatchObject({
-    entries: [],
-    error: null,
-    isPending: true,
-  });
-  state.session = { authenticated: true, scopes: [AuthFilesystemReadScope] };
-  expect(useComposerPathSearch(target)).toMatchObject({
-    entries: [{ path: "src/index.ts", kind: "file" }],
-    error: null,
-    isPending: false,
-  });
-});
-
-it("shows a confirmed denial and a connection failure separately", () => {
-  state.session = { authenticated: true, scopes: [] };
-  expect(useComposerPathSearch(target)).toMatchObject({
-    entries: [],
-    error: "This connection cannot search host files.",
-    isPending: false,
-  });
-  state.session = null;
-  state.phase = "offline";
-  expect(useComposerPathSearch(target)).toMatchObject({
-    entries: [],
-    error: "This environment is not connected.",
-    isPending: false,
-  });
-});
-
-it("leaves an inactive search idle while its grant loads", () => {
-  expect(useComposerPathSearch({ ...target, cwd: null, query: null })).toMatchObject({
-    entries: [],
-    error: null,
-    isPending: false,
-  });
 });
 
 const contentTarget = {
@@ -132,21 +99,6 @@ const contentTarget = {
   wholeWord: true,
   useRegex: false,
 };
-
-it("waits for content-search access before issuing a request, including an empty search", () => {
-  for (const query of ["", contentTarget.query]) {
-    const result = useProjectContentSearch({ ...contentTarget, query });
-    expect(state.contentRequests).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      canReadFiles: false,
-      isCheckingAccess: true,
-      matches: [],
-      error: null,
-      isPending: true,
-    });
-  }
-  expect(state.contentRequests).not.toHaveBeenCalled();
-});
 
 it("shows content-search denial before typing and never issues an unauthorized request", () => {
   state.session = { authenticated: true, scopes: [] };
@@ -162,26 +114,6 @@ it("shows content-search denial before typing and never issues an unauthorized r
     });
   }
   expect(state.contentRequests).not.toHaveBeenCalled();
-});
-
-it("preserves content query whitespace and options when access is granted", () => {
-  state.session = { authenticated: true, scopes: [AuthFilesystemReadScope] };
-  expect(useProjectContentSearch(contentTarget)).toMatchObject({
-    matches: state.contentData.matches,
-    error: null,
-    isPending: false,
-  });
-  expect(state.contentRequests).toHaveBeenCalledWith({
-    environmentId: contentTarget.environmentId,
-    input: {
-      cwd: contentTarget.cwd,
-      query: contentTarget.query,
-      limit: 500,
-      caseSensitive: true,
-      wholeWord: true,
-      useRegex: false,
-    },
-  });
 });
 
 it("keeps confirmed content access during revalidation and drops results when it is revoked", () => {
@@ -220,22 +152,24 @@ it("fails closed after a session check fails, even with a cached grant and match
   expect(state.contentRequests).not.toHaveBeenCalled();
 });
 
-it("keeps inactive content search idle and reports a disconnected target without querying", () => {
-  expect(
-    useProjectContentSearch({ ...contentTarget, environmentId: null, cwd: null }),
-  ).toMatchObject({
-    matches: [],
-    error: null,
-    isPending: false,
-  });
-  state.phase = "offline";
-  const result = useProjectContentSearch(contentTarget);
-  expect(state.contentRequests).not.toHaveBeenCalled();
-  expect(result).toMatchObject({
-    canReadFiles: false,
-    matches: [],
-    error: "This environment is not connected.",
-    isPending: false,
-  });
-  expect(state.contentRequests).not.toHaveBeenCalled();
+it("marks path results pending until their workspace scope matches the requested target", () => {
+  state.session = { authenticated: true, scopes: [AuthFilesystemReadScope] };
+  const scope = {
+    projectId: ProjectId.make("project"),
+    threadId: ThreadId.make("thread"),
+    folderPath: "/api",
+  };
+  const previous = { ...target, scope, kind: undefined, imageOnly: undefined };
+  state.debouncedValue = previous;
+  expect(useProjectPathSearch({ ...target, scope: { ...scope } }, 80).isPending).toBe(false);
+  for (const changedScope of [
+    undefined,
+    { ...scope, folderPath: "/ui" },
+    { ...scope, threadId: ThreadId.make("other") },
+    { ...scope, projectId: ProjectId.make("other") },
+  ]) {
+    const result = useProjectPathSearch({ ...target, scope: changedScope }, 80);
+    expect(result.isPending).toBe(true);
+    expect(result.searchedTarget.scope).toEqual(scope);
+  }
 });

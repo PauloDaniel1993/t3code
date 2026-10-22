@@ -1,4 +1,5 @@
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
+import type { ProjectPathSearchTarget } from "../../state/queries";
 import {
   resolveProviderSkillSourceKind,
   type ProviderSkillSourceKind,
@@ -37,6 +38,7 @@ export type ComposerCommandItem =
       path: string;
       pathKind: ProjectEntry["kind"];
       folderPath?: string | undefined;
+      searchTarget: ProjectPathSearchTarget;
       label: string;
       description: string;
     }

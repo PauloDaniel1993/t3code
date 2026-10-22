@@ -86,7 +86,7 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
               runtimePolicy = scope,
             ) {
               const file = path.join(runtimePolicy.additionalDirectories[0]!, "proof.txt");
-              const fixtureValue = yield* (yield* Crypto.Crypto).randomUUIDv4;
+              const fixtureValue = yield* (yield* Crypto.Crypto).randomUUIDv4();
               const marker = `CLAUDE_WORKSPACE_${stage.toUpperCase()}_OK`;
               yield* fileSystem.writeFileString(
                 file,

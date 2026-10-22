@@ -32,6 +32,7 @@ import { EventSinkV2 } from "./EventSink.ts";
 import { ProviderEventIngestorV2 } from "./ProviderEventIngestor.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { RunFinalizationObserver } from "./RunFinalizationService.ts";
+import { TurnItemPositionStoreV2 } from "./TurnItemPositionStore.ts";
 
 import { layer as idLayer } from "@t3tools/provider-core/server/IdAllocator";
 import { makeProviderEventFlowStage } from "./ProviderEventFlowStage.ts";
@@ -75,6 +76,9 @@ it.effect(
             idLayer,
             McpAppModelContext.layerEmpty,
             ServerSettings.layerTest(),
+            Layer.mock(TurnItemPositionStoreV2)({
+              allocate: () => Effect.die("Unused position allocation"),
+            }),
             Layer.mock(EventSinkV2)({
               write: () => Effect.succeed([]),
               writeIfRunCurrent: (input) =>

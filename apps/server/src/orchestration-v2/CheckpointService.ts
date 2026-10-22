@@ -254,7 +254,7 @@ function checkpointIdForScopeOrdinal(
   });
 }
 
-function makeRootRunScope(input: {
+const makeRootRunScope = Effect.fn("CheckpointService.makeRootRunScope")(function* (input: {
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -265,31 +265,29 @@ function makeRootRunScope(input: {
   readonly unavailableFolderPaths?: ReadonlyArray<string> | undefined;
   readonly createdAt: DateTime.Utc;
 }) {
-  return Effect.gen(function* () {
-    const scopeId = yield* input.idAllocator.allocate.checkpointScope({
-      threadId: input.threadId,
-      name: ROOT_CHECKPOINT_SCOPE_NAME,
-    });
-    const parts = checkpointScopeParts({
-      thread: input.thread,
-      unavailableFolderPaths: input.unavailableFolderPaths,
-    });
-    return {
-      id: scopeId,
-      threadId: input.threadId,
-      runId: input.runId,
-      nodeId: input.rootNodeId,
-      parentScopeId: null,
-      providerThreadId: input.providerThreadId,
-      kind: "root_run",
-      ordinalWithinParent: 0,
-      advancesAppRunCount: true,
-      cwd: parts?.[0]?.cwd ?? input.cwd,
-      ...(parts === undefined ? {} : { parts }),
-      createdAt: input.createdAt,
-    } satisfies OrchestrationV2CheckpointScope;
+  const scopeId = yield* input.idAllocator.allocate.checkpointScope({
+    threadId: input.threadId,
+    name: ROOT_CHECKPOINT_SCOPE_NAME,
   });
-}
+  const parts = checkpointScopeParts({
+    thread: input.thread,
+    unavailableFolderPaths: input.unavailableFolderPaths,
+  });
+  return {
+    id: scopeId,
+    threadId: input.threadId,
+    runId: input.runId,
+    nodeId: input.rootNodeId,
+    parentScopeId: null,
+    providerThreadId: input.providerThreadId,
+    kind: "root_run",
+    ordinalWithinParent: 0,
+    advancesAppRunCount: true,
+    cwd: parts?.[0]?.cwd ?? input.cwd,
+    ...(parts === undefined ? {} : { parts }),
+    createdAt: input.createdAt,
+  } satisfies OrchestrationV2CheckpointScope;
+});
 
 function makeCheckpoint(input: {
   readonly id: CheckpointId;
@@ -382,11 +380,13 @@ export const layer: Layer.Layer<
             return;
           }
 
-          yield* checkpointStore.captureCheckpoint({
-            cwd: part.cwd,
-            checkpointRef,
-            pathspecs: part.pathspecs,
-          });
+          yield* checkpointStore
+            .captureCheckpoint({
+              cwd: part.cwd,
+              checkpointRef,
+              pathspecs: part.pathspecs,
+            })
+            .pipe(Effect.catchTags({ VcsUnsupportedOperationError: () => Effect.void }));
         }),
       );
 
@@ -510,25 +510,31 @@ export const layer: Layer.Layer<
             return { part: { ...part, ref: checkpointRef, status: "missing" }, files: [] } as const;
           }
 
-          const captured = yield* checkpointStore
+          const captureStatus = yield* checkpointStore
             .captureCheckpoint({
               cwd: part.cwd,
               checkpointRef,
               pathspecs: part.pathspecs,
             })
             .pipe(
-              Effect.as(true),
+              Effect.as("ready" as const),
+              Effect.catchTags({
+                VcsUnsupportedOperationError: () => Effect.succeed("missing" as const),
+              }),
               Effect.catch((cause) =>
                 Effect.logWarning("orchestration V2 checkpoint capture failed", {
                   scopeId: scope.id,
                   checkpointRef,
                   cause: String(cause),
-                }).pipe(Effect.as(false)),
+                }).pipe(Effect.as("error" as const)),
               ),
             );
 
-          if (!captured) {
-            return { part: { ...part, ref: checkpointRef, status: "error" }, files: [] } as const;
+          if (captureStatus !== "ready") {
+            return {
+              part: { ...part, ref: checkpointRef, status: captureStatus },
+              files: [],
+            } as const;
           }
           if (scope.parts !== undefined) {
             return { part: { ...part, ref: checkpointRef, status: "ready" }, files: [] } as const;
@@ -554,7 +560,6 @@ export const layer: Layer.Layer<
             toCheckpointRef: checkpointRef,
           };
           // A pull or rebase can change thousands of files the turn did not write.
-          // Keep only the files the turn's own work touched.
           const files = previousExists
             ? yield* Effect.all([
                 checkpointStore.diffCheckpoints({

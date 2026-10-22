@@ -30,10 +30,13 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { buildTemporaryWorktreeBranchName, isTemporaryWorktreeBranch } from "@t3tools/shared/git";
+import * as Stream from "effect/Stream";
 import {
   isSamePath,
+  isPathWithin,
+  projectFolders,
   resolveThreadWorkspace,
-  threadPrimaryPath,
+  threadUsingWorktrees,
   workspaceAdditionalDirectories,
 } from "@t3tools/shared/workspaceFolders";
 
@@ -100,20 +103,14 @@ export interface ThreadLaunchInput {
   readonly creationSource: OrchestrationV2CreationSource;
 }
 
-/** What workspace preparation reads from a launch; a retry rebuilds it from the run. */
 type PreparationInput = Pick<
   ThreadLaunchInput,
   "commandId" | "projectId" | "workspaceStrategy" | "initialMessage"
 > & {
-  /**
-   * Set when a retry reuses the worktree its failed attempt created and
-   * recorded. Its setup is tracked like a new one, but the thread already
-   * records the workspace, and a branch rename may still be running.
-   */
   readonly reusedWorktree?: { readonly baseRef: string };
 };
 
-export interface ThreadLaunchRetryInput {
+export interface ThreadLaunchPreparationInput {
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -152,7 +149,6 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   }
 }
 
-/** A new worktree was asked to start from a ref that gives it no commit. */
 export class ThreadLaunchBaseRefError extends Schema.TaggedError<ThreadLaunchBaseRefError>()(
   "ThreadLaunchBaseRefError",
   {
@@ -177,21 +173,20 @@ export class ThreadLaunchService extends Context.Service<
       ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
     /**
-     * Fails when a new worktree's base ref cannot give provisioning a commit.
      * `launch` accepts such a launch and reports the failure inside the
      * thread; a caller that needs it before a thread exists checks first.
      */
     readonly checkWorktreeBase: (
       input: Pick<ThreadLaunchInput, "projectId" | "workspaceStrategy">,
     ) => Effect.Effect<void, ThreadLaunchBaseRefError>;
-    /** Dispatches prepared-run.retry and prepares the run's workspace again. */
-    readonly retryPreparation: (input: ThreadLaunchRetryInput) => Effect.Effect<
+    readonly retryPreparation: (
+      input: ThreadLaunchPreparationInput,
+    ) => Effect.Effect<
       Orchestrator.OrchestratorV2DispatchResult,
-      // Dispatches prepared-run.retry, a command the enablement chokepoint
-      // never gates; the type stays accurate anyway.
       | Orchestrator.OrchestratorV2Error
       | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
+    readonly prepareRun: (input: ThreadLaunchPreparationInput) => Effect.Effect<void>;
   }
 >()("t3/orchestration-v2/ThreadLaunchService") {}
 
@@ -273,8 +268,6 @@ const make = Effect.gen(function* () {
     // `:/text` is a commit search, which cannot be asked for a commit type.
     if (strategy.type !== "worktree" || strategy.baseRef.startsWith(":")) return;
     const { baseRef } = strategy;
-    // Anything this cannot establish is left for the launch to report: a
-    // missing project, a folder that is not a repository, a failing Git.
     const unresolved = yield* Effect.gen(function* () {
       const project = Option.getOrUndefined(yield* projects.getById(input.projectId));
       if (project === undefined) return undefined;
@@ -282,11 +275,9 @@ const make = Effect.gen(function* () {
       // `git worktree add` reads `-` as the previous checkout.
       if (yield* git.hasCommit({ cwd, refName: baseRef === "-" ? "@{-1}" : baseRef }))
         return undefined;
-      // Provisioning fetches the base from origin when it can, and runs a
-      // repository with no commits yet without a worktree.
       if (
         strategy.startFromOrigin === true &&
-        (yield* git.remoteExists({ cwd, remoteName: "origin" }))
+        (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
       )
         return undefined;
       // `git worktree add` also starts from a remote-tracking branch of that
@@ -326,6 +317,7 @@ const make = Effect.gen(function* () {
     let bound = false;
     let renameFiber: Fiber.Fiber<unknown> | null = null;
     let setupTerminalId: string | null = null;
+    let runReleased = false;
     if (input.workspaceStrategy.type === "worktree") {
       yield* setupTracker.begin({
         threadId,
@@ -345,8 +337,8 @@ const make = Effect.gen(function* () {
     }
     yield* Effect.gen(function* () {
       const initialMessage = input.initialMessage;
-      const generateBranchNameFor = (cwd: string, message: ThreadLaunchInitialMessage) =>
-        Effect.gen(function* () {
+      const generateBranchNameFor = Effect.fn("ThreadLaunchService.generateBranchNameFor")(
+        function* (cwd: string, message: ThreadLaunchInitialMessage) {
           const settings = resolveProjectSettings(
             yield* serverSettings.getSettings,
             input.projectId,
@@ -378,11 +370,9 @@ const make = Effect.gen(function* () {
                 exactName: settings.branchNamingMode === "custom",
               })),
             );
-        });
+        },
+      );
 
-      // The server owns worktree naming: without an explicit branch, provision
-      // under a temporary `t3/<hash>` name so the worktree never waits on
-      // name generation, then rename in the background below.
       const requestedBranch = input.workspaceStrategy.branch;
       let branch: string | null;
       if (input.workspaceStrategy.type === "worktree" && requestedBranch === undefined) {
@@ -476,10 +466,6 @@ const make = Effect.gen(function* () {
         bound = true;
       }
 
-      // Rename temporary branches (server-invented above, or sent by clients
-      // that name worktrees themselves) in the background so generation latency
-      // never delays provisioning or the provider turn. The temporary name
-      // simply sticks if generation or the rename fails.
       if (
         reused === undefined &&
         worktreePath !== null &&
@@ -494,41 +480,78 @@ const make = Effect.gen(function* () {
           newBranch: string,
           exactName: boolean,
         ) {
-          if (boundSet === null) {
-            const renamed = yield* git.renameBranch({
-              cwd: worktreeCwd,
-              oldBranch,
-              newBranch,
-              ...(exactName ? { exactName: true } : {}),
-            });
-            yield* threads.dispatch({
-              type: "thread.metadata.update",
-              commandId,
-              threadId,
-              branch: renamed.branch,
-              worktreePath: worktreeCwd,
-              // A thread the user moved meanwhile stays where it went.
-              expectedWorktreePath: worktreeCwd,
-            });
-            return;
-          }
-          const renamed = yield* worktreeSets
-            .renameBranch(boundSet, { branch: newBranch, exactName })
-            .pipe(
-              // A cancel rolls the set back under the names its branches have now.
-              Effect.tap((renamedSet) =>
-                Effect.sync(() => {
-                  if (createdSet !== null) createdSet = renamedSet;
-                }),
-              ),
-              Effect.uninterruptible,
-            );
-          yield* worktreeSets.bind({
-            commandId,
-            threadId,
-            set: renamed,
-            expectedWorktreePath: worktreeCwd,
+          const renamedSet =
+            boundSet === null
+              ? null
+              : yield* worktreeSets.renameBranch(boundSet, { branch: newBranch, exactName }).pipe(
+                  Effect.tap((renamed) =>
+                    Effect.sync(() => {
+                      if (createdSet !== null) createdSet = renamed;
+                    }),
+                  ),
+                  Effect.uninterruptible,
+                );
+          const renamedBranch =
+            renamedSet === null
+              ? (yield* git.renameBranch({
+                  cwd: worktreeCwd,
+                  oldBranch,
+                  newBranch,
+                  ...(exactName ? { exactName: true } : {}),
+                })).branch
+              : WorktreeSet.worktreeSetBinding(renamedSet).branch;
+          const updateBinding = Effect.fn("ThreadLaunchService.updateBinding")(function* (
+            targetThreadId: ThreadId,
+            updateCommandId: CommandId,
+          ) {
+            if (renamedSet === null) {
+              yield* threads.dispatch({
+                type: "thread.metadata.update",
+                commandId: updateCommandId,
+                threadId: targetThreadId,
+                branch: renamedBranch,
+                expectedBranch: oldBranch,
+                expectedWorktreePath: worktreeCwd,
+              });
+            } else {
+              yield* worktreeSets.bind({
+                commandId: updateCommandId,
+                threadId: targetThreadId,
+                set: renamedSet,
+                expectedBranch: oldBranch,
+                expectedWorktreePath: worktreeCwd,
+              });
+            }
           });
+          yield* updateBinding(threadId, commandId).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Parent thread worktree branch update failed", { threadId, cause }),
+            ),
+          );
+          // Re-read after each pass so descendants created during the rename
+          // inherit the same branch and every member of the set.
+          const visited = new Set([threadId]);
+          while (true) {
+            const snapshot = yield* threads.getShellSnapshot();
+            const sharing = [...snapshot.threads, ...snapshot.archivedThreads].filter(
+              (candidate) =>
+                !visited.has(candidate.id) &&
+                candidate.worktreePath === worktreeCwd &&
+                candidate.branch === oldBranch,
+            );
+            if (sharing.length === 0) break;
+            for (const child of sharing) {
+              visited.add(child.id);
+              yield* updateBinding(child.id, CommandId.make(`${commandId}:${child.id}`)).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Shared thread worktree branch update failed", {
+                    threadId: child.id,
+                    cause,
+                  }),
+                ),
+              );
+            }
+          }
         });
         renameFiber = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
           Effect.flatMap(({ branch: newBranch, exactName }) => renameAndBind(newBranch, exactName)),
@@ -544,11 +567,7 @@ const make = Effect.gen(function* () {
         );
       }
 
-      const cwd = threadPrimaryPath(
-        { worktreePath, workspaceFolders: thread.workspaceFolders },
-        project,
-      );
-      if (runId !== null) {
+      if (runId !== null && worktreePath !== null) {
         yield* threads
           .dispatch({
             type: "prepared-run.progress",
@@ -560,28 +579,30 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
-      const setup = yield* setupScripts
-        .runForThread({
-          threadId,
-          projectId: input.projectId,
-          // A thread's own primary folder, which a later relink never moves.
-          projectCwd: thread.workspaceFolders?.[0]?.path ?? project.workspaceRoot,
-          worktreePath: cwd,
-          ...(tracked
-            ? {
-                observeCompletion: {
-                  onOutputLine: (line: string) =>
-                    setupTracker.appendTail(threadId, "setup-script", line),
+      const setup =
+        worktreePath === null
+          ? ({ status: "no-script" } as const)
+          : yield* setupScripts
+              .runForThread({
+                threadId,
+                projectId: input.projectId,
+                projectCwd: thread.workspaceFolders?.[0]?.path ?? project.workspaceRoot,
+                worktreePath,
+                ...(tracked
+                  ? {
+                      observeCompletion: {
+                        onOutputLine: (line: string) =>
+                          setupTracker.appendTail(threadId, "setup-script", line),
+                      },
+                    }
+                  : {}),
+                project: {
+                  id: project.id,
+                  workspaceRoot: project.workspaceRoot,
+                  scripts: project.scripts,
                 },
-              }
-            : {}),
-          project: {
-            id: project.id,
-            workspaceRoot: project.workspaceRoot,
-            scripts: project.scripts,
-          },
-        })
-        .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
+              })
+              .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
 
       let awaitAsyncSetup = Effect.void;
       if (setup.status === "started") {
@@ -636,7 +657,15 @@ const make = Effect.gen(function* () {
             threadId,
             runId,
           })
-          .pipe(Effect.mapError(mapError(input, "release-run", threadId)));
+          .pipe(
+            Effect.mapError(mapError(input, "release-run", threadId)),
+            Effect.tap(() =>
+              Effect.sync(() => {
+                runReleased = true;
+              }),
+            ),
+            Effect.uninterruptible,
+          );
       }
       yield* setupTracker.stageStatus(threadId, "agent", "done");
       yield* awaitAsyncSetup;
@@ -650,17 +679,31 @@ const make = Effect.gen(function* () {
             cancelled ? "cancelled" : "failed",
             cancelled ? null : failureDetail(Cause.squash(cause)),
           );
-          // A set the thread never got bound to is rolled back on any failure.
-          // A bound one only on cancel: a setup failure leaves the thread bound
-          // so the user can retry.
-          if (createdSet === null || (bound && !cancelled)) return;
-          // Settle the background rename first: the set is then deleted under
-          // its final branch name, and the rename can't bind the thread again.
-          if (renameFiber !== null) yield* Fiber.interrupt(renameFiber);
-          if (setupTerminalId)
+          if (cancelled && setupTerminalId)
             yield* terminals
               .close({ threadId, terminalId: setupTerminalId, deleteHistory: true })
               .pipe(Effect.ignore);
+          // A set the thread never got bound to is rolled back on any failure.
+          // A bound one only on cancel: a setup failure leaves the thread bound
+          // so the user can retry.
+          if (createdSet === null || runReleased || (bound && !cancelled)) return;
+          // Settle the background rename first: the set is then deleted under
+          // its final branch name, and the rename can't bind the thread again.
+          if (renameFiber !== null) yield* Fiber.interrupt(renameFiber);
+          const abandonedSet = createdSet;
+          const paths = abandonedSet.members.map((member) => member.path);
+          const snapshot = yield* threads.getShellSnapshot();
+          const sharedThread = threadUsingWorktrees(
+            [...snapshot.threads, ...snapshot.archivedThreads],
+            threadId,
+            paths,
+          );
+          const sharedProject = (yield* projects.listShells()).find((project) =>
+            projectFolders(project).some(
+              (folder) =>
+                folder.path !== undefined && paths.some((path) => isPathWithin(path, folder.path!)),
+            ),
+          );
           // An interrupted bind may have committed. Never remove a set the
           // thread could still point at: unbind first, and keep the set if
           // that fails.
@@ -672,6 +715,7 @@ const make = Effect.gen(function* () {
                 threadId,
                 worktreePath: null,
                 branch: null,
+                expectedWorktreePath: WorktreeSet.worktreeSetBinding(abandonedSet).worktreePath,
               })
               .pipe(
                 Effect.as(true),
@@ -684,8 +728,17 @@ const make = Effect.gen(function* () {
               );
             }
           }
-          yield* worktreeSets.discard(createdSet);
-        }),
+          if (sharedThread !== undefined || sharedProject !== undefined) return;
+          yield* worktreeSets.discard(abandonedSet);
+        }).pipe(
+          Effect.catchCause((cleanupCause) =>
+            Effect.logWarning("Failed to clean up an abandoned thread worktree", {
+              commandId: input.commandId,
+              threadId,
+              cause: cleanupCause,
+            }),
+          ),
+        ),
       ),
     );
   });
@@ -746,7 +799,33 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     runId: RunId | null,
   ) {
-    yield* prepareInBackground(input, threadId, runId).pipe(
+    const preparation = Effect.gen(function* () {
+      const prepare = prepareInBackground(input, threadId, runId);
+      if (
+        runId === null ||
+        (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined)
+      ) {
+        return yield* prepare;
+      }
+      const afterSequence = yield* threads.getThreadEventSequence(threadId);
+      const projection = yield* threads.getThreadRecords(threadId, ["runs"]);
+      if (projection.runs.find((run) => run.id === runId)?.status !== "preparing") return;
+      const interruption = threads
+        .streamStoredEventsFrom({ threadId, afterSequence, eventType: "run.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === runId &&
+              (stored.event.payload.status === "interrupted" ||
+                stored.event.payload.status === "cancelled"),
+          ),
+          Stream.runHead,
+          Effect.flatMap((event) => (Option.isSome(event) ? Effect.interrupt : Effect.never)),
+        );
+      yield* Effect.raceFirst(prepare, interruption);
+    });
+    yield* preparation.pipe(
       Effect.onError((cause) =>
         failPreparedRun(
           input,
@@ -762,7 +841,14 @@ const make = Effect.gen(function* () {
   });
 
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
-    function* (input) {
+    function* (request) {
+      // Scratch has no Git repository. Normalize before folder allocation so
+      // durable preparation and retries use the thread's own Scratch folder.
+      const input: ThreadLaunchInput =
+        request.workspaceStrategy.type === "worktree" &&
+        (yield* managedFolders.isScratchProject(request.projectId))
+          ? { ...request, workspaceStrategy: { type: "root" } }
+          : request;
       yield* ProjectCloneTracker.rejectCommandsDuringClone(cloneTracker, {
         type: "thread.create",
         projectId: input.projectId,
@@ -827,8 +913,6 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
-        // A Scratch thread launched at the project root runs in a folder of its
-        // own. Only the first attempt claims one; a retry replays its create.
         const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
             ? Option.match(
@@ -1009,8 +1093,6 @@ const make = Effect.gen(function* () {
           runId !== null &&
           projection.runs.some((run) => run.id === runId && run.status === "preparing");
         const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : runIsPreparing;
-        // A retried root launch prepares the folder its first attempt bound, so
-        // a Scratch thread keeps its own. Other root launches bind no folder.
         const boundWorktreePath = projection.thread.worktreePath;
         const preparationStrategy: ThreadLaunchWorkspaceStrategy =
           Option.isSome(launchReceipt) &&
@@ -1057,6 +1139,24 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const prepareRun: ThreadLaunchService["Service"]["prepareRun"] = Effect.fn(
+    "ThreadLaunchService.prepareRun",
+  )(function* (input) {
+    const scheduled = yield* Effect.gen(function* () {
+      const projection = yield* threads.getThreadProjection(input.threadId);
+      const run = projection.runs.find((candidate) => candidate.id === input.runId);
+      const workspacePreparation = run?.workspacePreparation;
+      if (run?.status !== "preparing" || workspacePreparation === undefined) return;
+      if (!(yield* reservePreparation(input.commandId))) return;
+      yield* scheduleRunPreparation(input, projection, run, workspacePreparation).pipe(
+        Effect.onError(() => releasePreparation(input.commandId)),
+      );
+    }).pipe(Effect.exit);
+    if (Exit.isFailure(scheduled)) {
+      yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
+    }
+  });
+
   const retryPreparation: ThreadLaunchService["Service"]["retryPreparation"] = Effect.fn(
     "ThreadLaunchService.retryPreparation",
   )(function* (input) {
@@ -1066,34 +1166,17 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       runId: input.runId,
     });
-    // A replayed retry finds the run already past preparation, or prepared by
-    // the attempt that first reserved this command.
-    // From here the run is preparing again; anything that stops preparation
-    // from being scheduled must fail it, or it would wait in preparing forever.
-    const scheduled = yield* Effect.gen(function* () {
-      const projection = yield* threads.getThreadProjection(input.threadId);
-      const run = projection.runs.find((candidate) => candidate.id === input.runId);
-      const workspacePreparation = run?.workspacePreparation;
-      if (run?.status !== "preparing" || workspacePreparation === undefined) return;
-      if (!(yield* reservePreparation(input.commandId))) return;
-      yield* scheduleRetriedPreparation(input, projection, run, workspacePreparation).pipe(
-        Effect.onError(() => releasePreparation(input.commandId)),
-      );
-    }).pipe(Effect.exit);
-    if (Exit.isFailure(scheduled)) {
-      yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
-    }
+    yield* prepareRun(input);
     return dispatched;
   });
 
-  const scheduleRetriedPreparation = (
-    input: ThreadLaunchRetryInput,
+  const scheduleRunPreparation = (
+    input: ThreadLaunchPreparationInput,
     projection: OrchestrationV2ThreadProjection,
     run: OrchestrationV2ThreadProjection["runs"][number],
     workspacePreparation: ThreadLaunchWorkspaceStrategy,
   ) => {
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
-    // A worktree the failed attempt already created is reused, not created again.
     const reuse =
       workspacePreparation.type === "worktree" &&
       projection.thread.worktreePath !== null &&
@@ -1128,7 +1211,7 @@ const make = Effect.gen(function* () {
     );
   };
 
-  return ThreadLaunchService.of({ launch, checkWorktreeBase, retryPreparation });
+  return ThreadLaunchService.of({ launch, checkWorktreeBase, retryPreparation, prepareRun });
 });
 
 export const layer = Layer.effect(ThreadLaunchService, make);

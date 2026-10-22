@@ -24,7 +24,7 @@ import {
   useNewThreadTaskParent,
 } from "../hooks/useNewThreadTaskAvailability";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
-import { TraitsPicker } from "./chat/TraitsPicker";
+import { readPromptUltrathink, TraitsPicker } from "./chat/TraitsPicker";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -247,8 +247,10 @@ export function NewThreadTaskDialog(props: {
                     modelOptions={model.options}
                     planModeEnabled={settings.planModeEnabled}
                     isComposerOwned={false}
-                    prompt={draft.prompt}
-                    onPromptChange={(prompt) => setDraft((current) => ({ ...current, prompt }))}
+                    promptUltrathink={readPromptUltrathink(draft.prompt)}
+                    onPromptEdit={(edit) =>
+                      setDraft((current) => ({ ...current, prompt: edit(current.prompt) }))
+                    }
                     onModelOptionsChange={(options) =>
                       setModel(createModelSelection(model.instanceId, model.model, options ?? []))
                     }

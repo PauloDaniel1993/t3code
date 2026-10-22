@@ -90,11 +90,13 @@ export const makeClaudeWorkspaceFolderHarness = Effect.fnUntraced(function* (inp
   );
   const startTurn = Effect.fnUntraced(function* (turn: {
     readonly ordinal: number;
+    readonly modelSelection?: ModelSelection;
     readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
     readonly providerThread?: OrchestrationV2ProviderThread;
     readonly threadId?: ThreadId;
     readonly text?: string;
   }) {
+    const selectedModel = turn.modelSelection ?? modelSelection;
     const targetThreadId = turn.threadId ?? threadId;
     const targetProviderThread = turn.providerThread ?? providerThread;
     const now = yield* DateTime.now;
@@ -106,7 +108,7 @@ export const makeClaudeWorkspaceFolderHarness = Effect.fnUntraced(function* (inp
         projectId: ProjectId.make("claude-workspace-folders-project"),
         title: "Claude workspace folders",
         providerInstanceId: modelSelection.instanceId,
-        modelSelection,
+        modelSelection: selectedModel,
         runtimeMode: turn.runtimePolicy.runtimeMode,
         interactionMode: turn.runtimePolicy.interactionMode,
         branch: null,
@@ -136,7 +138,7 @@ export const makeClaudeWorkspaceFolderHarness = Effect.fnUntraced(function* (inp
         text: turn.text ?? "Read the other folder.",
         attachments: [],
       },
-      modelSelection,
+      modelSelection: selectedModel,
       runtimePolicy: turn.runtimePolicy,
     });
   });

@@ -22,6 +22,7 @@ import { AgentAwarenessRelay } from "../../relay/AgentAwarenessRelay.ts";
 import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
 import { ExternalLauncher } from "../../process/externalLauncher.ts";
 import { EnvironmentAuth } from "../../auth/EnvironmentAuth.ts";
+import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import { AnalyticsService } from "../../telemetry/AnalyticsService.ts";
 import { ProjectService } from "../../project/ProjectService.ts";
 import { ThreadLaunchService } from "../ThreadLaunchService.ts";
@@ -84,6 +85,7 @@ const startupLayer = (
 ) =>
   layerWithOptions().pipe(
     Layer.provide(hostLayer),
+    Layer.provide(ServerSecretStore.layer),
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(ServerConfig, { ...config, mode: "desktop", noBrowser: true }),

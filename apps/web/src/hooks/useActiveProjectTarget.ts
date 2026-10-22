@@ -19,11 +19,6 @@ export interface ActiveProjectTarget {
   readonly threadRef: ScopedThreadRef;
 }
 
-/**
- * Resolves the project workspace behind the active thread (or draft) so
- * project-scoped surfaces like the file picker and content search know which
- * workspace to query and which thread's right panel opens their results.
- */
 export function useActiveProjectTarget(): ActiveProjectTarget | null {
   const { activeDraftThread, activeThread, routeThreadRef } = useHandleNewThread();
   const projects = useProjects();

@@ -5,9 +5,9 @@ import {
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { useState } from "react";
 import { Alert, View } from "react-native";
-import { AppText as Text, AppTextInput } from "../../components/AppText";
-import { MaterialButton } from "../../components/MaterialButton";
-import { ErrorBanner } from "../../components/ErrorBanner";
+import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
+import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ServerPathBrowser } from "../projects/ServerPathBrowser";
@@ -81,21 +81,21 @@ export function ProjectWorkspaceFileSettings(props: {
       {error ? <ErrorBanner message={error} /> : null}
       <View className="flex-row flex-wrap gap-2">
         {linked ? (
-          <MaterialButton
+          <Button
             label="Refresh"
             disabled={busy || !enabled}
             onPress={() => void changeLink(project.workspaceFile!)}
           />
         ) : null}
         {enabled ? (
-          <MaterialButton
+          <Button
             label={linked ? "Relink…" : "Link workspace file…"}
             disabled={busy}
             onPress={startPicker}
           />
         ) : null}
         {linked ? (
-          <MaterialButton
+          <Button
             label="Unlink workspace file"
             disabled={busy}
             tone="text"
@@ -146,17 +146,12 @@ export function ProjectWorkspaceFileSettings(props: {
             }}
           />
           <View className="flex-row gap-2">
-            <MaterialButton
+            <Button
               label={linked ? "Relink workspace file" : "Link workspace file"}
               disabled={busy || !path.trim()}
               onPress={choosePath}
             />
-            <MaterialButton
-              label="Cancel"
-              disabled={busy}
-              tone="text"
-              onPress={() => setPicking(false)}
-            />
+            <Button label="Cancel" disabled={busy} tone="text" onPress={() => setPicking(false)} />
           </View>
         </View>
       ) : null}

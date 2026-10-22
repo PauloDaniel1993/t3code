@@ -3,6 +3,8 @@ import {
   AuthFilesystemWriteScope,
   EnvironmentId,
   ProjectId,
+  ProjectReadFileInput,
+  ProjectReadFileResult,
   ThreadId,
   type AuthSessionState,
   type ProjectListEntriesResult,
@@ -16,6 +18,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Stream from "effect/Stream";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
@@ -29,6 +32,8 @@ import { createProjectEnvironmentAtoms } from "./projectCommands.ts";
 import type { EnvironmentRpcInput } from "../rpc/client.ts";
 import { v2Project, v2Projection } from "./orchestrationV2TestFixtures.ts";
 
+const decodeReadFileInput = Schema.decodeUnknownSync(ProjectReadFileInput);
+const decodeReadFileResult = Schema.decodeUnknownSync(ProjectReadFileResult);
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 vi.mock("./session.ts", () => ({
   createEnvironmentSessionAtoms: () => ({ sessionStateAtom: sessions }),
@@ -77,7 +82,7 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
 ) {
   const metadataRequests: string[][] = [];
   const file = { byteLength: 5 };
-  const readResponse = { wait: Effect.void as Effect.Effect<void> };
+  const readResponse = { wait: Effect.void as Effect.Effect<void>, missing: false };
   const entryResponse: ProjectListEntriesResult = listing ?? {
     entries: [{ path: "api/folder.ts", kind: "directory" }],
     truncated: false,
@@ -102,7 +107,17 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
               const byteLength = file.byteLength;
               yield* readResponse.wait;
               const relativePath = "scope" in input ? input.path.replace("/./", "/") : "foo";
-              return { relativePath, byteLength, contents: "old", truncated: false };
+              return decodeReadFileResult(
+                readResponse.missing
+                  ? {
+                      relativePath,
+                      byteLength: 0,
+                      contents: "",
+                      truncated: false,
+                      exists: false,
+                    }
+                  : { relativePath, byteLength, contents: "old", truncated: false },
+              );
             }),
           [WS_METHODS.projectsWriteFile]: (
             input: EnvironmentRpcInput<typeof WS_METHODS.projectsWriteFile>,
@@ -115,10 +130,11 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
             Effect.sync(() => {
               metadataRequests.push(input.paths);
               return {
-                entries: input.paths.map(() => ({
-                  kind: "file" as const,
-                  byteLength: file.byteLength,
-                })),
+                entries: input.paths.map(() =>
+                  readResponse.missing
+                    ? null
+                    : { kind: "file" as const, byteLength: file.byteLength },
+                ),
               };
             }),
         },
@@ -202,25 +218,32 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
 });
 
 describe("writeFile metadata", () => {
-  it.effect("reuses a current file read without another metadata request", () =>
+  it.effect("preserves optional read results without seeding metadata for an absent file", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
-      yield* AtomRegistry.getResult(
+      h.readResponse.missing = true;
+      const input = { cwd: "/repo", relativePath: "foo", allowMissing: true };
+      expect.soft(decodeReadFileInput(input)).toEqual(input);
+      const result = yield* AtomRegistry.getResult(
         h.registry,
-        h.commands.readFile({
-          environmentId: ENVIRONMENT_ID,
-          input: { cwd: "/repo", relativePath: "foo" },
-        }),
+        h.commands.readFile({ environmentId: ENVIRONMENT_ID, input }),
         { suspendOnWaiting: true },
       );
+      expect.soft(result).toEqual({
+        relativePath: "foo",
+        byteLength: 0,
+        contents: "",
+        truncated: false,
+        exists: false,
+      });
       const metadata = h.commands.fileMetadata({
         environmentId: ENVIRONMENT_ID,
         input: { path: "/repo/foo" },
       });
       expect(
         yield* AtomRegistry.getResult(h.registry, metadata, { suspendOnWaiting: true }),
-      ).toEqual({ kind: "file", byteLength: 5 });
-      expect(h.metadataRequests).toHaveLength(0);
+      ).toBeNull();
+      expect(h.metadataRequests).toEqual([["/repo/foo"]]);
     }).pipe(Effect.scoped),
   );
 
@@ -308,6 +331,37 @@ describe("writeFile metadata", () => {
 });
 
 describe("scoped file metadata", () => {
+  it.effect("does not seed metadata for an absent file in a secondary worktree", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      h.readResponse.missing = true;
+      const input = {
+        scope: { projectId: FILE_PROJECT_ID, threadId: FILE_THREAD_ID },
+        path: "api/foo",
+        allowMissing: true,
+      };
+      expect(decodeReadFileInput(input)).toEqual(input);
+      expect(
+        yield* AtomRegistry.getResult(
+          h.registry,
+          h.commands.readFile({ environmentId: ENVIRONMENT_ID, input }),
+          { suspendOnWaiting: true },
+        ),
+      ).toMatchObject({ relativePath: "api/foo", exists: false });
+      expect(
+        yield* AtomRegistry.getResult(
+          h.registry,
+          h.commands.fileMetadata({
+            environmentId: ENVIRONMENT_ID,
+            input: { path: "/sets/a/api/foo" },
+          }),
+          { suspendOnWaiting: true },
+        ),
+      ).toBeNull();
+      expect(h.metadataRequests).toEqual([["/sets/a/api/foo"]]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("does not seed a folder unless the response confirms its available identity", () =>
     Effect.gen(function* () {
       const responses: ReadonlyArray<ProjectListEntriesResult> = [

@@ -11,7 +11,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { ComposerSelectControl } from "./chat/ComposerControl";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { FolderGit2Icon, FolderGitIcon, FolderIcon } from "lucide-react";
-import { memo, useMemo, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, type MouseEvent as ReactMouseEvent } from "react";
 
 import {
   resolveCurrentWorkspaceLabel,
@@ -30,6 +30,9 @@ import {
   SelectValue,
 } from "./ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { useAtomValue } from "@effect/atom-react";
+import { shortcutLabelForCommand } from "../keybindings";
+import { primaryServerKeybindingsAtom } from "../state/server";
 
 import { fileBasename } from "@t3tools/shared/path";
 
@@ -76,36 +79,30 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         ? "Worktree unavailable"
         : `${activeWorktreePath ? "Worktree" : effectiveEnvMode === "worktree" || forceNewWorktree ? "New worktree" : "Current checkout"} · ${repositoryCount} ${repositoryCount === 1 ? "repo" : "repos"}`;
   const composerFloatingLayerProps = useComposerMenuProps();
-  const showPreviousWorktree = Boolean(previousWorktreeLabel && onUsePreviousWorktree);
-  const envModeItems = useMemo(
-    () => [
-      {
-        value: "local",
-        label:
-          groupedLabel && effectiveEnvMode === "local"
-            ? groupedLabel
-            : (workspaceDisplayName ?? resolveCurrentWorkspaceLabel(activeWorktreePath)),
-      },
-      {
-        value: "worktree",
-        label:
-          groupedLabel && effectiveEnvMode === "worktree"
-            ? groupedLabel
-            : resolveEnvModeLabel("worktree"),
-      },
-      ...(showPreviousWorktree && previousWorktreeLabel
-        ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
-        : []),
-    ],
-    [
-      activeWorktreePath,
-      previousWorktreeLabel,
-      showPreviousWorktree,
-      workspaceDisplayName,
-      groupedLabel,
-      effectiveEnvMode,
-    ],
+  const shortcutLabel = shortcutLabelForCommand(
+    useAtomValue(primaryServerKeybindingsAtom),
+    "composer.workspace",
   );
+  const showPreviousWorktree = Boolean(previousWorktreeLabel && onUsePreviousWorktree);
+  const envModeItems = [
+    {
+      value: "local",
+      label:
+        groupedLabel && effectiveEnvMode === "local"
+          ? groupedLabel
+          : (workspaceDisplayName ?? resolveCurrentWorkspaceLabel(activeWorktreePath)),
+    },
+    {
+      value: "worktree",
+      label:
+        groupedLabel && effectiveEnvMode === "worktree"
+          ? groupedLabel
+          : resolveEnvModeLabel("worktree"),
+    },
+    ...(showPreviousWorktree && previousWorktreeLabel
+      ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
+      : []),
+  ];
 
   const handleWorkspaceContextMenu = (event: ReactMouseEvent) => {
     if (!workspacePath || forceNewWorktree) return;
@@ -264,6 +261,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
             (effectiveEnvMode === "worktree"
               ? resolveEnvModeLabel("worktree")
               : resolveCurrentWorkspaceLabel(activeWorktreePath))}
+          {shortcutLabel ? ` · ${shortcutLabel}` : null}
         </TooltipPopup>
       </Tooltip>
       <SelectPopup

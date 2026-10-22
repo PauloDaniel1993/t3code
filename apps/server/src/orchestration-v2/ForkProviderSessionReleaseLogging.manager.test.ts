@@ -28,6 +28,8 @@ import { HttpServer } from "effect/http";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import * as CommandOutputHub from "./CommandOutputHub.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { EventSinkV2, EventSinkWriteError, layer as eventSinkLayer } from "./EventSink.ts";
 import { layer as eventStoreLayer } from "./EventStore.ts";
@@ -234,9 +236,16 @@ function scenario<E>(input: {
           ),
           sinkLayer,
           idAllocatorLayer,
+          CommandOutputHub.layer.pipe(Layer.provide(Layer.merge(sinkLayer, StoresLayer))),
           providerEventIngestorLayer.pipe(
             Layer.provide(
-              Layer.mergeAll(sinkLayer, idAllocatorLayer, StoresLayer, ThreadCommandExecutor.layer),
+              Layer.mergeAll(
+                sinkLayer,
+                idAllocatorLayer,
+                StoresLayer,
+                ThreadCommandExecutor.layer,
+                Layer.mock(GitVcsDriver)({ resolveBranchName: () => Effect.succeed(null) }),
+              ),
             ),
           ),
           McpProviderSessions.layer.pipe(Layer.provide(McpRegistryLayer)),

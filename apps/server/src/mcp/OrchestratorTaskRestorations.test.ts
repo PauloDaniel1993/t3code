@@ -35,6 +35,8 @@ import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.t
 import { compileClaudeModelSelection } from "../claudeModelOptions.ts";
 import { SYNTHETIC_CLAUDE_MODEL_CATALOG } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
@@ -220,6 +222,8 @@ function makeLayer(
         Layer.mock(SecretRequests.SecretRequests)({}),
         ServerSettings.layerTest(),
         Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         NodeCrypto.layer,
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: (id) => {
@@ -1313,6 +1317,95 @@ it.effect.each(["codex", "claudeCode"] as const)(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect("resolves an explicit reasoning model beyond the bounded default catalog", () => {
+  const child = task("unlisted-model", { status: "running", result: null });
+  const records = recordsFor([child]);
+  const parent = records.get(parentId)!;
+  records.set(parentId, {
+    ...parent,
+    thread: { ...parent.thread, modelSelection: { instanceId, model: "catalog-0" } },
+  });
+  const catalogProvider: ServerProvider = {
+    ...provider,
+    driver: ProviderDriverKind.make("opencode"),
+    models: Array.from({ length: 12 }, (_, index) => ({
+      ...provider.models[0]!,
+      slug: `catalog-${index}`,
+      name: `Catalog ${index}`,
+      isCustom: false,
+    })),
+  };
+  const commands: Parameters<ThreadManagement.ThreadManagementService["Service"]["dispatch"]>[0][] =
+    [];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const call = (name: string, args: Record<string, unknown>) =>
+      server
+        .callTool({ name, arguments: args })
+        .pipe(
+          Effect.map(declaredResult),
+          Effect.provideService(McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    const catalog = yield* decodeCapabilities(
+      (yield* call("orchestrator_capabilities", {})).structuredContent,
+    );
+    expect(catalog.providers[0]!.models).toHaveLength(8);
+    expect(catalog.providers[0]!.omittedModels).toBe(4);
+    expect(catalog.providers[0]!.models[0]!.options).toEqual([
+      { id: "reasoningEffort", values: ["xhigh"] },
+    ]);
+    const aliases = yield* decodeModels((yield* call("task_models", {})).structuredContent);
+    expect(aliases.instances[0]!.models).toHaveLength(8);
+    expect(aliases.instances[0]!.models.some((model) => model.model === "catalog-11")).toBe(false);
+    yield* decodeCreatedTask(
+      (yield* call("task_create", {
+        title: "Review",
+        prompt: "Review the module.",
+        context: "none",
+        model: { instanceId, model: "catalog-11" },
+        reasoning: "Extra high",
+      })).structuredContent,
+    );
+    expect(commands).toMatchObject([
+      {
+        type: "delegated_task.request",
+        modelSelection: {
+          instanceId,
+          model: "catalog-11",
+          options: [{ id: "reasoningEffort", value: "xhigh" }],
+        },
+      },
+    ]);
+  }).pipe(
+    Effect.provide(
+      makeMcpLayer(records, {
+        providers: [catalogProvider],
+        dispatch: (command) =>
+          Effect.sync(() => {
+            commands.push(command);
+            return {
+              sequence: 1,
+              storedEvents: [
+                {
+                  sequence: 1,
+                  commandId: command.commandId,
+                  event: {
+                    id: EventId.make("event:unlisted-model"),
+                    threadId: parentId,
+                    type: "subagent.updated" as const,
+                    occurredAt: now,
+                    payload: child,
+                  },
+                },
+              ],
+            };
+          }),
+      }),
+    ),
+  );
+});
 
 it.effect(
   "accepts exact fork calls through MCP while retaining native delegation and cancellation",

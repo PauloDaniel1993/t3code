@@ -69,6 +69,17 @@ export const makeWithIdentity = Effect.fn("desktop.electron.configureBeforeReady
         : null;
 
     if (linux !== null) {
+      DesktopEarlyElectronStartup.restoreEarlyLinuxDeviceScaleFactor({
+        env: process.env,
+        homeDirectory,
+        joinPath: NodePath.posix.join,
+        commandLine: Electron.app.commandLine,
+        readFileString: (path) => NodeFS.readFileSync(path, "utf8"),
+        writeFileString: (path, value) => {
+          NodeFS.mkdirSync(NodePath.posix.dirname(path), { recursive: true });
+          NodeFS.writeFileSync(path, value, "utf8");
+        },
+      });
       // The portal also requires a valid desktop entry. An AppImage update may
       // have removed the executable referenced by the previous launch's entry.
       try {
@@ -96,9 +107,7 @@ export const makeWithIdentity = Effect.fn("desktop.electron.configureBeforeReady
               ),
               iconPath,
             );
-          } catch {
-            // Icon installation is optional; registration retries after readiness.
-          }
+          } catch {}
         }
         NodeFS.writeFileSync(
           NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName),
@@ -115,9 +124,7 @@ export const makeWithIdentity = Effect.fn("desktop.electron.configureBeforeReady
           }),
           "utf8",
         );
-      } catch {
-        // The URL handler retries with the full environment and logs failures.
-      }
+      } catch {}
       // Chromium caches its portal registration during startup. Set the identity
       // before any asynchronous work can initialize it with Electron's default.
       Electron.app.setDesktopName(linux.linuxDesktopEntryName);
@@ -131,7 +138,6 @@ export const makeWithIdentity = Effect.fn("desktop.electron.configureBeforeReady
         ozonePlatform: readCommandLineSwitchValue(Electron.app.commandLine, "ozone-platform"),
         enableFeatures: readCommandLineSwitchValue(Electron.app.commandLine, "enable-features"),
         disableFeatures: readCommandLineSwitchValue(Electron.app.commandLine, "disable-features"),
-        // Runs only on Hyprland Wayland sessions without an explicit feature override.
         readHyprctlVersionJson: () =>
           NodeChildProcess.execFileSync("hyprctl", ["version", "-j"], {
             encoding: "utf8",

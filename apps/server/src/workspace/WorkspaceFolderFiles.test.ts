@@ -21,6 +21,7 @@ import * as ServerConfig from "../config.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as KnownWorkspaces from "./KnownWorkspaces.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./WorkspaceFileSystem.ts";
 import * as WorkspaceFolderFiles from "./WorkspaceFolderFiles.ts";
@@ -67,6 +68,9 @@ const folderFilesLayer = <R>(entries: Layer.Layer<WorkspaceEntries.WorkspaceEntr
     Layer.provide(entries),
     Layer.provide(WorkspacePaths.layer),
     Layer.provide(StoresLayer),
+    Layer.provide(
+      Layer.mock(KnownWorkspaces.KnownWorkspaces)({ assertContains: () => Effect.void }),
+    ),
   );
 
 const TestLayer = folderFilesLayer(WorkspaceEntriesLive).pipe(Layer.provideMerge(PlatformLayer));
@@ -559,6 +563,7 @@ const StubEntriesLayer = Layer.effect(
     return WorkspaceEntries.WorkspaceEntries.of({
       browse: () => Effect.die("unused"),
       list: () => Effect.die("unused"),
+      listIgnoredFiles: () => Effect.die("unused"),
       refresh: () => Effect.void,
       search: (input) =>
         resultsFor(input.cwd).pipe(

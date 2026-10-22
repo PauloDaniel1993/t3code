@@ -105,6 +105,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
   let lookupReady = false;
   let inFlight: Entry | undefined;
   let ended = false;
+  let interrupted = false;
   let failure: Cause.Cause<ProviderAdapterV2Error> | undefined;
   let notified = false;
   const pressure = input.pressure ?? { items: 0, bytes: 0, warned: false };
@@ -186,10 +187,16 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
     clear();
     Queue.endUnsafe(wake);
   });
+  const interrupt = Effect.sync(() => {
+    ended = true;
+    interrupted = true;
+    clear();
+  }).pipe(Effect.andThen(Queue.interrupt(wake)));
   const take = Effect.fnUntraced(function* () {
     if (inFlight !== undefined) adjust(-1, -inFlight.bytes);
     inFlight = undefined;
     while (true) {
+      if (interrupted) return yield* Effect.interrupt;
       const first = pending.entries().next().value;
       if (first) {
         const [id, entry] = first;
@@ -218,6 +225,7 @@ export const makeProviderEventFlowStage = Effect.fnUntraced(function* (input: {
       }),
     end,
     close,
+    interrupt,
     // Configure before startTurn. Re-route the small pre-configuration tail too,
     // since inherited-background discovery may yield while the session is busy.
     filter: (predicate: (event: ProviderAdapterV2Event) => boolean) =>

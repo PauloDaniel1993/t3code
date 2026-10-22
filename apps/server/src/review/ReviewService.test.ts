@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
@@ -14,6 +14,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as KnownWorkspaces from "../workspace/KnownWorkspaces.ts";
 import * as ReviewService from "./ReviewService.ts";
 
 function layer(input: {
@@ -23,8 +24,36 @@ function layer(input: {
   readonly worktreesDirectory?: string;
   readonly previousWorktreesDirectories?: ReadonlyArray<string>;
   readonly projectRoots?: ReadonlyArray<string> | "unavailable";
+  readonly threadWorktrees?: ReadonlyArray<{
+    worktreePath: string;
+    deleted?: boolean;
+    worktrees?: ReadonlyArray<{ repositoryRoot: string; path: string; branch: string }>;
+  }>;
+  /** What `git worktree list` reports for every project. */
+  readonly gitWorktrees?: ReadonlyArray<string>;
 }) {
   return ReviewService.layer.pipe(
+    Layer.provide(KnownWorkspaces.layer),
+    Layer.provide(
+      Layer.effectDiscard(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          for (const [index, thread] of (input.threadWorktrees ?? []).entries()) {
+            yield* sql`
+              INSERT INTO orchestration_v2_projection_threads (
+                thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+                created_at, updated_at, deleted_at, payload_json
+              ) VALUES (
+                ${`thread-${index}`}, 'project-0', 'Thread', 'codex', 'full-access', 'default',
+                '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+                ${thread.deleted ? "2026-01-02T00:00:00.000Z" : null},
+                ${JSON.stringify({ worktreePath: thread.worktreePath, ...(thread.worktrees === undefined ? {} : { worktrees: thread.worktrees }) })}
+              )
+            `;
+          }
+        }),
+      ).pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+    ),
     Layer.provide(
       Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
         get: () => Effect.die("unexpected VCS registry get"),
@@ -36,7 +65,11 @@ function layer(input: {
           }),
       }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(
+      Layer.mock(GitVcsDriver.GitVcsDriver)({
+        listWorktreePaths: () => Effect.succeed([...(input.gitWorktrees ?? [])]),
+      }),
+    ),
     Layer.provide(
       ServerSettings.layerTest({
         worktreesDirectory: input.worktreesDirectory ?? "",
@@ -219,7 +252,6 @@ describe("ReviewService", () => {
       const fs = yield* FileSystem.FileSystem;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
-      // Stands in for a project on another drive than the server's home cwd.
       const projectRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-project-" });
       const projectChild = `${projectRoot}/packages/app`;
       yield* fs.makeDirectory(projectChild, { recursive: true });
@@ -235,6 +267,10 @@ describe("ReviewService", () => {
 
       assert.strictEqual((yield* review(projectRoot, [projectRoot])).cwd, projectRoot);
       assert.strictEqual((yield* review(projectChild, [projectRoot])).cwd, projectChild);
+      // A child whose name starts with `..` is still inside.
+      const dottedChild = `${projectRoot}/..feature`;
+      yield* fs.makeDirectory(dottedChild);
+      assert.strictEqual((yield* review(dottedChild, [projectRoot])).cwd, dottedChild);
       for (const [cwd, projectRoots] of [
         [sibling, [projectRoot]],
         [projectRoot, []],
@@ -246,44 +282,96 @@ describe("ReviewService", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("allows diff preview cwd inside the server's launch directory", () =>
+  it.effect("allows the worktree a thread is bound to, and nothing else outside the project", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
-      const detectCalls: Array<{ readonly cwd: string }> = [];
+      const project = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-project-" });
+      // Checkouts outside every managed folder, as `git worktree add ../feature` makes.
+      const bound = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-bound-" });
+      const deleted = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-deleted-" });
+      const unbound = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-unbound-" });
+      const member = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-member-" });
+      const claimedMember = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-review-claimed-member-",
+      });
+      // A client can set a thread's path to any folder; git doesn't list this one.
+      const claimed = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-claimed-" });
+      yield* fs.makeDirectory(`${bound}/sub`);
 
-      const result = yield* Effect.gen(function* () {
-        const review = yield* ReviewService.ReviewService;
-        return yield* review.getDiffPreview({ cwd: workspaceRoot });
-      }).pipe(Effect.provide(layer({ workspaceRoot, baseDir, detectCalls })));
+      const review = (cwd: string) =>
+        Effect.gen(function* () {
+          const service = yield* ReviewService.ReviewService;
+          return yield* service.getDiffPreview({ cwd });
+        }).pipe(
+          Effect.provide(
+            layer({
+              workspaceRoot,
+              baseDir,
+              projectRoots: [project],
+              gitWorktrees: [project, bound, deleted, member],
+              threadWorktrees: [
+                {
+                  worktreePath: bound,
+                  worktrees: [
+                    { repositoryRoot: project, path: bound, branch: "feature" },
+                    { repositoryRoot: project, path: member, branch: "feature" },
+                    { repositoryRoot: project, path: claimedMember, branch: "feature" },
+                  ],
+                },
+                { worktreePath: claimed },
+                { worktreePath: deleted, deleted: true },
+                // A relative path would resolve against the server's own cwd.
+                { worktreePath: "t3-review-relative" },
+                // A filesystem root would make every folder look bound.
+                { worktreePath: "/" },
+              ],
+            }),
+          ),
+        );
 
-      assert.strictEqual(result.cwd, workspaceRoot);
-      assert.deepStrictEqual(result.sources, []);
-      assert.deepStrictEqual(detectCalls, [{ cwd: workspaceRoot }]);
+      for (const cwd of [bound, `${bound}/sub`, member]) {
+        assert.strictEqual((yield* review(cwd)).cwd, cwd);
+      }
+      for (const cwd of [
+        deleted,
+        unbound,
+        claimed,
+        claimedMember,
+        `${process.cwd()}/t3-review-relative`,
+      ]) {
+        const error = yield* review(cwd).pipe(Effect.flip);
+        assert.strictEqual(error._tag, "VcsRepositoryDetectionError");
+      }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("preserves unexpected path-resolution failures", () =>
+  it.effect("allows a thread's worktree linked from a managed folder to a checkout elsewhere", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
-      const invalidCwd = `${workspaceRoot}\0invalid`;
-      const detectCalls: Array<{ readonly cwd: string }> = [];
+      const managed = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-worktrees-" }),
+      );
+      const checkout = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-checkout-" });
+      yield* fs.symlink(checkout, `${managed}/feature`);
 
-      const error = yield* Effect.gen(function* () {
+      const result = yield* Effect.gen(function* () {
         const review = yield* ReviewService.ReviewService;
-        return yield* review.getDiffPreview({ cwd: invalidCwd }).pipe(Effect.flip);
-      }).pipe(Effect.provide(layer({ workspaceRoot, baseDir, detectCalls })));
-
-      assert.strictEqual(error._tag, "VcsRepositoryDetectionError");
-      if (error._tag !== "VcsRepositoryDetectionError") return;
-      assert.strictEqual(error.operation, "ReviewService.assertWorkspaceBoundCwd.canonicalizePath");
-      assert.strictEqual(error.cwd, invalidCwd);
-      assert.match(error.detail, /Failed to resolve a path/);
-      assert.instanceOf(error.cause, PlatformError.PlatformError);
-      assert.deepStrictEqual(detectCalls, []);
+        return yield* review.getDiffPreview({ cwd: checkout });
+      }).pipe(
+        Effect.provide(
+          layer({
+            workspaceRoot,
+            baseDir,
+            worktreesDirectory: managed,
+            threadWorktrees: [{ worktreePath: `${managed}/feature` }],
+          }),
+        ),
+      );
+      assert.strictEqual(result.cwd, checkout);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -450,3 +538,18 @@ describe("ReviewService", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+it.effect("allows review inside the server launch directory without a registered project", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-launch-" });
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-state-" });
+    const cwd = `${workspaceRoot}/nested`;
+    yield* fs.makeDirectory(cwd);
+    const result = yield* Effect.gen(function* () {
+      const service = yield* ReviewService.ReviewService;
+      return yield* service.getDiffPreview({ cwd });
+    }).pipe(Effect.provide(layer({ workspaceRoot, baseDir, projectRoots: [] })));
+    assert.equal(result.cwd, cwd);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

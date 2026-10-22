@@ -81,6 +81,7 @@ describe("Cursor workspace folders", () => {
           });
           const options = (additionalDirectories: string[]) =>
             makeCursorAgentOptions({
+              platform: process.platform,
               threadId: ThreadId.make("cursor-workspace-policy"),
               mcpSession: undefined,
               modelSelection,

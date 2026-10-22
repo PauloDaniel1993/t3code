@@ -1,6 +1,7 @@
 import { assert, describe, expect, it, vi } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -33,6 +34,7 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 // What workspace actions read; tests of single-checkout methods never reach them.
 const unusedWorkspaceDependencies = Layer.mergeAll(
+  NodeServices.layer,
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(ProjectStore.ProjectStoreV2)({}),
   Layer.mock(WorkspaceFolderResolver.WorkspaceFolderResolver)({}),
@@ -369,9 +371,18 @@ function makeWorkspaceLayer(input: {
   readonly branches?: Readonly<Record<string, string | null>>;
   readonly missing?: ReadonlyArray<string>;
   readonly branchReads?: Array<string>;
+  readonly canonicalRoot?: string;
+  readonly onResolve?: () => Effect.Effect<void>;
   readonly runStackedAction: GitManager.GitManager["Service"]["runStackedAction"];
 }) {
   return GitWorkflowService.layer.pipe(
+    Layer.provide(
+      input.canonicalRoot === undefined
+        ? NodeServices.layer
+        : FileSystem.layerNoop({
+            realPath: () => Effect.succeed(input.canonicalRoot!),
+          }),
+    ),
     Layer.provide(
       Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
         resolve: ({ cwd }) =>
@@ -384,7 +395,9 @@ function makeWorkspaceLayer(input: {
               freshness: { source: "live-local", observedAt: NOW, expiresAt: Option.none() },
             },
             driver: {} as VcsDriverRegistry.VcsDriverHandle["driver"],
-          }),
+          } satisfies VcsDriverRegistry.VcsDriverHandle).pipe(
+            Effect.tap(() => input.onResolve?.() ?? Effect.void),
+          ),
       }),
     ),
     Layer.provide(
@@ -767,3 +780,55 @@ describe("GitWorkflowService.runWorkspaceAction", () => {
     }).pipe(Effect.provide(layer));
   });
 });
+
+it.effect("serializes workspace actions at the canonical checkout even through path aliases", () =>
+  Effect.gen(function* () {
+    const firstStarted = yield* Deferred.make<void>();
+    const releaseFirst = yield* Deferred.make<void>();
+    const secondResolved = yield* Deferred.make<void>();
+    const order: string[] = [];
+    let secondRequested = false;
+    let runs = 0;
+    const testLayer = makeWorkspaceLayer({
+      get thread() {
+        return workspaceThread(
+          { worktreePath: null },
+          secondRequested
+            ? [{ ...workspaceFolders[0]!, path: "/alias/app", checkoutRoot: "/alias/app" }]
+            : workspaceFolders.slice(0, 1),
+        );
+      },
+      canonicalRoot: "/canonical-checkout",
+      onResolve: () =>
+        secondRequested
+          ? Deferred.succeed(secondResolved, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      runStackedAction: (input) =>
+        Effect.gen(function* () {
+          const run = ++runs;
+          order.push(`start-${run}`);
+          if (run === 1) {
+            yield* Deferred.succeed(firstStarted, undefined);
+            yield* Deferred.await(releaseFirst);
+          }
+          order.push(`end-${run}`);
+          return stackedResult(input);
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const run = (actionId: string) =>
+        workflow.runWorkspaceAction({ threadId: THREAD_ID, actionId, action: "push" });
+      const first = yield* run("first").pipe(Effect.forkScoped);
+      yield* Deferred.await(firstStarted);
+      secondRequested = true;
+      const second = yield* run("second").pipe(Effect.forkScoped);
+      yield* Deferred.await(secondResolved);
+      expect(order).toEqual(["start-1"]);
+      yield* Deferred.succeed(releaseFirst, undefined);
+      yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      expect(order).toEqual(["start-1", "end-1", "start-2", "end-2"]);
+    }).pipe(Effect.provide(testLayer));
+  }).pipe(Effect.scoped),
+);

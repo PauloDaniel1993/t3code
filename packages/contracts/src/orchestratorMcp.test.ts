@@ -2,28 +2,17 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
-  OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpFailure,
+  OrchestratorMcpProviderCapability,
   OrchestratorMcpScheduleTaskInput,
   OrchestratorMcpScheduledTask,
   OrchestratorMcpUpdateScheduledTaskInput,
-  OrchestratorMcpThreadInterruptInput,
-  OrchestratorMcpThreadListInput,
-  OrchestratorMcpThreadReadInput,
-  OrchestratorMcpThreadSendInput,
-  OrchestratorMcpThreadWaitInput,
 } from "./orchestratorMcp.ts";
 
-const decodeCreateThreadsInput = Schema.decodeUnknownSync(OrchestratorMcpCreateThreadsInput);
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
-const decodeThreadInterruptInput = Schema.decodeUnknownSync(OrchestratorMcpThreadInterruptInput);
-const decodeThreadListInput = Schema.decodeUnknownSync(OrchestratorMcpThreadListInput);
-const decodeThreadReadInput = Schema.decodeUnknownSync(OrchestratorMcpThreadReadInput);
-const decodeThreadSendInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSendInput);
-const decodeThreadWaitInput = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitInput);
 const decodeFailure = Schema.decodeUnknownSync(OrchestratorMcpFailure);
 const encodeFailure = Schema.encodeSync(OrchestratorMcpFailure);
 const decodeSchedule = Schema.decodeUnknownSync(OrchestratorMcpScheduleTaskInput);
@@ -31,6 +20,30 @@ const decodeScheduleUpdate = Schema.decodeUnknownSync(OrchestratorMcpUpdateSched
 const decodeScheduledTask = Schema.decodeUnknownSync(OrchestratorMcpScheduledTask);
 
 describe("orchestrator MCP contracts", () => {
+  it("accepts compact model choices and omitted-model counts without requiring labels", () => {
+    const capability = {
+      providerInstanceId: "codex",
+      driverKind: "codex",
+      displayName: null,
+      models: [
+        {
+          id: "gpt-5.4",
+          options: [
+            { id: "reasoningEffort", values: ["low", "xhigh"], default: "low" },
+            { id: "fastMode", values: [false, true] },
+          ],
+        },
+      ],
+      omittedModels: 12,
+      canRunChildTask: true,
+      canRunCrossProviderChildTask: true,
+      constraints: [],
+    };
+    expect(Schema.decodeUnknownSync(OrchestratorMcpProviderCapability)(capability)).toEqual(
+      capability,
+    );
+  });
+
   it.each([
     { type: "root" },
     { type: "worktree", baseRef: "dev", branch: "schedule/audit", startFromOrigin: false },
@@ -130,116 +143,36 @@ describe("orchestrator MCP contracts", () => {
       latestTerminalStatus: "completed",
       latestTerminalSummary: "Workspace inspected.",
       latestTerminalResultContextTransferId: "context-transfer-result-1",
+      hasPendingQuestion: false,
+      pendingApproval: null,
       waitTimedOut: false,
     });
 
     expect(request.target?.providerInstanceId).toBe("claudeAgent");
     expect(result.status).toBe("completed");
     expect(result.summary).toBe("Workspace inspected.");
-  });
-
-  it("decodes target model options in canonical and shorthand shapes", () => {
-    const canonical = decodeDelegateTaskInput({
-      task: "Say hello.",
-      target: {
-        providerInstanceId: "codex",
-        model: "gpt-5.6-luna",
-        options: [{ id: "reasoning", value: "low" }],
-      },
-    });
-    const shorthand = decodeDelegateTaskInput({
-      task: "Say hello.",
-      target: {
-        providerInstanceId: "codex",
-        model: "gpt-5.6-luna",
-        options: { reasoning: "low", fastMode: true },
-      },
-    });
-
-    expect(canonical.target?.options).toEqual([{ id: "reasoning", value: "low" }]);
-    expect(shorthand.target?.options).toEqual([
-      { id: "reasoning", value: "low" },
-      { id: "fastMode", value: true },
-    ]);
-  });
-
-  it("rejects target model options that are not strings or booleans", () => {
+    expect(result.hasPendingQuestion).toBe(false);
+    expect(result.pendingApproval).toBeNull();
+    expect(
+      decodeDelegateTaskResult({ ...result, status: "waiting", hasPendingQuestion: true })
+        .hasPendingQuestion,
+    ).toBe(true);
+    const pendingApproval = {
+      requestId: "request-approval-1",
+      kind: "command",
+      runId: "run-child-1",
+    };
+    expect(
+      decodeDelegateTaskResult({
+        ...result,
+        pendingApproval: { ...pendingApproval, input: { command: "private command" } },
+      }).pendingApproval,
+    ).toEqual(pendingApproval);
     expect(() =>
-      decodeDelegateTaskInput({
-        task: "Say hello.",
-        target: {
-          providerInstanceId: "codex",
-          model: "gpt-5.6-luna",
-          // Must fail loudly instead of being dropped like legacy persistence.
-          options: { reasoning: 3 },
-        },
+      decodeDelegateTaskResult({
+        ...result,
+        pendingApproval: { ...pendingApproval, kind: "user_input" },
       }),
     ).toThrow();
-    expect(() =>
-      decodeDelegateTaskInput({
-        task: "Say hello.",
-        target: {
-          providerInstanceId: "codex",
-          model: "gpt-5.6-luna",
-          options: [{ id: "reasoning", value: null }],
-        },
-      }),
-    ).toThrow();
-  });
-
-  it("decodes mixed prompted and empty thread batches", () => {
-    const request = decodeCreateThreadsInput({
-      clientRequestId: "threads-1",
-      threads: [
-        { title: "Inherited empty thread" },
-        {
-          prompt: "Review the API.",
-          target: { driverKind: "claudeAgent" },
-          runtimeMode: "approval-required",
-        },
-      ],
-    });
-
-    expect(request.threads).toHaveLength(2);
-    expect(request.threads[0]?.prompt).toBeUndefined();
-    expect(request.threads[1]?.target?.driverKind).toBe("claudeAgent");
-  });
-
-  it("decodes project-scoped thread orchestration requests", () => {
-    expect(
-      decodeThreadListInput({
-        statuses: ["running", "completed"],
-        includeSubagents: false,
-        limit: 25,
-      }).statuses,
-    ).toEqual(["running", "completed"]);
-    expect(
-      decodeThreadReadInput({
-        threadId: "thread-loop-1",
-        view: "activity",
-        afterPosition: 10,
-      }).afterPosition,
-    ).toBe(10);
-    expect(
-      decodeThreadSendInput({
-        threadId: "thread-loop-1",
-        message: "Continue with the next iteration.",
-        mode: "steer",
-        clientRequestId: "send-loop-2",
-      }).mode,
-    ).toBe("steer");
-    expect(
-      decodeThreadWaitInput({
-        threadId: "thread-loop-1",
-        runId: "run-loop-2",
-        timeoutMs: 5_000,
-      }).runId,
-    ).toBe("run-loop-2");
-    expect(
-      decodeThreadInterruptInput({
-        threadId: "thread-loop-1",
-        reason: "Loop converged.",
-      }).reason,
-    ).toBe("Loop converged.");
   });
 });

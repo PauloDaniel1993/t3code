@@ -187,10 +187,11 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
   let hasMore = false;
   for (const entry of remaining) {
     const { task } = entry;
-    // Published terminal status is authoritative in the parent. Child state is
-    // still needed for matches, including pending follow-ups and later results.
+    // A published result fixes the outcome. Without one, child state may still
+    // hold a restart or nested work even when the parent has a terminal status.
     if (
       input.status !== undefined &&
+      task.result !== null &&
       (task.status === "completed" ||
         task.status === "failed" ||
         task.status === "cancelled" ||

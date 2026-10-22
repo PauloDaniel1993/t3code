@@ -99,7 +99,10 @@ export const forkTaskModels = Effect.fn("ForkTaskAliases.models")(function* (
         displayName: instance.displayName ?? instance.providerInstanceId,
         ready: instance.canRunChildTask && provider?.status === "ready",
         models: instance.models.map((model) => {
-          const descriptor = reasoningDescriptor(model.options);
+          const descriptor = reasoningDescriptor(
+            provider?.models.find((entry) => entry.slug === model.id)?.capabilities
+              ?.optionDescriptors,
+          );
           return {
             model: model.id,
             name: model.label ?? model.id,
@@ -126,7 +129,7 @@ export const forkTaskCreate = Effect.fn("ForkTaskAliases.create")(function* (
   input: ForkTaskCreateInput,
   service: OrchestratorMcpServiceShape,
 ) {
-  const capabilities = yield* service.capabilities(scope);
+  yield* service.capabilities(scope);
   if (input.context !== "none") {
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
@@ -137,18 +140,22 @@ export const forkTaskCreate = Effect.fn("ForkTaskAliases.create")(function* (
   const inherited = parent.thread.modelSelection;
   const instanceId = input.model?.instanceId ?? inherited.instanceId;
   const model = input.model?.model ?? inherited.model;
-  const targetModel = capabilities.providers
-    .find((provider) => provider.providerInstanceId === instanceId)
-    ?.models.find((entry) => entry.id === model);
+  const registry = yield* ProviderRegistry.ProviderRegistry;
+  const providers = yield* registry.getProviders;
+  // Capabilities intentionally lists only a bounded sample of each provider's catalog.
+  const targetModel = providers
+    .find((provider) => provider.instanceId === instanceId)
+    ?.models.find((entry) => entry.slug === model);
+  const descriptors = targetModel?.capabilities?.optionDescriptors;
   let options: ModelSelection["options"];
   if (input.reasoning !== undefined) {
     if (targetModel === undefined) {
       return yield* new OrchestratorMcpFailure({
         code: "model_unavailable",
-        message: `Model '${model}' on instance '${instanceId}' is not advertised by task_models.`,
+        message: `Model '${model}' on instance '${instanceId}' is not available in the provider catalog.`,
       });
     }
-    const descriptor = reasoningDescriptor(targetModel.options);
+    const descriptor = reasoningDescriptor(descriptors);
     if (descriptor?.type !== "select") {
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",
@@ -168,7 +175,7 @@ export const forkTaskCreate = Effect.fn("ForkTaskAliases.create")(function* (
     const base =
       instanceId === inherited.instanceId && model === inherited.model
         ? (inherited.options ?? [])
-        : (buildProviderOptionSelectionsFromDescriptors(targetModel.options) ?? []);
+        : (buildProviderOptionSelectionsFromDescriptors(descriptors) ?? []);
     options = [
       ...base.filter((option) => option.id !== descriptor.id),
       { id: descriptor.id, value: choice.id },

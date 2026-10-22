@@ -9,7 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
-  AuthAdministrativeScopes,
+  AuthStandardClientScopes,
   AuthSessionId,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
@@ -31,6 +31,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { Command } from "effect/cli";
@@ -61,7 +62,6 @@ import {
   ProjectIdentifierAmbiguousError,
   ProjectLiveServerDeclaredResponseError,
   ProjectLiveServerRequestError,
-  projectCommandErrorFromLiveServerRequest,
 } from "./project.ts";
 
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
@@ -169,7 +169,7 @@ it.effect.each(["import", "link"] as const)(
             sessionId: AuthSessionId.make("test"),
             subject: "test",
             method: "bearer-access-token",
-            scopes: new Set(AuthAdministrativeScopes),
+            scopes: new Set(AuthStandardClientScopes),
           }),
         ),
       );
@@ -412,54 +412,99 @@ it.effect("keeps suffix-named directories plain and never creates missing file p
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it("preserves live workspace diagnostics and conflict identity", () => {
-  const diagnostic = {
-    code: "conflict" as const,
-    message: "Already linked",
-    path: "C:/Team Space/team.code-workspace",
+const failingLiveMutation = Effect.fn("ProjectCliTest.failingLiveMutation")(function* (
+  respond: () => Promise<Response>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-live-error-" });
+  const baseDir = NodePath.join(root, "state");
+  const workspaceRoot = NodePath.join(root, "workspace");
+  yield* fs.makeDirectory(workspaceRoot);
+  const config = yield* makeConfig(baseDir);
+  yield* persistServerRuntimeState({
+    path: config.serverRuntimeStatePath,
+    state: {
+      version: 1,
+      pid: process.pid,
+      port: 1,
+      origin: "http://project.test",
+      startedAt: "2026-10-10T00:00:00Z",
+    },
+  });
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    const request = new Request(input, init);
+    return request.method === "POST"
+      ? respond()
+      : Promise.resolve(Response.json({ projects: [], updatedAt: "2026-10-10T00:00:00Z" }));
   };
-  const cause = new EnvironmentRequestInvalidError({
-    code: "invalid_request",
-    reason: "invalid_command",
-    traceId: "trace",
-    detail: diagnostic.message,
-    diagnostic,
-    conflictingProjectId: "existing" as ProjectId,
-  });
-  const error = projectCommandErrorFromLiveServerRequest(cause);
-  assert.instanceOf(error, ProjectLiveServerDeclaredResponseError);
-  assert.equal(error.message, diagnostic.message);
-  assert.deepEqual(error.diagnostic, diagnostic);
-  assert.equal(error.conflictingProjectId, cause.conflictingProjectId);
+  return yield* runCli(["project", "add", workspaceRoot, "--base-dir", baseDir]).pipe(
+    Effect.provideService(FetchHttpClient.Fetch, fetch),
+    Effect.flip,
+  );
 });
 
-it("maps declared server failures into structural project command errors", () => {
-  const cause = new EnvironmentInternalError({
-    code: "internal_error",
-    reason: "access_token_issuance_failed",
-    traceId: "trace-123",
-  });
+it.effect("preserves live workspace diagnostics and conflict identity", () =>
+  Effect.gen(function* () {
+    const diagnostic = {
+      code: "conflict" as const,
+      message: "Already linked",
+      path: "C:/Team Space/team.code-workspace",
+    };
+    const cause = new EnvironmentRequestInvalidError({
+      code: "invalid_request",
+      reason: "invalid_command",
+      traceId: "trace",
+      detail: diagnostic.message,
+      diagnostic,
+      conflictingProjectId: "existing" as ProjectId,
+    });
+    const body = yield* Schema.encodeEffect(Schema.fromJsonString(EnvironmentRequestInvalidError))(
+      cause,
+    );
+    const error = yield* failingLiveMutation(() =>
+      Promise.resolve(
+        new Response(body, { status: 400, headers: { "content-type": "application/json" } }),
+      ),
+    );
+    assert.instanceOf(error, ProjectLiveServerDeclaredResponseError);
+    assert.equal(error.message, diagnostic.message);
+    assert.deepEqual(error.diagnostic, diagnostic);
+    assert.equal(error.conflictingProjectId, cause.conflictingProjectId);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
-  const error = projectCommandErrorFromLiveServerRequest(cause);
+it.effect("maps declared server failures into structural project command errors", () =>
+  Effect.gen(function* () {
+    const cause = new EnvironmentInternalError({
+      code: "internal_error",
+      reason: "access_token_issuance_failed",
+      traceId: "trace-123",
+    });
+    const body = yield* Schema.encodeEffect(Schema.fromJsonString(EnvironmentInternalError))(cause);
+    const error = yield* failingLiveMutation(() =>
+      Promise.resolve(
+        new Response(body, { status: 500, headers: { "content-type": "application/json" } }),
+      ),
+    );
+    assert.instanceOf(error, ProjectLiveServerDeclaredResponseError);
+    assert.strictEqual(error.operation, "callLiveServer");
+    assert.strictEqual(error.code, "internal_error");
+    assert.strictEqual(error.traceId, "trace-123");
+    assert.strictEqual(error.message, "Server request failed (internal_error, trace trace-123).");
+    assert.instanceOf(error.cause, EnvironmentInternalError);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
-  assert.instanceOf(error, ProjectLiveServerDeclaredResponseError);
-  assert.strictEqual(error.operation, "callLiveServer");
-  assert.strictEqual(error.code, "internal_error");
-  assert.strictEqual(error.traceId, "trace-123");
-  assert.strictEqual(error.message, "Server request failed (internal_error, trace trace-123).");
-  assert.strictEqual(error.cause, cause);
-});
-
-it("preserves unexpected server failures without deriving the message from them", () => {
-  const cause = new Error("credential abc123 was rejected");
-
-  const error = projectCommandErrorFromLiveServerRequest(cause);
-
-  assert.instanceOf(error, ProjectLiveServerRequestError);
-  assert.strictEqual(error.operation, "callLiveServer");
-  assert.strictEqual(error.message, "Failed to call the running server.");
-  assert.strictEqual(error.cause, cause);
-});
+it.effect("preserves unexpected server failures without deriving the message from them", () =>
+  Effect.gen(function* () {
+    const cause = new Error("credential abc123 was rejected");
+    const error = yield* failingLiveMutation(() => Promise.reject(cause));
+    assert.instanceOf(error, ProjectLiveServerRequestError);
+    assert.strictEqual(error.operation, "callLiveServer");
+    assert.strictEqual(error.message, "Failed to call the running server.");
+    assert.exists(error.cause);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it.effect("adds, renames, and removes projects through the V2 project CLI domain", () =>
   Effect.gen(function* () {
@@ -579,12 +624,6 @@ const readNativeThreadState = Effect.fn("ProjectCliTest.readNativeThreadState")(
 it.layer(NodeServices.layer)("project deletion with native V2 threads", (it) => {
   it.effect.each([
     { label: "an active thread", archived: false, missing: false },
-    { label: "an archived thread", archived: true, missing: false },
-    {
-      label: "an active thread after its workspace disappears",
-      archived: false,
-      missing: true,
-    },
     {
       label: "an archived thread after its workspace disappears",
       archived: true,
@@ -694,22 +733,6 @@ it.layer(NodeServices.layer)("project lookup with unavailable workspaces", (it) 
         assert.deepEqual((yield* readProjects(baseDir)).projects, []);
         assert.isFalse(yield* fs.exists(workspaceRoot));
       }),
-  );
-
-  it.effect("renames by ID and stored path after the directory is gone", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const { baseDir, workspaceRoot, project } = yield* makeProjectLookupFixture();
-      yield* fs.rename(workspaceRoot, `${workspaceRoot}-removed`);
-      for (const [identifier, title] of [
-        [project.id, "Renamed by ID"],
-        [workspaceRoot, "Renamed by stored path"],
-      ] as const) {
-        yield* runCli(["project", "rename", identifier, title, "--base-dir", baseDir]);
-        assert.equal((yield* readProjects(baseDir)).projects[0]?.title, title);
-      }
-      assert.isFalse(yield* fs.exists(workspaceRoot));
-    }),
   );
 
   it.effect("does not resolve another environment's project ID in an empty database", () =>

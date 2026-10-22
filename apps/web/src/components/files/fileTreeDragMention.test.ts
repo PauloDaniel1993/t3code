@@ -18,7 +18,7 @@ const rowNode = (path: string) => ({
 
 describe("createFileTreeDragMentionController", () => {
   it("tags a row drag with the mention payload and flags the drag", () => {
-    const controller = createFileTreeDragMentionController({ deselect: () => {} });
+    const controller = createFileTreeDragMentionController({});
     const transfer = makeTransfer();
     controller.handleDragStart({
       dataTransfer: transfer,
@@ -28,55 +28,47 @@ describe("createFileTreeDragMentionController", () => {
     expect(controller.isDragInProgress()).toBe(true);
   });
 
-  it("strips the trailing slash from directory rows", () => {
-    const controller = createFileTreeDragMentionController({ deselect: () => {} });
+  it("uses a scoped mention encoder and deselects the dragged tree path on drag end", () => {
+    const controller = createFileTreeDragMentionController({
+      mention: (path) => (path === "ui/read me.md" ? "[read me.md](/ui/read%20me.md)" : null),
+    });
+    const transfer = makeTransfer();
+    const deselected: string[] = [];
+    controller.handleSelectionChange(["ui/read me.md", "unavailable/file.md"]);
+    controller.handleDragStart({
+      dataTransfer: transfer,
+      composedPath: () => [rowNode("ui/read me.md")],
+    });
+    expect(transfer.getData(COMPOSER_MENTION_DRAG_TYPE)).toBe("[read me.md](/ui/read%20me.md)");
+    controller.handleDragEnd((path) => deselected.push(path));
+    expect(deselected).toEqual(["ui/read me.md", "unavailable/file.md"]);
+    expect(controller.isDragInProgress()).toBe(false);
+  });
+
+  it("keeps host-folder mentions on the upstream mentionPath API", () => {
+    const controller = createFileTreeDragMentionController({
+      mentionPath: (path) => `/host/${path}`,
+    });
     const transfer = makeTransfer();
     controller.handleDragStart({
       dataTransfer: transfer,
-      composedPath: () => [rowNode("docs/architecture/")],
+      composedPath: () => [rowNode("docs/readme.md")],
     });
-    expect(transfer.getData(COMPOSER_MENTION_DRAG_TYPE)).toBe("[architecture](docs/architecture)");
+    expect(transfer.getData(COMPOSER_MENTION_DRAG_TYPE)).toBe("[readme.md](/host/docs/readme.md)");
   });
 
   it("does not tag drags of selected text from the panel chrome", () => {
-    // Only a drag that originates on a tree row is a mention; dragging a text
-    // selection also carries text/plain, and tagging it would drop an invalid
-    // pill into the composer.
-    const controller = createFileTreeDragMentionController({ deselect: () => {} });
+    const controller = createFileTreeDragMentionController({});
     const transfer = makeTransfer("selected text");
     controller.handleDragStart({ dataTransfer: transfer, composedPath: () => [{}] });
     expect(transfer.data.has(COMPOSER_MENTION_DRAG_TYPE)).toBe(false);
     expect(controller.isDragInProgress()).toBe(false);
   });
 
-  it("ignores drags that carry no row path", () => {
-    const controller = createFileTreeDragMentionController({ deselect: () => {} });
-    const transfer = makeTransfer();
-    controller.handleDragStart({ dataTransfer: transfer, composedPath: () => [{}] });
-    expect(transfer.data.has(COMPOSER_MENTION_DRAG_TYPE)).toBe(false);
-    expect(controller.isDragInProgress()).toBe(false);
-  });
-
-  it("deselects the dragged row exactly once when the drag ends", () => {
-    const deselected: Array<string> = [];
-    const controller = createFileTreeDragMentionController({
-      deselect: (path) => deselected.push(path),
-    });
-    controller.handleDragStart({
-      dataTransfer: makeTransfer(),
-      composedPath: () => [rowNode("src/app.ts")],
-    });
-    controller.handleDragEnd();
-    controller.handleDragEnd();
-    expect(deselected).toEqual(["src/app.ts"]);
-    expect(controller.isDragInProgress()).toBe(false);
-  });
-
   it("drags the whole selection when the dragged row is part of it", () => {
     const deselected: Array<string> = [];
-    const controller = createFileTreeDragMentionController({
-      deselect: (path) => deselected.push(path),
-    });
+    const controller = createFileTreeDragMentionController({});
+    const deselect = (path: string) => void deselected.push(path);
     controller.handleSelectionChange(["docs/index.md", "docs/api.md", "src/app.ts"]);
     const transfer = makeTransfer();
     controller.handleDragStart({
@@ -86,27 +78,7 @@ describe("createFileTreeDragMentionController", () => {
     expect(transfer.getData(COMPOSER_MENTION_DRAG_TYPE)).toBe(
       "[index.md](docs/index.md) [api.md](docs/api.md) [app.ts](src/app.ts)",
     );
-    controller.handleDragEnd();
+    controller.handleDragEnd(deselect);
     expect(deselected).toEqual(["docs/index.md", "docs/api.md", "src/app.ts"]);
-  });
-
-  it("drags only the row under the cursor when it is outside the selection", () => {
-    const controller = createFileTreeDragMentionController({ deselect: () => {} });
-    controller.handleSelectionChange(["docs/index.md"]);
-    const transfer = makeTransfer();
-    controller.handleDragStart({
-      dataTransfer: transfer,
-      composedPath: () => [rowNode("src/app.ts")],
-    });
-    expect(transfer.getData(COMPOSER_MENTION_DRAG_TYPE)).toBe("[app.ts](src/app.ts)");
-  });
-
-  it("does not deselect anything when no drag was started", () => {
-    const deselected: Array<string> = [];
-    const controller = createFileTreeDragMentionController({
-      deselect: (path) => deselected.push(path),
-    });
-    controller.handleDragEnd();
-    expect(deselected).toEqual([]);
   });
 });

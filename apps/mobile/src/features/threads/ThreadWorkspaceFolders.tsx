@@ -10,10 +10,10 @@ import { projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { owningFolder } from "@t3tools/shared/workspaceFolders";
 import { useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
-import { SymbolView } from "../../components/AppSymbol";
-import { ControlPillMenu } from "../../components/ControlPill";
-import { AndroidSheetHeader } from "../../components/AndroidScreenHeader";
+import { AppText as Text } from "../../components/ui/AppText";
+import { SymbolView } from "../../components/ui/AppSymbol";
+import { Menu } from "../../components/ui/Menu";
+import { AndroidSheetHeader } from "../../components/ui/AndroidScreenHeader";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { uuidv4 } from "../../lib/uuid";
 import { useEnvironmentQuery } from "../../state/query";
@@ -28,7 +28,8 @@ import {
   resolveTerminalOpenLocation,
   stagePendingTerminalLaunch,
 } from "../terminal/terminalLaunchContext";
-import { SheetListRow } from "./git/gitSheetComponents";
+import { ListRow } from "../../components/ui/ListRow";
+import { ListSection } from "../../components/ui/ListSection";
 import {
   workspaceAvailabilityPending,
   workspaceRepositoryCount,
@@ -81,7 +82,7 @@ function FolderRow(props: {
             {subtitle}
           </Text>
         </Pressable>
-        <ControlPillMenu
+        <Menu
           title={row.folder.name}
           actions={[
             { id: "copy", title: "Copy path" },
@@ -115,7 +116,7 @@ function FolderRow(props: {
           >
             <SymbolView name="ellipsis" size={18} tintColorClassName="accent-icon" />
           </View>
-        </ControlPillMenu>
+        </Menu>
       </View>
       {pathVisible ? (
         <Text selectable className="text-xs text-foreground-secondary">
@@ -190,17 +191,19 @@ export function ThreadWorkspaceFolders(props: {
           <Text accessibilityRole="header" className="font-t3-semibold">
             Workspace
           </Text>
-          <SheetListRow
-            icon="folder"
-            title={`${thread.worktreePath ? "Worktree" : "Current checkout"} · ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`}
-            subtitle={
-              !rows[0]?.isGit
-                ? "The primary folder is not a Git repository; worktree mode is unavailable."
-                : "Branches and workspace mode"
-            }
-            disabled={!rows[0]?.isGit}
-            onPress={() => navigation.navigate("GitBranches", props.target)}
-          />
+          <ListSection>
+            <ListRow
+              icon="folder"
+              label={`${thread.worktreePath ? "Worktree" : "Current checkout"} · ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`}
+              description={
+                !rows[0]?.isGit
+                  ? "The primary folder is not a Git repository; worktree mode is unavailable."
+                  : "Branches and workspace mode"
+              }
+              disabled={!rows[0]?.isGit}
+              onPress={() => navigation.navigate("GitBranches", props.target)}
+            />
+          </ListSection>
         </>
       ) : (
         <>

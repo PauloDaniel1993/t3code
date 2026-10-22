@@ -252,3 +252,50 @@ it.effect("additional root refreshes never refresh workspace entries or discover
     assert.deepEqual(refreshed, ["/sets/api"]);
   }).pipe(Effect.provide(layer));
 });
+
+it.effect("completes finalization when the post-checkpoint workspace refresh fails", () => {
+  const threadId = ThreadId.make("thread_refresh_failure");
+  const runId = RunId.make("run_refresh_failure");
+  const scopeId = CheckpointScopeId.make("scope_refresh_failure");
+  const captured: string[] = [];
+  const layer = RunFinalization.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({
+          execute: () =>
+            Effect.sync(() => {
+              captured.push("checkpoint");
+            }),
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getCheckpointCaptureContext: () =>
+            Effect.succeed({
+              run: undefined,
+              rootNode: undefined,
+              providerThread: undefined,
+              scope: { ...finalizedScope(undefined), id: scopeId, runId },
+              readyCheckpointOrdinals: [],
+              partTurnCheckpointOrdinals: [],
+            }),
+          getThreadShell: () => Effect.succeed(null),
+        }),
+        Layer.succeed(RunFinalization.RunFinalizationObserver, {
+          refresh: () =>
+            Effect.gen(function* () {
+              captured.push("refresh");
+              return yield* new RunFinalization.RunFinalizationRefreshError({
+                cwd: "/repo",
+                cause: new Error("Git command timed out"),
+              });
+            }),
+          refreshAfterTurn: () => Effect.void,
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const service = yield* RunFinalization.RunFinalizationService;
+    yield* service.finalize({ threadId, runId, scopeId });
+    assert.deepEqual(captured, ["checkpoint", "refresh"]);
+  }).pipe(Effect.provide(layer));
+});

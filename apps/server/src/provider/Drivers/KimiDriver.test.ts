@@ -34,6 +34,8 @@ import { layer as idAllocatorLayer } from "@t3tools/provider-core/server/IdAlloc
 import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
+import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as WorkspaceFolderFiles from "../../workspace/WorkspaceFolderFiles.ts";
 import { OrchestratorMcpService, layer as mcpLayer } from "../../mcp/OrchestratorMcpService.ts";
 import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -198,6 +200,7 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
           subagents: [],
           providerThreads: [],
           turnItems: [],
+          runtimeRequests: [],
         } as unknown as OrchestrationV2ThreadProjection;
         const delegate = (model = "kimi-saved") =>
           Effect.gen(function* () {
@@ -230,6 +233,8 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
                 Layer.provide(
                   Layer.mergeAll(
                     Layer.mock(ProjectStore.ProjectStoreV2)({}),
+                    Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+                    Layer.mock(GitVcsDriver.GitVcsDriver)({}),
                     Layer.mock(ProjectService.ProjectService)({}),
                     Layer.mock(SecretRequests.SecretRequests)({}),
                     Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
@@ -369,7 +374,11 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
           .pipe(Effect.flip);
         expect(removedModel).toMatchObject({
           cause: {
-            errorMessage: expect.stringContaining('Kimi model "kimi-saved" is not available'),
+            _tag: "AcpModelSelectionError",
+            model: "kimi-saved",
+            cause: {
+              errorMessage: expect.stringContaining('Kimi model "kimi-saved" is not available'),
+            },
           },
         });
         const refreshedModels = (yield* restarted.snapshot.refresh).models.map(

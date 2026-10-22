@@ -1,8 +1,8 @@
+import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import type {
   OrchestrationV2ProviderFailure,
   OrchestrationV2ProviderFailureClass,
   OrchestrationV2Run,
-  OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import {
   latestExecutedRun,
@@ -47,7 +47,7 @@ import { dismissThreadErrorBannerForSession, getThreadErrorBannerKey } from "./T
  */
 
 type FailureClass = OrchestrationV2ProviderFailureClass | null;
-type Projection = Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">;
+type Projection = Pick<ThreadStructure, "runs" | "turnItems">;
 
 interface Dismissal {
   readonly texts: ReadonlyArray<string>;

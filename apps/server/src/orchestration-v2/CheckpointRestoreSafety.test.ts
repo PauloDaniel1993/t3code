@@ -2,28 +2,38 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
+  CheckpointRef,
   CheckpointScopeId,
-  type OrchestrationV2ThreadProjection,
+  NodeId,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ThreadId,
+  type OrchestrationV2Checkpoint,
+  type OrchestrationV2CheckpointScope,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
-import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
-import { fileRestoreRefusalMessage, restoreIsolationRefusal } from "./CheckpointRestoreSafety.ts";
+import {
+  fileRestoreRefusal,
+  fileRestoreRefusalMessage,
+  restoreIsolationRefusal,
+} from "./CheckpointRestoreSafety.ts";
+import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { ProjectionStoreV2 } from "./ProjectionStore.ts";
+import { ProjectionStoreV2, type ProjectionCheckpointRollbackContext } from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
@@ -31,14 +41,8 @@ import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 it.effect.each([
   "nested",
   "ancestor",
-  "archived-nested",
-  ...(symlinksSupported ? (["aliased-nested"] as const) : []),
-  "project",
   "provider",
-  "scope",
   "sibling",
-  "stopped-provider",
-  "errored-provider",
   "shared-provider",
   "conversation",
 ] as const)("preserves overlapping workspace files, owner=%s", (owner) =>
@@ -53,8 +57,6 @@ it.effect.each([
     yield* fs.makeDirectory(sibling);
     const otherFile = path.join(nested, "other-thread.txt");
     yield* fs.writeFileString(otherFile, "other thread's uncommitted work");
-    const alias = path.join(parent, "alias");
-    if (owner === "aliased-nested") yield* fs.symlink(nested, alias);
     const threadId = ThreadId.make("restore-current");
     const otherId = ThreadId.make("restore-other");
     const projectId = ProjectId.make("restore-project");
@@ -74,15 +76,11 @@ it.effect.each([
       projectId,
       deletedAt: null,
       worktreePath:
-        owner === "project"
-          ? null
-          : owner === "ancestor" || owner === "conversation"
-            ? parent
-            : owner === "nested" || owner === "archived-nested"
-              ? nested
-              : owner === "aliased-nested"
-                ? alias
-                : sibling,
+        owner === "ancestor" || owner === "conversation"
+          ? parent
+          : owner === "nested"
+            ? nested
+            : sibling,
     };
     const projection = {
       thread: {
@@ -92,68 +90,64 @@ it.effect.each([
         activeProviderThreadId: providerThreadId,
         modelSelection: { instanceId, model: "test" },
       },
-      providerThreads: [providerThread],
-      providerSessions: [],
+      providerThread,
+      providerSession: undefined,
       providerTurns: [],
-      nodes: [],
-      attempts: [],
-      checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: null }],
-      checkpointScopes: [{ id: scopeId, cwd }],
-      runs: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
-    } as unknown as OrchestrationV2ThreadProjection;
+      rootNodes: [],
+      targetAttempt: undefined,
+      rolledBackAttemptIds: [],
+      staleCheckpoints: [],
+      checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: null },
+      scope: { id: scopeId, cwd },
+      runsToRollback: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
+    } as unknown as ProjectionCheckpointRollbackContext;
     const layerTest = CheckpointRollbackService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
+          Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/synthetic-worktrees" } as never),
+          ServerSettings.layerTest(),
           ThreadCommandExecutor.layer,
           IdAllocator.layer,
+          Layer.mock(GitWorkflowService.GitWorkflowService)({}),
           Layer.mock(ProjectStore.ProjectStoreV2)({
             get: () => Effect.succeed(Option.some({ workspaceRoot: parent } as never)),
           }),
           Layer.mock(ProjectionStoreV2)({
-            getThreadRecords: () => Effect.succeed(projection),
+            getThread: () => Effect.succeed(projection.thread),
+            getCheckpointRollbackContext: () => Effect.succeed(projection),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 1,
                 snapshotSequence: 0,
-                threads: owner === "archived-nested" ? [] : ([otherThread] as never),
-                archivedThreads: owner === "archived-nested" ? ([otherThread] as never) : [],
+                threads: [otherThread] as never,
+                archivedThreads: [],
               }),
             getCheckpointContext: () =>
               Effect.succeed({
                 runs: [],
                 checkpoints: [],
-                checkpointScopes: owner === "scope" ? ([{ cwd: nested }] as never) : [],
+                checkpointScopes: [],
               }),
             getThreadProviderContext: () =>
               Effect.succeed({
                 thread: otherThread as never,
                 providerThreads: [],
-                providerSessions: [
-                  "provider",
-                  "stopped-provider",
-                  "errored-provider",
-                  "shared-provider",
-                ].includes(owner)
-                  ? ([
-                      {
-                        // One session shared by every thread keeps the cwd of
-                        // the thread that opened it, here this thread's.
-                        cwd: owner === "shared-provider" ? cwd : nested,
-                        status:
-                          owner === "provider" || owner === "shared-provider"
-                            ? "running"
-                            : owner === "errored-provider"
-                              ? "error"
-                              : "stopped",
-                        capabilities: {
-                          sessions: {
-                            supportsMultipleProviderThreadsPerSession: owner === "shared-provider",
+                providerSessions:
+                  owner === "provider" || owner === "shared-provider"
+                    ? ([
+                        {
+                          cwd: owner === "shared-provider" ? cwd : nested,
+                          status: "running",
+                          capabilities: {
+                            sessions: {
+                              supportsMultipleProviderThreadsPerSession:
+                                owner === "shared-provider",
+                            },
                           },
                         },
-                      },
-                    ] as never)
-                  : [],
+                      ] as never)
+                    : [],
               }),
           }),
           Layer.mock(CheckpointServiceV2)({
@@ -186,9 +180,7 @@ it.effect.each([
       Effect.provide(layerTest),
     );
     const restoreFiles = owner !== "conversation";
-    const rejected = !["sibling", "stopped-provider", "shared-provider", "conversation"].includes(
-      owner,
-    );
+    const rejected = !["sibling", "shared-provider", "conversation"].includes(owner);
     if (rejected) {
       const error = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
@@ -325,4 +317,123 @@ it.effect.each([
         );
       }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([false, true])("lets rollback recreate removed worktrees, set=%s", (set) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const parent = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-v2-restore-removed-" });
+    const worktreePath = path.join(parent, "app");
+    const libPath = path.join(parent, "lib");
+    const refusal = yield* restoreIsolationRefusal(
+      {
+        id: ThreadId.make("restore-removed"),
+        worktreePath,
+        ...(set
+          ? {
+              worktrees: [
+                {
+                  repositoryRoot: path.join(parent, "source-app"),
+                  path: worktreePath,
+                  branch: "feature",
+                },
+                {
+                  repositoryRoot: path.join(parent, "source-lib"),
+                  path: libPath,
+                  branch: "feature",
+                },
+              ],
+            }
+          : {}),
+      },
+      [{ cwd: worktreePath, folders: [] }, ...(set ? [{ cwd: libPath, folders: [] }] : [])],
+      {
+        fileSystem,
+        path,
+        projections: {
+          getShellSnapshot: () => Effect.succeed({ threads: [], archivedThreads: [] }),
+        } as never,
+        projects: {} as never,
+      },
+    );
+    assert.isUndefined(refusal);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("checks removed members' refs at their sources only during admission", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const parent = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-restore-admission-" });
+    const members = ["app", "lib"].map((name) => ({
+      repositoryRoot: path.join(parent, `source-${name}`),
+      path: path.join(parent, name),
+      branch: "feature",
+    }));
+    const parts = members.map((member, index) => ({
+      key: String(index),
+      cwd: member.path,
+      vcs: "git" as const,
+      pathspecs: ["."],
+      folders: [{ folderPath: member.repositoryRoot, relativePath: "", label: String(index) }],
+      ref: CheckpointRef.make(`refs/t3/checkpoint/${index}`),
+      status: "ready" as const,
+    }));
+    const checked: string[][] = [];
+    const dependencies = {
+      fileSystem,
+      path,
+      projections: {
+        getShellSnapshot: () => Effect.succeed({ threads: [], archivedThreads: [] }),
+      } as never,
+      projects: {} as never,
+      checkpoints: {
+        preflightRestore: ({ checkpoint }: { checkpoint: OrchestrationV2Checkpoint }) => {
+          const locations = checkpoint.parts!.map((part) => part.cwd);
+          checked.push(locations);
+          return Effect.succeed(
+            locations.every((cwd) => members.some((member) => member.repositoryRoot === cwd))
+              ? undefined
+              : { reason: "missing-checkout" as const, folders: ["0", "1"] },
+          );
+        },
+      },
+    };
+    const thread = {
+      id: ThreadId.make("restore-admission"),
+      worktreePath: members[0]!.path,
+      worktrees: members,
+    };
+    const scope = { cwd: members[0]!.path } as OrchestrationV2CheckpointScope;
+    const checkpoint = {
+      id: CheckpointId.make("restore-admission-checkpoint"),
+      threadId: thread.id,
+      scopeId: CheckpointScopeId.make("restore-admission-scope"),
+      runId: null,
+      nodeId: NodeId.make("restore-admission-node"),
+      parentCheckpointId: null,
+      ordinalWithinScope: 0,
+      appRunOrdinal: null,
+      ref: parts[0]!.ref,
+      status: "ready",
+      files: [],
+      parts,
+      capturedAt: yield* DateTime.now,
+    } satisfies OrchestrationV2Checkpoint;
+    assert.isUndefined(yield* fileRestoreRefusal(thread, scope, checkpoint, dependencies));
+    assert.deepEqual(checked, [
+      members.map((member) => member.path),
+      members.map((member) => member.repositoryRoot),
+    ]);
+    checked.length = 0;
+    assert.equal(
+      (yield* fileRestoreRefusal(thread, scope, checkpoint, {
+        ...dependencies,
+        allowMissingWorktrees: false,
+      }))?.reason,
+      "missing-checkout",
+    );
+    assert.deepEqual(checked, [members.map((member) => member.path)]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

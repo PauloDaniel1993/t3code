@@ -5,7 +5,7 @@ import type {
   OrchestrationV2CheckpointScope,
 } from "@t3tools/contracts";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
-import { resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
+import { isSamePath, resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -80,6 +80,8 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
             error.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
           ),
         );
+    const resolve = (candidate: string) =>
+      existingRealPath(candidate).pipe(Effect.map((real) => real ?? path.resolve(candidate)));
     // realPath keeps the caller's casing, and Windows paths ignore it.
     const pathKey = (real: string) => (isWindowsAbsolutePath(real) ? real.toLowerCase() : real);
     const refusal = (shared: ReadonlySet<number>): FileRestoreRefusal | undefined =>
@@ -98,13 +100,12 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
       ...(thread.worktrees ?? []).map((member) => member.path),
       ...(thread.worktreePath === null ? [] : [thread.worktreePath]),
     ]) {
-      const real = yield* existingRealPath(root);
-      if (real !== null) own.add(pathKey(real));
+      own.add(pathKey(yield* resolve(root)));
     }
     const targets: Array<string> = [];
     const shared = new Set<number>();
     for (const [index, part] of parts.entries()) {
-      const cwd = yield* fileSystem.realPath(part.cwd);
+      const cwd = pathKey(yield* resolve(part.cwd));
       targets.push(cwd);
       if (!own.has(pathKey(cwd))) shared.add(index);
     }
@@ -157,7 +158,8 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
         const otherCwd = yield* existingRealPath(candidate);
         if (otherCwd === null) continue;
         targets.forEach((cwd, index) => {
-          if (contains(cwd, otherCwd) || contains(otherCwd, cwd)) shared.add(index);
+          if (contains(cwd, pathKey(otherCwd)) || contains(pathKey(otherCwd), cwd))
+            shared.add(index);
         });
       }
       if (shared.size === parts.length) break;
@@ -179,9 +181,41 @@ export const fileRestoreRefusal = Effect.fn("orchestrationV2.fileRestoreRefusal"
   checkpoint: OrchestrationV2Checkpoint,
   dependencies: RestoreSafetyDependencies & {
     readonly checkpoints: Pick<CheckpointServiceV2Shape, "preflightRestore">;
+    readonly allowMissingWorktrees?: boolean;
   },
 ) {
-  const preflight = yield* dependencies.checkpoints.preflightRestore({ scope, checkpoint });
+  let preflight = yield* dependencies.checkpoints.preflightRestore({ scope, checkpoint });
+  if (preflight?.reason === "missing-checkout" && dependencies.allowMissingWorktrees !== false) {
+    // Worktree cleanup leaves refs in the source repository. Admission can check
+    // them there; execution recreates the managed member and checks again.
+    const lookupParts = [];
+    for (const part of checkpointRestoreParts(scope, checkpoint)) {
+      if (yield* dependencies.fileSystem.exists(part.cwd)) {
+        lookupParts.push(part);
+        continue;
+      }
+      const member = thread.worktrees?.find((member) => isSamePath(member.path, part.cwd));
+      if (member !== undefined) {
+        lookupParts.push({ ...part, cwd: member.repositoryRoot });
+      } else if (
+        thread.worktreePath !== null &&
+        isSamePath(thread.worktreePath, part.cwd) &&
+        checkpoint.parts === undefined
+      ) {
+        const owner = yield* dependencies.projections.getThread(thread.id);
+        const project = yield* dependencies.projects.get(owner.projectId);
+        lookupParts.push(
+          Option.isSome(project) ? { ...part, cwd: project.value.workspaceRoot } : part,
+        );
+      } else {
+        lookupParts.push(part);
+      }
+    }
+    preflight = yield* dependencies.checkpoints.preflightRestore({
+      scope,
+      checkpoint: { ...checkpoint, parts: lookupParts },
+    });
+  }
   if (preflight !== undefined) return preflight;
   return yield* restoreIsolationRefusal(
     thread,

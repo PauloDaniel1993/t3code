@@ -50,7 +50,7 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
     });
   const close = Effect.gen(function* () {
     ended = true;
-    yield* Effect.forEach(stages, (stage) => stage.close, { discard: true });
+    yield* Effect.forEach(stages, (stage) => stage.interrupt, { discard: true });
     stages.clear();
   });
   const subscribeEvents = Effect.gen(function* () {

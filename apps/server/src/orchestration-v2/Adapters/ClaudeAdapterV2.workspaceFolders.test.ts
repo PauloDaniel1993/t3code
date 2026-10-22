@@ -66,6 +66,8 @@ const makeHarness = Effect.fnUntraced(function* () {
     input: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput;
     messages: Queue.Queue<SDKMessage>;
     closed: boolean;
+    models: string[];
+    flagUpdates: number;
   }> = [];
   const harness = yield* makeClaudeWorkspaceFolderHarness({
     runtimePolicy: scope,
@@ -73,12 +75,20 @@ const makeHarness = Effect.fnUntraced(function* () {
       allocateSessionId: Effect.succeed("00000000-0000-4000-8000-000000000100"),
       open: Effect.fnUntraced(function* (input) {
         const messages = yield* Queue.unbounded<SDKMessage>();
-        const process = { input, messages, closed: false };
+        const process = { input, messages, closed: false, models: [] as string[], flagUpdates: 0 };
         queries.push(process);
         return {
           messages: Stream.fromQueue(messages),
           offer: () => Effect.void,
-          setModel: () => Effect.void,
+          setModel: (model) =>
+            Effect.sync(() => {
+              process.models.push(model);
+            }),
+          applyFlagSettings: () =>
+            Effect.sync(() => {
+              process.flagUpdates += 1;
+            }),
+          backgroundTasks: () => Effect.succeed(false),
           setPermissionMode: () => Effect.void,
           stopTask: () => Effect.void,
           interrupt: Effect.void,
@@ -104,6 +114,30 @@ const makeHarness = Effect.fnUntraced(function* () {
 const testLayer = Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer);
 
 describe("Claude workspace folders", () => {
+  it.effect("applies live model changes only when the workspace scope is unchanged", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const alternate = { ...workspaceFolderModelSelection, model: "claude-opus-4-6" };
+      yield* harness.startTurn({ ordinal: 1, runtimePolicy: scope });
+      yield* harness.finish(1);
+      yield* harness.startTurn({ ordinal: 2, runtimePolicy: scope, modelSelection: alternate });
+      assert.lengthOf(harness.queries, 1);
+      assert.deepEqual(harness.queries[0]!.models, [alternate.model]);
+      assert.equal(harness.queries[0]!.flagUpdates, 1);
+      yield* harness.finish(2);
+      const changed = ProviderAdapterV2RuntimePolicy.make({ ...scope, additionalDirectories: [] });
+      yield* harness.startTurn({ ordinal: 3, runtimePolicy: changed, modelSelection: alternate });
+      assert.lengthOf(harness.queries, 2);
+      assert.isTrue(harness.queries[0]!.closed);
+      assert.deepEqual(harness.queries[1]!.models, []);
+      assert.deepEqual(harness.queries[1]!.input.options.additionalDirectories, [
+        scope.cwd,
+        harness.attachmentsDir,
+      ]);
+      yield* harness.finish(3);
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
   it.each([false, true])("keeps cwd, folders and attachments with resume=%s", (resume) => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: workspaceFolderModelSelection,

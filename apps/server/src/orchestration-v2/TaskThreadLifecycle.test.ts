@@ -252,6 +252,7 @@ it.effect(
       const projectId = ProjectId.make("project:task-lifecycle");
       const parentId = ThreadId.make("parent:task-lifecycle");
       const nativeId = ThreadId.make("native:task-lifecycle");
+      const nestedId = ThreadId.make("nested:task-lifecycle");
       const ids = [
         ThreadId.make("running:task-lifecycle"),
         ThreadId.make("queued:task-lifecycle"),
@@ -263,7 +264,7 @@ it.effect(
         title: "Task lifecycle",
         workspaceRoot: "/workspace/tasks",
       });
-      for (const id of [parentId, ...ids, nativeId]) {
+      for (const id of [parentId, ...ids, nativeId, nestedId]) {
         yield* orchestrator.dispatch({
           type: "thread.create",
           commandId: CommandId.make(`create:${id}`),
@@ -280,10 +281,12 @@ it.effect(
         });
       }
       const now = yield* DateTime.now;
-      for (const [index, id] of [...ids, nativeId].entries()) {
+      for (const [index, id] of [...ids, nativeId, nestedId].entries()) {
         const projection = yield* store.getThreadProjection(id);
         const runId = RunId.make(`run:${id}`);
-        const status = index === 0 ? "running" : index === 1 ? "queued" : "completed";
+        const status =
+          index === 0 || id === nestedId ? "running" : index === 1 ? "queued" : "completed";
+        const taskParentId = id === nestedId ? ids[0]! : parentId;
         yield* sink.write({
           commandId: CommandId.make(`seed:${id}`),
           events: [
@@ -297,7 +300,7 @@ it.effect(
                 creationSource: id === nativeId ? "provider" : "mcp",
                 createdBy: "agent",
                 lineage: {
-                  parentThreadId: parentId,
+                  parentThreadId: taskParentId,
                   rootThreadId: parentId,
                   relationshipToParent: "subagent",
                 },
@@ -306,11 +309,11 @@ it.effect(
             {
               id: EventId.make(`task:${id}`),
               type: "subagent.updated",
-              threadId: parentId,
+              threadId: taskParentId,
               occurredAt: now,
               payload: {
                 id: NodeId.make(`task:${id}`),
-                threadId: parentId,
+                threadId: taskParentId,
                 runId: null,
                 parentNodeId: NodeId.make("parent-root"),
                 origin: id === nativeId ? "provider_native" : "app_owned",
@@ -405,14 +408,15 @@ it.effect(
       const archived = yield* orchestrator.dispatch(command);
       assert.strictEqual(
         archived.storedEvents.filter((stored) => stored.event.type === "thread.archived").length,
-        4,
+        5,
       );
-      for (const id of ids)
+      for (const id of [...ids, nestedId])
         assert.isNotNull((yield* store.getThreadProjection(id)).thread.archivedAt);
       assert.isNull((yield* store.getThreadProjection(nativeId)).thread.archivedAt);
       assert.strictEqual((yield* store.getThreadProjection(ids[0]!)).runs[0]?.status, "cancelled");
       assert.strictEqual((yield* store.getThreadProjection(ids[1]!)).runs[0]?.status, "cancelled");
       assert.strictEqual((yield* store.getThreadProjection(ids[2]!)).runs[0]?.status, "completed");
+      assert.strictEqual((yield* store.getThreadProjection(nestedId)).runs[0]?.status, "cancelled");
       const parentTasks = (yield* store.getThreadProjection(parentId)).subagents;
       assert.deepEqual(
         parentTasks
@@ -436,7 +440,8 @@ it.effect(
         commandId: CommandId.make("unarchive:parent"),
         threadId: parentId,
       });
-      for (const id of ids) assert.isNull((yield* store.getThreadProjection(id)).thread.archivedAt);
+      for (const id of [...ids, nestedId])
+        assert.isNull((yield* store.getThreadProjection(id)).thread.archivedAt);
       assert.strictEqual((yield* store.getThreadProjection(ids[0]!)).runs[0]?.status, "cancelled");
       const deleted = yield* orchestrator.dispatch({
         type: "thread.delete",
@@ -446,9 +451,10 @@ it.effect(
       const deletionOrder = deleted.storedEvents
         .filter((stored) => stored.event.type === "thread.deleted")
         .map((stored) => stored.event.threadId);
-      assert.deepEqual(new Set(deletionOrder.slice(0, -1)), new Set(ids));
+      assert.deepEqual(new Set(deletionOrder.slice(0, -1)), new Set([...ids, nestedId]));
+      assert.isBelow(deletionOrder.indexOf(nestedId), deletionOrder.indexOf(ids[0]!));
       assert.strictEqual(deletionOrder.at(-1), parentId);
-      for (const id of ids) assert.isNull(yield* store.getThreadShell(id));
+      for (const id of [...ids, nestedId]) assert.isNull(yield* store.getThreadShell(id));
       assert.isNotNull(yield* store.getThreadShell(nativeId));
     }).pipe(Effect.provide(TestLayer)),
 );

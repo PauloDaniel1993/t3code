@@ -36,6 +36,7 @@ import * as ServerConfiguration from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
+import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { ProjectFaviconResolver } from "../project/ProjectFaviconResolver.ts";
 import { NativeAppIconResolver } from "../assets/NativeAppIconResolver.ts";
@@ -104,6 +105,7 @@ const testLayer = Layer.mergeAll(
     Layer.provide(databaseLayer),
     Layer.provide(Layer.mock(TerminalManager)({ close: () => Effect.void })),
     Layer.provide(Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void })),
+    Layer.provide(Layer.mock(ScheduledTaskService)({ deleteForThread: () => Effect.void })),
   ),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 

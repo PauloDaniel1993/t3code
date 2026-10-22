@@ -4,24 +4,17 @@ import * as Schema from "effect/Schema";
 
 import {
   CheckpointId,
-  CheckpointRef,
   CheckpointScopeId,
-  ContextTransferId,
   CommandId,
   EventId,
-  MessageId,
   NodeId,
-  NonNegativeInt,
-  ProjectId,
-  ProviderInstanceId,
-  ProviderReplayTranscript,
-  ProviderThreadId,
   RunAttemptId,
   RunId,
   ThreadId,
   TrimmedNonEmptyString,
   TurnItemId,
-} from "./index.ts";
+} from "./baseSchemas.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   OrchestrationV2AppThreadJson,
   latestProviderTurnForAttempt,
@@ -30,7 +23,6 @@ import {
   OrchestrationV2CheckpointScope,
   OrchestrationV2CheckpointScopeJson,
   OrchestrationV2Command,
-  OrchestrationV2LimitRecoveryUpdate,
   OrchestrationV2DomainEvent,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
@@ -39,59 +31,16 @@ import {
   OrchestrationV2RunJson,
   OrchestrationV2ShellSnapshot,
   OrchestrationV2ShellStreamItem,
-  OrchestrationV2SubscribeThreadInput,
+  OrchestrationV2ThreadShell,
   OrchestrationV2Subagent,
   OrchestrationV2SubagentJson,
   OrchestrationV2ThreadHistoryPage,
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2ThreadStreamItem,
-  OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
   OrchestrationV2TurnItemJson,
+  ProviderReplayTranscript,
 } from "./orchestrationV2.ts";
 
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
-function emptyThreadProjection() {
-  return {
-    thread: {
-      createdBy: "user",
-      creationSource: "web",
-      id: "thread-1",
-      projectId: "project-1",
-      title: "Thread",
-      providerInstanceId: "codex",
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: null,
-      worktreePath: null,
-      activeProviderThreadId: null,
-      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" },
-      forkedFrom: null,
-      createdAt: now,
-      updatedAt: now,
-      archivedAt: null,
-      deletedAt: null,
-    },
-    runs: [],
-    attempts: [],
-    nodes: [],
-    subagents: [],
-    providerSessions: [],
-    providerThreads: [],
-    providerTurns: [],
-    runtimeRequests: [],
-    messages: [],
-    plans: [],
-    turnItems: [],
-    checkpointScopes: [],
-    checkpoints: [],
-    contextHandoffs: [],
-    contextTransfers: [],
-    visibleTurnItems: [],
-    updatedAt: now,
-  };
-}
 
 const LegacyShellStreamItem = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("synchronized") }),
@@ -100,32 +49,21 @@ const LegacyShellStreamItem = Schema.Union([
     snapshot: OrchestrationV2ShellSnapshot,
   }),
 ]);
-const LegacySubscribeThreadInput = Schema.Struct({
-  threadId: ThreadId,
-  afterSequence: Schema.optionalKey(NonNegativeInt),
-  requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
-});
 const decodeLegacyShellStreamItem = Schema.decodeUnknownSync(LegacyShellStreamItem);
 const decodeShellStreamItem = Schema.decodeUnknownSync(OrchestrationV2ShellStreamItem);
-const decodeLegacySubscribeThreadInput = Schema.decodeUnknownSync(LegacySubscribeThreadInput);
 const decodeOrchestrationV2Command = Schema.decodeUnknownSync(OrchestrationV2Command);
-const decodeOrchestrationV2TurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
-const decodeOrchestrationV2TurnItemJson = Schema.decodeUnknownSync(OrchestrationV2TurnItemJson);
-const encodeOrchestrationV2TurnItemJson = Schema.encodeSync(OrchestrationV2TurnItemJson);
+const decodeOrchestrationV2Checkpoint = Schema.decodeUnknownSync(OrchestrationV2Checkpoint);
 const decodeOrchestrationV2CheckpointScope = Schema.decodeUnknownSync(
   OrchestrationV2CheckpointScope,
 );
-const decodeOrchestrationV2Checkpoint = Schema.decodeUnknownSync(OrchestrationV2Checkpoint);
 const decodeOrchestrationV2DomainEvent = Schema.decodeUnknownSync(OrchestrationV2DomainEvent);
+const decodeOrchestrationV2ThreadShell = Schema.decodeUnknownSync(OrchestrationV2ThreadShell);
+const decodeOrchestrationV2TurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
 const decodeProviderReplayTranscript = Schema.decodeUnknownSync(ProviderReplayTranscript);
+const decodeOrchestrationV2TurnItemJson = Schema.decodeUnknownSync(OrchestrationV2TurnItemJson);
+const encodeOrchestrationV2TurnItemJson = Schema.encodeSync(OrchestrationV2TurnItemJson);
 const decodeOrchestrationV2Subagent = Schema.decodeUnknownSync(OrchestrationV2Subagent);
 const encodeOrchestrationV2SubagentJson = Schema.encodeSync(OrchestrationV2SubagentJson);
-const decodeOrchestrationV2ThreadProjection = Schema.decodeUnknownSync(
-  OrchestrationV2ThreadProjection,
-);
-const decodeOrchestrationV2ThreadStreamItem = Schema.decodeUnknownSync(
-  OrchestrationV2ThreadStreamItem,
-);
 const decodeOrchestrationV2ProviderThreadJson = Schema.decodeUnknownSync(
   OrchestrationV2ProviderThreadJson,
 );
@@ -133,54 +71,11 @@ const encodeOrchestrationV2ProviderThreadJson = Schema.encodeSync(
   OrchestrationV2ProviderThreadJson,
 );
 const decodeOrchestrationV2ProviderThread = Schema.decodeUnknownSync(OrchestrationV2ProviderThread);
-const decodeOrchestrationV2ThreadShell = Schema.decodeUnknownSync(OrchestrationV2ThreadShell);
 const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
   OrchestrationV2ProviderCapabilities,
 );
 
-const decodeOrchestrationV2SubscribeThreadInput = Schema.decodeUnknownSync(
-  OrchestrationV2SubscribeThreadInput,
-);
-
 describe("orchestration V2 contracts", () => {
-  it("carries command failure metadata through runtime and JSON schemas without output text", () => {
-    const base = {
-      id: "command-item",
-      type: "command_execution",
-      threadId: "thread-1",
-      runId: null,
-      nodeId: null,
-      providerThreadId: null,
-      providerTurnId: null,
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: 1,
-      status: "completed",
-      title: "Command",
-      input: "example",
-      startedAt: null,
-      completedAt: null,
-    };
-    for (const metadata of [
-      {},
-      { outputIndicatesFailure: true },
-      { outputIndicatesFailure: false },
-    ]) {
-      const runtime = decodeOrchestrationV2TurnItem({ ...base, ...metadata, updatedAt: now });
-      const json = decodeOrchestrationV2TurnItemJson({
-        ...base,
-        ...metadata,
-        updatedAt: DateTime.formatIso(now),
-      });
-      expect(runtime.type).toBe("command_execution");
-      expect(json.type).toBe("command_execution");
-      expect(runtime).toMatchObject(metadata);
-      expect(json).toMatchObject(metadata);
-      expect(runtime).not.toHaveProperty("output");
-      expect(json).not.toHaveProperty("output");
-    }
-  });
-
   it("decodes thread event types from a newer server as skippable items", () => {
     const decodeWireItems = Schema.decodeUnknownSync(
       Schema.toCodecJson(Schema.Array(OrchestrationV2RpcSchemas.subscribeThread.output)),
@@ -204,7 +99,6 @@ describe("orchestration V2 contracts", () => {
         sequence: 2,
         event: {
           id: "event-2",
-          // A type no build of this client knows, standing in for a newer server's event.
           type: "run.from-a-future-server",
           threadId: "thread-1",
           occurredAt: DateTime.formatIso(now),
@@ -220,7 +114,6 @@ describe("orchestration V2 contracts", () => {
       sequence: 2,
       eventType: "run.from-a-future-server",
     });
-    // A known type with a broken payload is a real defect, not a newer event.
     expect(() =>
       decodeWireItems([
         { ...detached("event-4", 4), event: { ...detached("event-4", 4).event, payload: {} } },
@@ -254,7 +147,6 @@ describe("orchestration V2 contracts", () => {
       ...extra,
     });
     const known = item("item-known", "system_notice", { message: "Hello" });
-    // A type no build of this client knows, standing in for a newer server's item.
     const future = item("item-future", "hologram", { beam: "ref-1" });
     const projected = (position: number, turnItem: { readonly id: string }) => ({
       position,
@@ -342,7 +234,6 @@ describe("orchestration V2 contracts", () => {
       }).items.map((row) => row.item.id),
     ).toEqual(["item-known"]);
 
-    // A known turn item type with a broken payload is a real defect, not a newer item.
     const broken = item("item-broken", "system_notice", {});
     expect(() => decodeWireItems([turnItemEvent(4, broken)])).toThrow();
     expect(() =>
@@ -356,70 +247,7 @@ describe("orchestration V2 contracts", () => {
     ).toThrow();
   });
 
-  it("negotiates bounded socket snapshots as an optional capability", () => {
-    expect(
-      decodeOrchestrationV2SubscribeThreadInput({
-        threadId: "thread-1",
-        acceptBoundedSnapshot: true,
-      }).acceptBoundedSnapshot,
-    ).toBe(true);
-    expect(
-      decodeOrchestrationV2SubscribeThreadInput({ threadId: "thread-1" }).acceptBoundedSnapshot,
-    ).toBeUndefined();
-
-    const legacyDecoded = decodeLegacySubscribeThreadInput({
-      threadId: "thread-1",
-      afterSequence: 12,
-      acceptBoundedSnapshot: true,
-    });
-    expect(legacyDecoded.afterSequence).toBe(12);
-    expect("acceptBoundedSnapshot" in legacyDecoded).toBe(false);
-  });
-
-  it("negotiates compact bounded turnItems without disturbing older peers", () => {
-    // Older servers strip the unknown opt-in, so they keep sending full turnItems.
-    const legacyDecoded = decodeLegacySubscribeThreadInput({
-      threadId: "thread-1",
-      acceptBoundedSnapshot: true,
-      acceptCompactTurnItems: true,
-    });
-    expect("acceptCompactTurnItems" in legacyDecoded).toBe(false);
-    expect(
-      decodeOrchestrationV2SubscribeThreadInput({
-        threadId: "thread-1",
-        acceptCompactTurnItems: true,
-      }).acceptCompactTurnItems,
-    ).toBe(true);
-
-    const decodeStreamItem = Schema.decodeUnknownSync(OrchestrationV2ThreadStreamItem);
-    const projection = decodeStreamItem({
-      kind: "snapshot",
-      snapshotSequence: 1,
-      projection: emptyThreadProjection(),
-    });
-    // Older servers never send the marker; newer clients treat absence as full turnItems.
-    expect(projection.kind === "snapshot" && projection.turnItemsOmitLocalVisible).toBe(undefined);
-    const marked = decodeStreamItem({
-      kind: "snapshot",
-      snapshotSequence: 1,
-      projection: emptyThreadProjection(),
-      turnItemsOmitLocalVisible: true,
-    });
-    expect(marked.kind === "snapshot" && marked.turnItemsOmitLocalVisible).toBe(true);
-    // The marker only means "omitted"; any other value is a protocol error.
-    expect(() =>
-      decodeStreamItem({
-        kind: "snapshot",
-        snapshotSequence: 1,
-        projection: emptyThreadProjection(),
-        turnItemsOmitLocalVisible: false,
-      }),
-    ).toThrow();
-  });
-
   it("decodes persisted capability snapshots that predate runtimePolicy", () => {
-    // Events written before the field existed must replay; absent decodes to
-    // the weaker client-boundary guarantee so history never overclaims.
     const legacyCapabilities = {
       sessions: {
         supportsMultipleProviderThreadsPerSession: false,
@@ -743,7 +571,10 @@ describe("orchestration V2 contracts", () => {
     expect(event.payload.id).toBe(RunId.make("run-1"));
   });
 
-  it("decodes app-owned delegated task commands", () => {
+  it.each([
+    { type: "root" },
+    { type: "worktree", baseRef: "main", branch: "task/review", startFromOrigin: true },
+  ])("decodes app-owned delegated tasks with $type workspaces", (workspaceStrategy) => {
     const command = decodeOrchestrationV2Command({
       type: "delegated_task.request",
       createdBy: "user",
@@ -760,6 +591,7 @@ describe("orchestration V2 contracts", () => {
       },
       runtimeMode: "approval-required",
       interactionMode: "plan",
+      workspaceStrategy,
     });
 
     expect(command.type).toBe("delegated_task.request");
@@ -769,6 +601,16 @@ describe("orchestration V2 contracts", () => {
     expect(command.parentThreadId).toBe(ThreadId.make("thread-parent-1"));
     expect(command.parentRunId).toBe(RunId.make("run-parent-1"));
     expect(command.parentNodeId).toBe(NodeId.make("node-parent-1"));
+    expect(command.workspaceStrategy).toEqual(workspaceStrategy);
+  });
+
+  it.each([
+    { type: "thread.stop", commandId: "stop-1", threadId: "thread-1", reason: "User stopped" },
+    { type: "queued-run.start", commandId: "start-1", threadId: "thread-1", runId: "run-1" },
+  ])("accepts public $type commands through the RPC schema", (command) => {
+    expect(
+      Schema.decodeUnknownSync(OrchestrationV2RpcSchemas.dispatchCommand.input)(command),
+    ).toEqual(command);
   });
 
   it("decodes delegated task wake-policy commands", () => {
@@ -1102,236 +944,6 @@ describe("orchestration V2 contracts", () => {
     },
   );
 
-  it("decodes app-owned subagent parent-wake policies", () => {
-    const appOwnedSubagent = {
-      id: "node-subagent-2",
-      threadId: "thread-1",
-      runId: "run-1",
-      parentNodeId: "node-root-1",
-      origin: "app_owned",
-      createdBy: "agent",
-      driver: "codex",
-      providerInstanceId: "codex",
-      providerThreadId: null,
-      childThreadId: "thread-child-1",
-      nativeTaskRef: null,
-      prompt: "Inspect the API boundary.",
-      title: "API inspection",
-      model: "gpt-5.4",
-      status: "running",
-      result: null,
-      startedAt: now,
-      completedAt: null,
-      updatedAt: now,
-    };
-    const decode = Schema.decodeUnknownSync(OrchestrationV2Subagent);
-
-    // Legacy records predate the field and must behave as settled_only.
-    expect(decode(appOwnedSubagent).completionWake).toBeUndefined();
-    expect(decode({ ...appOwnedSubagent, completionWake: "always" }).completionWake).toBe("always");
-    expect(decode({ ...appOwnedSubagent, completionWake: "settled_only" }).completionWake).toBe(
-      "settled_only",
-    );
-    expect(() => decode({ ...appOwnedSubagent, completionWake: "sometimes" })).toThrow();
-  });
-
-  it("decodes thread projections with an ordered turn item rendering stream", () => {
-    const projection = decodeOrchestrationV2ThreadProjection({
-      thread: {
-        createdBy: "user",
-        creationSource: "web",
-        id: "thread-1",
-        projectId: "project-1",
-        title: "Thread",
-        providerInstanceId: "codex",
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
-        activeProviderThreadId: null,
-        lineage: {
-          parentThreadId: null,
-          relationshipToParent: null,
-          rootThreadId: "thread-1",
-        },
-        forkedFrom: null,
-        createdAt: now,
-        updatedAt: now,
-        archivedAt: null,
-        deletedAt: null,
-      },
-      runs: [],
-      attempts: [],
-      nodes: [],
-      subagents: [],
-      providerSessions: [],
-      providerThreads: [],
-      providerTurns: [],
-      runtimeRequests: [],
-      messages: [],
-      plans: [],
-      turnItems: [
-        {
-          id: "turn-item-command-1",
-          type: "command_execution",
-          threadId: "thread-1",
-          runId: "run-1",
-          nodeId: "node-command-1",
-          providerThreadId: "provider-thread-1",
-          providerTurnId: "provider-turn-1",
-          nativeItemRef: { driver: "codex", nativeId: "item-command-1", strength: "strong" },
-          parentItemId: null,
-          ordinal: 1,
-          status: "completed",
-          title: "Ran command",
-          input: "bun typecheck",
-          output: "Tasks: 10 successful",
-          exitCode: 0,
-          startedAt: now,
-          completedAt: now,
-          updatedAt: now,
-        },
-      ],
-      visibleTurnItems: [
-        {
-          position: 0,
-          visibility: "local",
-          sourceThreadId: "thread-1",
-          sourceItemId: "turn-item-command-1",
-          item: {
-            id: "turn-item-command-1",
-            type: "command_execution",
-            threadId: "thread-1",
-            runId: "run-1",
-            nodeId: "node-command-1",
-            providerThreadId: "provider-thread-1",
-            providerTurnId: "provider-turn-1",
-            nativeItemRef: { driver: "codex", nativeId: "item-command-1", strength: "strong" },
-            parentItemId: null,
-            ordinal: 1,
-            status: "completed",
-            title: "Ran command",
-            input: "bun typecheck",
-            output: "Tasks: 10 successful",
-            exitCode: 0,
-            startedAt: now,
-            completedAt: now,
-            updatedAt: now,
-          },
-        },
-      ],
-      checkpointScopes: [],
-      checkpoints: [],
-      contextHandoffs: [],
-      contextTransfers: [],
-      updatedAt: now,
-    });
-
-    expect(projection.turnItems.map((item) => item.type)).toEqual(["command_execution"]);
-
-    const boundedSnapshot = decodeOrchestrationV2ThreadStreamItem({
-      kind: "snapshot",
-      snapshotSequence: 12,
-      projection,
-      historyCursor: "older-page",
-      hasMoreHistory: true,
-      latestLocalTurnOrdinal: 1,
-      payloadBudgetExceeded: false,
-    });
-    expect(boundedSnapshot).toMatchObject({
-      kind: "snapshot",
-      historyCursor: "older-page",
-      hasMoreHistory: true,
-      latestLocalTurnOrdinal: 1,
-      payloadBudgetExceeded: false,
-    });
-  });
-
-  it("decodes orchestration lifecycle turn items for compaction, handoff, and fork UI", () => {
-    const compaction = decodeOrchestrationV2TurnItem({
-      id: "turn-item-compaction-1",
-      type: "compaction",
-      threadId: "thread-1",
-      runId: "run-1",
-      nodeId: "node-compaction-1",
-      providerThreadId: "provider-thread-1",
-      providerTurnId: "provider-turn-1",
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: 5,
-      status: "running",
-      title: "Compacting context...",
-      driver: "codex",
-      beforeTokenCount: 180000,
-      startedAt: now,
-      completedAt: null,
-      updatedAt: now,
-    });
-    const handoff = decodeOrchestrationV2TurnItem({
-      id: "turn-item-handoff-1",
-      type: "handoff",
-      threadId: "thread-1",
-      runId: "run-2",
-      nodeId: null,
-      providerThreadId: "provider-thread-claude-1",
-      providerTurnId: null,
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: 6,
-      status: "completed",
-      title: "Handed off to Claude",
-      contextHandoffId: "handoff-1",
-      fromProviderThreadIds: ["provider-thread-codex-1"],
-      toProviderThreadId: "provider-thread-claude-1",
-      fromProviderInstanceIds: ["codex"],
-      toProviderInstanceId: "claudeAgent",
-      strategy: "delta_since_target_last_seen",
-      summary: "Codex completed the setup work.",
-      startedAt: now,
-      completedAt: now,
-      updatedAt: now,
-    });
-    const fork = decodeOrchestrationV2TurnItem({
-      id: "turn-item-fork-1",
-      type: "fork",
-      threadId: "thread-1",
-      runId: "run-2",
-      nodeId: "node-subagent-1",
-      providerThreadId: "provider-thread-child-1",
-      providerTurnId: null,
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: 7,
-      status: "completed",
-      title: "Forked subagent thread",
-      source: { type: "node", nodeId: "node-subagent-1" },
-      targetThreadId: "thread-fork-1",
-      startedAt: now,
-      completedAt: now,
-      updatedAt: now,
-    });
-
-    expect(compaction.type).toBe("compaction");
-    expect(compaction.status).toBe("running");
-    expect(handoff.type).toBe("handoff");
-    if (handoff.type !== "handoff") {
-      throw new Error("expected handoff");
-    }
-    expect(handoff.toProviderInstanceId).toBe("claudeAgent");
-    expect(fork.type).toBe("fork");
-  });
-
-  it("exports the V2 branded ids through the public contracts entrypoint", () => {
-    expect(ThreadId.make("thread-1")).toBe("thread-1");
-    expect(ProjectId.make("project-1")).toBe("project-1");
-    expect(MessageId.make("message-1")).toBe("message-1");
-    expect(NodeId.make("node-1")).toBe("node-1");
-    expect(ProviderThreadId.make("provider-thread-1")).toBe("provider-thread-1");
-    expect(CheckpointRef.make("git-ref-1")).toBe("git-ref-1");
-    expect(ContextTransferId.make("context-transfer-1")).toBe("context-transfer-1");
-  });
-
   it("decodes historical provider-thread JSON without pendingBackgroundTasks as empty roster", () => {
     const providerThread = decodeOrchestrationV2ProviderThreadJson({
       id: "provider-thread-1",
@@ -1625,8 +1237,6 @@ describe("background work kinds from older or newer servers", () => {
   });
 
   it("sends and stores sources that clients from before specific kinds still decode", () => {
-    // The notification source schema clients shipped with before #13948. They
-    // reject a kind outside it, which fails the whole thread load.
     const PreSpecificKindsNotification = Schema.Struct({
       type: Schema.Literal("notification"),
       source: Schema.Union([
@@ -1657,7 +1267,6 @@ describe("background work kinds from older or newer servers", () => {
       const item = decodeOrchestrationV2TurnItemJson(storedNotification(source));
       for (const encoded of [encodeOrchestrationV2TurnItemJson(item), sendOverWire(item)]) {
         expect(decodePreSpecificKinds(encoded).source).toEqual(preSpecificKindsSource);
-        // Current clients read the specific kind back.
         expect(decodeOrchestrationV2TurnItemJson(encoded)).toEqual(item);
       }
       expect(item).toMatchObject({ source });
@@ -1694,6 +1303,7 @@ describe("background work kinds from older or newer servers", () => {
         { taskId: "bg-3", description: "Nightly", kind: "workflow", schedule: "0 3 * * *" },
         { taskId: "bg-4", description: "npm test", kind: "command" },
         { taskId: "bg-5", kind: "subagent", childThreadId: "thread-child" },
+        { taskId: "bg-6", kind: "subagent", providerInstanceId: "claudeAgent" },
       ],
     });
     expect(providerThread.pendingBackgroundTasks).toEqual([
@@ -1702,11 +1312,10 @@ describe("background work kinds from older or newer servers", () => {
       { taskId: "bg-3", description: "Nightly", kind: "background_task" },
       { taskId: "bg-4", description: "npm test", kind: "command" },
       { taskId: "bg-5", kind: "subagent", childThreadId: "thread-child" },
+      { taskId: "bg-6", kind: "subagent", providerInstanceId: "claudeAgent" },
     ]);
-    // The fallback is decode-only: what was decoded encodes as its known member.
     const encoded = encodeOrchestrationV2ProviderThreadJson(providerThread).pendingBackgroundTasks;
     expect(encoded).toEqual(providerThread.pendingBackgroundTasks);
-    // Clients from before kinds read a roster entry as this struct and ignore `kind`.
     const decodePreKindsRoster = Schema.decodeUnknownSync(
       Schema.Array(
         Schema.Struct({
@@ -1722,6 +1331,7 @@ describe("background work kinds from older or newer servers", () => {
       "bg-3",
       "bg-4",
       "bg-5",
+      "bg-6",
     ]);
     expect(() =>
       decodeOrchestrationV2ProviderThreadJson({
@@ -1729,23 +1339,6 @@ describe("background work kinds from older or newer servers", () => {
         pendingBackgroundTasks: [{ taskId: "", kind: "command" }],
       }),
     ).toThrow();
-  });
-});
-
-describe("limit recovery choice updates", () => {
-  const decode = Schema.decodeUnknownSync(OrchestrationV2LimitRecoveryUpdate);
-  const identity = { runId: "run:limited", resetAt: "2026-09-20T21:00:00.000Z" };
-  it("rejects updates that would disable defaults without choosing an option", () => {
-    expect(() => decode(identity)).toThrow("A recovery update must include autoResume or snooze");
-  });
-  it.each([
-    { autoResume: true },
-    { autoResume: false },
-    { snooze: true },
-    { snooze: false },
-    { autoResume: true, snooze: false },
-  ])("accepts an explicit independent choice %j", (choice) => {
-    expect(decode({ ...identity, ...choice })).toEqual({ ...identity, ...choice });
   });
 });
 

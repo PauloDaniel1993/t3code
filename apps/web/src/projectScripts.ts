@@ -5,7 +5,6 @@ import {
   type ProjectScript,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { isSamePath } from "@t3tools/shared/workspaceFolders";
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
 export interface ProjectScriptInput {
@@ -39,15 +38,6 @@ export function buildProjectScript(id: string, input: ProjectScriptInput): Proje
   };
 }
 
-/** A pending terminal's cwd is unknown, so an Action must allocate its own terminal. */
-export function canReuseProjectScriptTerminal(existingCwd: string | undefined, cwd: string) {
-  return existingCwd !== undefined && isSamePath(existingCwd, cwd);
-}
-
-/**
- * A project runs at most one setup script and one settle script, so saving a
- * script that claims either role takes it from the script that held it.
- */
 export function releaseClaimedRoles(
   script: ProjectScript,
   saved: ProjectScriptInput,
@@ -77,7 +67,6 @@ function normalizeScriptId(value: string): string {
   return cleaned.slice(0, MAX_SCRIPT_ID_LENGTH).replace(/-+$/g, "") || "script";
 }
 
-/** Legacy script IDs may not support shortcuts; keep those scripts usable without one. */
 export function commandForProjectScript(scriptId: string): KeybindingCommand | null {
   const command = `script.${scriptId}.run`;
   return isScriptRunCommand(command) ? command : null;
@@ -110,7 +99,6 @@ export function nextProjectScriptId(name: string, existingIds: Iterable<string>)
     suffix += 1;
   }
 
-  // This last-resort fallback only triggers after exhausting thousands of suffixes.
   return `${baseId}-${Date.now()}`.slice(0, MAX_SCRIPT_ID_LENGTH);
 }
 

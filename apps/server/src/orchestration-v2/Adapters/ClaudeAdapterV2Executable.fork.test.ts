@@ -89,6 +89,8 @@ const makeFixture = Effect.fnUntraced(function* (input: {
             messages: Stream.never,
             offer: () => Effect.void,
             setModel: () => Effect.void,
+            applyFlagSettings: () => Effect.void,
+            backgroundTasks: () => Effect.succeed(false),
             setPermissionMode: () => Effect.void,
             stopTask: () => Effect.void,
             interrupt: Effect.void,

@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { Platform, Pressable, View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
-import { SymbolView } from "../../components/AppSymbol";
-import { MaterialListRow } from "../../components/MaterialListRow";
+import { AppText as Text } from "../../components/ui/AppText";
+import { SymbolView } from "../../components/ui/AppSymbol";
+import { NavigationRow } from "../../components/ui/NavigationRow";
 import { cn } from "../../lib/cn";
 
 export function SectionTitle(props: { readonly children: string }) {
@@ -45,7 +45,7 @@ export function ListRow(props: {
 }) {
   if (Platform.OS === "android") {
     return (
-      <MaterialListRow
+      <NavigationRow
         className="bg-grouped-card"
         title={props.title}
         subtitle={props.subtitle}

@@ -76,7 +76,7 @@ it.each(["Current thread", "No matching thread"])(
       }),
     );
     act(() => {
-      tree = create(<Sidebar />, {
+      tree = create(<Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />, {
         createNodeMock: (element) =>
           document.createElement(typeof element.type === "string" ? element.type : "div"),
       });
@@ -152,7 +152,7 @@ it.each(["delete", "archive"])(
     });
     sidebarHarness.threads = [parent, child, filtered];
     act(() => {
-      tree = create(<Sidebar />, {
+      tree = create(<Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />, {
         createNodeMock: (element) =>
           document.createElement(typeof element.type === "string" ? element.type : "div"),
       });
@@ -182,7 +182,9 @@ it.each(["delete", "archive"])(
     else expect(sidebarHarness.remove).not.toHaveBeenCalled();
     expect(sidebarHarness.selection.map((entry) => entry.threadKey)).toEqual(["local:parent"]);
     expect(sidebarHarness.menu.mock.calls[0]?.[0]).toEqual(
-      expect.arrayContaining([{ id: "delete", label: "Delete (1)", destructive: true }]),
+      expect.arrayContaining([
+        expect.objectContaining({ id: "delete", label: "Delete (1)", destructive: true }),
+      ]),
     );
     // V2's bulk menu has Settle/Delete, not Archive. Apply its captured, real
     // actionable selection to the shared archive executor as well.

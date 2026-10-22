@@ -68,8 +68,8 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
           const files = fixture.additionalDirectories.map((directory) =>
             path.join(directory, "probe.txt"),
           );
-          const original = yield* (yield* Crypto.Crypto).randomUUIDv4;
-          const inheritedMarker = yield* (yield* Crypto.Crypto).randomUUIDv4;
+          const original = yield* (yield* Crypto.Crypto).randomUUIDv4();
+          const inheritedMarker = yield* (yield* Crypto.Crypto).randomUUIDv4();
           yield* Effect.forEach(files, (file) => fileSystem.writeFileString(file, original));
           const threadId = ThreadId.make("cursor-live-workspace-source");
           const exercise = Effect.fnUntraced(function* (

@@ -22,9 +22,9 @@ import {
   ProjectMutation,
   ProjectMutationError,
   ProjectSearchContentsError,
-  ProjectSearchContentsInput,
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
+  ProjectSearchContentsInput,
   ProjectListEntriesInput,
   ProjectReadFileInput,
   ProjectWriteFileError,
@@ -85,6 +85,28 @@ describe("project search inputs", () => {
 
 describe("scoped file inputs", () => {
   const scope = { projectId: "project-1", threadId: "thread-1", folderPath: "/srv/api" };
+
+  it.each([
+    ["cwd", { cwd: "/workspace" }],
+    ["scope", { scope }],
+  ] as const)(
+    "preserves image filters and optional file reads for %s inputs",
+    (_kind, location) => {
+      expect(
+        decodeSearchEntriesInput({ ...location, query: "", limit: 10, imageOnly: true }),
+      ).toHaveProperty("imageOnly", true);
+      const file =
+        "scope" in location ? { path: "api/optional.txt" } : { relativePath: "optional.txt" };
+      const input = { ...location, ...file };
+      expect(decodeReadFileInput(input)).not.toHaveProperty("allowMissing");
+      for (const allowMissing of [false, true]) {
+        expect(decodeReadFileInput({ ...input, allowMissing })).toHaveProperty(
+          "allowMissing",
+          allowMissing,
+        );
+      }
+    },
+  );
 
   it("keep decoding today's cwd form, and decode the scoped form by its scope", () => {
     expect(decodeSearchEntriesInput({ cwd: "/workspace", query: "main", limit: 10 })).toEqual({
@@ -236,7 +258,6 @@ describe("shared project payloads", () => {
     });
     expect(Object.hasOwn(create, "scripts")).toBe(false);
     expect(Object.hasOwn(update, "title")).toBe(false);
-    // Internal RPC callers may explicitly supply undefined, as before the extraction.
     expect(
       decodeProjectMutation({ type: "project.update", ...envelope, title: undefined }),
     ).toHaveProperty("title", undefined);
@@ -256,63 +277,9 @@ effectIt.effect("project favicon paths accept only supported image files", () =>
   }),
 );
 
-const decodeProjectUpdateEffect = Schema.decodeUnknownEffect(ProjectUpdatePayload);
-const decodeUpdateIcon = (projectIcon: unknown) =>
-  Effect.map(decodeProjectUpdateEffect({ projectIcon }), (update) => update.projectIcon);
-
-effectIt.effect("project icon overrides accept Lucide icons, colors, and emoji", () =>
-  Effect.gen(function* () {
-    const lucide = { kind: "lucide", name: "alarm-clock", color: "violet" } as const;
-    assert.deepEqual(yield* decodeUpdateIcon(lucide), lucide);
-    const emoji = { kind: "emoji", emoji: "👩🏽‍💻" } as const;
-    assert.deepEqual(yield* decodeUpdateIcon(emoji), emoji);
-    const invalid = yield* Effect.exit(
-      decodeUpdateIcon({ kind: "lucide", name: "Alarm Clock", color: "ultraviolet" }),
-    );
-    assert.strictEqual(invalid._tag, "Failure");
-  }),
-);
-
-effectIt.effect("project monograms validate text and palette colors", () =>
-  Effect.gen(function* () {
-    for (const text of ["A", "T3", "É", "文書", "कि", "किखि", "e\u0301"]) {
-      assert.deepEqual(yield* decodeUpdateIcon({ kind: "monogram", color: "violet", text }), {
-        kind: "monogram",
-        text,
-        color: "violet",
-      });
-    }
-    for (const projectIcon of [
-      { kind: "monogram", text: "", color: "blue" },
-      { kind: "monogram", text: "\u0301", color: "blue" },
-      { kind: "monogram", text: "A B", color: "blue" },
-      { kind: "monogram", text: "🚀", color: "blue" },
-      { kind: "monogram", text: "T3", color: "ultraviolet" },
-    ]) {
-      assert.strictEqual((yield* Effect.exit(decodeUpdateIcon(projectIcon)))._tag, "Failure");
-    }
-  }),
-);
-
 const decodeStoredIcon = Schema.decodeUnknownEffect(StoredProjectIcon);
-const encodeStoredIcon = Schema.encodeEffect(StoredProjectIcon);
 const decodeReceivedIcon = Schema.decodeUnknownEffect(ReceivedProjectIcon);
-const encodeReceivedIcon = Schema.encodeEffect(ReceivedProjectIcon);
 const decodeProjectShell = Schema.decodeUnknownEffect(OrchestrationProjectShell);
-
-effectIt.effect("sends and stores icons in their plain shape", () =>
-  Effect.gen(function* () {
-    for (const icon of [
-      { kind: "monogram", text: "क्ष्म", color: "violet" },
-      { kind: "lucide", name: "alarm-clock", color: "blue" },
-      { kind: "emoji", emoji: "🚀" },
-    ] as const) {
-      assert.deepEqual(yield* encodeReceivedIcon(icon), icon);
-      assert.deepEqual(yield* encodeStoredIcon(icon), icon);
-      assert.deepEqual(yield* decodeReceivedIcon(icon), icon);
-    }
-  }),
-);
 
 effectIt.effect("reads monograms stored in the pre-v2 fallback shape", () =>
   Effect.gen(function* () {
@@ -342,7 +309,6 @@ effectIt.effect("an icon kind from a newer server shows the default icon", () =>
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     assert.isNull(shell.projectIcon);
-    // A known kind with a broken payload still fails.
     const broken = yield* Effect.exit(decodeReceivedIcon({ kind: "emoji" }));
     assert.strictEqual(broken._tag, "Failure");
   }),

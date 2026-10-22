@@ -46,6 +46,7 @@ import * as Result from "effect/Result";
 
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as KnownWorkspaces from "./KnownWorkspaces.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
@@ -122,6 +123,7 @@ export class WorkspaceFolderFiles extends Context.Service<
       | WorkspaceScopeError
       | WorkspaceFileSystem.WorkspaceFileSystemError
       | WorkspacePaths.WorkspacePathOutsideRootError
+      | KnownWorkspaces.UnknownWorkspaceError
     >;
   }
 >()("t3/workspace/WorkspaceFolderFiles") {}
@@ -517,6 +519,7 @@ const make = Effect.gen(function* () {
     const result = yield* workspaceFileSystem.readFile({
       cwd: target.cwd,
       relativePath: target.relativePath,
+      ...(input.allowMissing !== undefined ? { allowMissing: input.allowMissing } : {}),
     });
     return { ...result, relativePath: target.canonicalPath };
   });
