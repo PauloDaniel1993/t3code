@@ -404,6 +404,40 @@ describe("task restorations on orchestration v2", () => {
     );
   });
 
+  it.effect.each(["completed", "failed", "cancelled", "interrupted"] as const)(
+    "keeps %s tasks without result text settled during unrelated child work",
+    (status) => {
+      const finished = task(`settled-${status}`, {
+        status,
+        result: null,
+        completionDelivery: { state: "disposed", observedByRunId: null },
+      });
+      const records = recordsFor([finished]);
+      const childId = finished.childThreadId!;
+      records.set(childId, {
+        ...records.get(childId)!,
+        runs: [run(childId, status), run(childId, "running", 2)],
+      });
+      return Effect.gen(function* () {
+        const service = yield* OrchestratorMcp.OrchestratorMcpService;
+        expect(yield* service.taskStatus(scope, finished.id)).toMatchObject({
+          status,
+          workState: "result_available",
+          summary:
+            status === "completed"
+              ? "Child task completed without an assistant result."
+              : `Child task ended with status ${status}.`,
+        });
+        const expected =
+          status === "completed" ? "finished" : status === "interrupted" ? "cancelled" : status;
+        expect((yield* service.listTasks(scope, { status: expected })).tasks).toMatchObject([
+          { taskId: finished.id, status: expected },
+        ]);
+        expect((yield* service.listTasks(scope, { status: "running" })).tasks).toEqual([]);
+      }).pipe(Effect.provide(makeLayer(records)));
+    },
+  );
+
   it.effect("stops later work without changing a finished task's delivered hand-back", () => {
     const finished = task("finished-delivered", {
       result: null,
@@ -1266,29 +1300,31 @@ it.effect.each(["codex", "claudeCode"] as const)(
         model: { instanceId, model: "other-model" },
         reasoning: "Extra High",
       });
-      for (const command of commands.slice(0, 2))
-        expect(command).toMatchObject({
-          modelSelection: {
-            instanceId,
-            model: "custom-model",
-            options: [
-              { id: extraId, value: extraParent },
-              { id: "thinking", value: true },
-              { id: reasoningId, value: "xhigh" },
-            ],
-          },
-        });
-      expect(commands[2]).toMatchObject({
-        modelSelection: {
-          instanceId,
-          model: "other-model",
-          options: [
-            { id: extraId, value: extraDefault },
-            { id: "thinking", value: false },
+      const requestedModels = commands
+        .filter((command) => command.type === "delegated_task.request")
+        .map((command) => command.modelSelection);
+      expect(requestedModels).toHaveLength(3);
+      for (const selection of requestedModels.slice(0, 2)) {
+        expect(selection).toMatchObject({ instanceId, model: "custom-model" });
+        expect(selection.options?.toSorted((a, b) => a.id.localeCompare(b.id))).toEqual(
+          [
+            { id: extraId, value: extraParent },
+            { id: "thinking", value: true },
             { id: reasoningId, value: "xhigh" },
-          ],
-        },
+          ].toSorted((a, b) => a.id.localeCompare(b.id)),
+        );
+      }
+      expect(requestedModels[2]).toMatchObject({
+        instanceId,
+        model: "other-model",
       });
+      expect(requestedModels[2]!.options?.toSorted((a, b) => a.id.localeCompare(b.id))).toEqual(
+        [
+          { id: extraId, value: extraDefault },
+          { id: "thinking", value: false },
+          { id: reasoningId, value: "xhigh" },
+        ].toSorted((a, b) => a.id.localeCompare(b.id)),
+      );
       expect(
         (yield* call("task_create", { ...input, model: { instanceId, model: "no-reasoning" } }))
           .structuredContent,
@@ -1358,7 +1394,40 @@ it.effect("resolves an explicit reasoning model beyond the bounded default catal
     ]);
     const aliases = yield* decodeModels((yield* call("task_models", {})).structuredContent);
     expect(aliases.instances[0]!.models).toHaveLength(8);
+    expect(aliases.instances[0]).toMatchObject({ omittedModels: 4 });
     expect(aliases.instances[0]!.models.some((model) => model.model === "catalog-11")).toBe(false);
+    const broadSearch = yield* decodeModels(
+      (yield* call("task_models", { instanceId, search: "catalog" })).structuredContent,
+    );
+    expect(broadSearch.instances).toHaveLength(1);
+    expect(broadSearch.instances[0]!.models).toHaveLength(8);
+    expect(broadSearch.instances[0]).toMatchObject({ omittedModels: 4 });
+    const targetedSearch = yield* decodeModels(
+      (yield* call("task_models", { instanceId, search: "  CATALOG 11  " })).structuredContent,
+    );
+    expect(targetedSearch.current).toEqual(aliases.current);
+    expect(targetedSearch.instances).toEqual([
+      {
+        instanceId,
+        provider: "opencode",
+        displayName: "Custom Codex",
+        ready: true,
+        models: [
+          {
+            model: "catalog-11",
+            name: "Catalog 11",
+            isDefault: false,
+            reasoningLevels: [
+              { id: "xhigh", label: "Extra high", isDefault: false, promptInjected: false },
+            ],
+          },
+        ],
+      },
+    ]);
+    const noMatches = yield* decodeModels(
+      (yield* call("task_models", { search: "not-a-model" })).structuredContent,
+    );
+    expect(noMatches.instances).toMatchObject([{ models: [] }]);
     yield* decodeCreatedTask(
       (yield* call("task_create", {
         title: "Review",

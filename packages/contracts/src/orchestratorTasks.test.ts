@@ -5,11 +5,52 @@ import { OrchestratorMcpDelegateTaskInput } from "./orchestratorMcp.ts";
 import {
   ForkTaskCancelInput,
   ForkTaskCreateInput,
+  ForkTaskModelsInput,
+  ForkTaskModelsResult,
   OrchestratorMcpTaskListInput,
   OrchestratorMcpTaskListResult,
 } from "./orchestratorTasks.ts";
 
 const decode = Schema.decodeUnknownSync(OrchestratorMcpTaskListInput);
+
+describe("delegated task model catalog", () => {
+  it("accepts existing requests and optional model search", () => {
+    const decodeModels = Schema.decodeUnknownSync(ForkTaskModelsInput);
+    expect(decodeModels({})).toEqual({});
+    expect(decodeModels({ instanceId: "codex", search: "  model 11  " })).toEqual({
+      instanceId: "codex",
+      search: "model 11",
+    });
+  });
+
+  it.each(["", "   ", "x".repeat(201), 123])("rejects invalid model search %s", (search) => {
+    expect(() => Schema.decodeUnknownSync(ForkTaskModelsInput)({ search })).toThrow();
+  });
+
+  it("accepts legacy results and preserves optional omission counts", () => {
+    const decodeModels = Schema.decodeUnknownSync(ForkTaskModelsResult);
+    const result = {
+      current: { instanceId: "codex", model: "model", reasoning: null },
+      instances: [
+        { instanceId: "codex", provider: "codex", displayName: "Codex", ready: true, models: [] },
+      ],
+    };
+    expect(decodeModels(result)).toEqual(result);
+    const withOmissions = {
+      ...result,
+      instances: [{ ...result.instances[0], omittedModels: 4 }],
+    };
+    expect(decodeModels(withOmissions)).toEqual(withOmissions);
+    for (const omittedModels of [-1, 1.5, "4"]) {
+      expect(() =>
+        decodeModels({
+          ...result,
+          instances: [{ ...result.instances[0], omittedModels }],
+        }),
+      ).toThrow();
+    }
+  });
+});
 
 describe("delegated task list input", () => {
   it("accepts discovery without a remembered task ID and continuation pages", () => {

@@ -88,7 +88,7 @@ const DelegateTaskTool = Tool.make("delegate_task", {
 
 const TaskModelsTool = Tool.make("task_models", {
   description:
-    "Needs an agent running inside a T3 thread. Fork-shaped catalog (current, instances, reasoningLevels); see orchestrator_capabilities for delegation capabilities.",
+    "Needs an agent running inside a T3 thread. Lists a short model catalog (current, instances, reasoningLevels). omittedModels counts models left out per instance; pass search to find others. See orchestrator_capabilities for delegation capabilities.",
   parameters: ForkTaskModelsInput,
   success: ForkTaskModelsResult,
   failure: OrchestratorCapabilitiesTool.failureSchema,

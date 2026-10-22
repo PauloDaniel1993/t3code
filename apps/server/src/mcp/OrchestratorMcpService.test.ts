@@ -198,7 +198,7 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
-  it.effect("reports a restart-cut child as working until its continuation settles", () =>
+  it.effect.each(["running", "cancelled"] as const)("holds %s tasks for restart", (status) =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-restart-parent");
       const childThreadId = ThreadId.make("thread:mcp-restart-child");
@@ -218,7 +218,7 @@ describe("OrchestratorMcpService", () => {
             childThreadId,
             driver: "codex",
             model: "gpt-5.6-terra",
-            status: "running",
+            status,
             result: null,
             completionDelivery: { state: "pending" },
           },

@@ -10,7 +10,11 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { OrchestratorMcpTaskCancelInput, TASK_TITLE_MAX_LENGTH } from "./orchestratorMcp.ts";
+import {
+  OrchestratorMcpCapabilitiesInput,
+  OrchestratorMcpTaskCancelInput,
+  TASK_TITLE_MAX_LENGTH,
+} from "./orchestratorMcp.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const ForkTaskStatus = Schema.Literals([
@@ -42,6 +46,7 @@ export type ForkTaskCreateInput = typeof ForkTaskCreateInput.Type;
 
 export const ForkTaskModelsInput = Schema.Struct({
   instanceId: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+  search: OrchestratorMcpCapabilitiesInput.fields.search,
 });
 export type ForkTaskModelsInput = typeof ForkTaskModelsInput.Type;
 
@@ -57,6 +62,9 @@ export const ForkTaskModelsResult = Schema.Struct({
       provider: Schema.String,
       displayName: Schema.String,
       ready: Schema.Boolean,
+      omittedModels: Schema.optional(NonNegativeInt).annotate({
+        description: "Models left out of the list, or matching models past the cap when searching.",
+      }),
       models: Schema.Array(
         Schema.Struct({
           model: Schema.String,

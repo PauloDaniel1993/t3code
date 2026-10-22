@@ -1579,14 +1579,13 @@ const make = Effect.gen(function* () {
       (yield* threadManagement
         .delegatedTaskResultPending(task.childThreadId, childRun?.delegatedTaskId)
         .pipe(Effect.mapError(threadManagementFailure)));
-    // Imported terminal tasks can survive without a child run or result text.
-    const terminal =
-      !heldForRestart &&
-      (task.result !== null || childRun === undefined) &&
-      (task.status === "completed" ||
-        task.status === "failed" ||
-        task.status === "cancelled" ||
-        task.status === "interrupted");
+    // Settled tasks stay authoritative during unrelated child work, even without result text.
+    const settled =
+      task.status === "completed" ||
+      task.status === "failed" ||
+      task.status === "cancelled" ||
+      task.status === "interrupted";
+    const terminal = settled && !heldForRestart;
     const workState =
       terminal || task.result !== null
         ? "result_available"

@@ -58,7 +58,10 @@ export const forkTaskModels = Effect.fn("ForkTaskAliases.models")(function* (
   service: OrchestratorMcpServiceShape,
 ) {
   // Native capabilities enforce scope and adapter readiness; retain the fork's field names.
-  const capabilities = yield* service.capabilities(scope);
+  const capabilities = yield* service.capabilities(
+    scope,
+    input.search === undefined ? {} : { search: input.search },
+  );
   const parent = yield* readParent(scope);
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const providers = yield* registry.getProviders;
@@ -98,6 +101,7 @@ export const forkTaskModels = Effect.fn("ForkTaskAliases.models")(function* (
         provider: instance.driverKind,
         displayName: instance.displayName ?? instance.providerInstanceId,
         ready: instance.canRunChildTask && provider?.status === "ready",
+        ...(instance.omittedModels === undefined ? {} : { omittedModels: instance.omittedModels }),
         models: instance.models.map((model) => {
           const descriptor = reasoningDescriptor(
             provider?.models.find((entry) => entry.slug === model.id)?.capabilities
