@@ -35,6 +35,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "./Manager.ts";
 import { terminalOutputStream } from "./OutputProtocol.ts";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
+import { makeCheckoutLeaseKeys } from "../orchestration-v2/checkoutLease.ts";
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 
 vi.mock("effect/SynchronizedRef", async (importOriginal) => {
   const original = await importOriginal<typeof SynchronizedRef>();
@@ -415,6 +417,56 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect.each([
+    { operation: "open", useWorktree: true },
+    { operation: "open", useWorktree: false },
+    { operation: "restart", useWorktree: true },
+    { operation: "restart", useWorktree: false },
+  ] as const)("shares the rollback and cleanup lease for %s", ({ operation, useWorktree }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const checkout = yield* fs.makeTempDirectoryScoped({ prefix: "t3-Checkout-" });
+      const realCheckout = yield* fs.realPath(checkout);
+      const alias = path.join(checkout, "alias");
+      const cwd = useWorktree ? checkout : alias;
+      const stats = yield* fs.stat(checkout);
+      const calls: string[] = [];
+      const { manager, ptyAdapter } = yield* createManager().pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          realPath: (target) =>
+            target === checkout || target === alias
+              ? Effect.succeed(realCheckout)
+              : fs.realPath(target),
+          stat: (target) =>
+            target === cwd
+              ? Effect.sync(() => {
+                  calls.push("terminal");
+                  return stats;
+                })
+              : fs.stat(target),
+        }),
+      );
+      const release = yield* Deferred.make<void>();
+      const { canonicalPath } = yield* makeCheckoutLeaseKeys;
+      const holder = yield* withWorkspaceLease(
+        yield* canonicalPath(checkout),
+        Deferred.await(release).pipe(Effect.tap(() => Effect.sync(() => calls.push("cleanup")))),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      const input = { cwd, ...(useWorktree ? { worktreePath: alias } : {}) };
+      const terminal = yield* (
+        operation === "open" ? manager.open(openInput(input)) : manager.restart(restartInput(input))
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      expect(calls).toEqual([]);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(holder);
+      yield* Fiber.join(terminal);
+      expect(calls).toEqual(["cleanup", "terminal"]);
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+    }),
+  );
+
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

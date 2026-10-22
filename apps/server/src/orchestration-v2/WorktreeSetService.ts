@@ -330,6 +330,66 @@ function memberBranchNames(
   });
 }
 
+type RecreationThread = Pick<
+  OrchestrationV2AppThread,
+  "id" | "projectId" | "branch" | "worktreePath" | "workspaceFolders" | "worktrees"
+>;
+
+/** The coordinator's recreation logic is shared with rollback without its metadata-writing services. */
+export const makeRecreateMissingWorktrees = ({
+  fileSystem,
+  git,
+  getProjectRoot,
+}: {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly git: Pick<
+    GitWorkflow.GitWorkflowService["Service"],
+    "pruneWorktrees" | "createWorktree"
+  >;
+  readonly getProjectRoot: (projectId: ProjectId) => Effect.Effect<string | undefined>;
+}) =>
+  Effect.fn("WorktreeSetService.recreateMissing")(function* (thread: RecreationThread) {
+    const missing = (path: string) =>
+      fileSystem.exists(path).pipe(
+        Effect.map((exists) => !exists),
+        Effect.orElseSucceed(() => false),
+      );
+    const recreate = (member: OrchestrationV2ThreadWorktree) =>
+      Effect.logWarning("recreating missing worktree", {
+        threadId: thread.id,
+        worktreePath: member.path,
+        branch: member.branch,
+      }).pipe(
+        Effect.andThen(git.pruneWorktrees({ cwd: member.repositoryRoot })),
+        Effect.andThen(
+          git.createWorktree({
+            cwd: member.repositoryRoot,
+            refName: member.branch,
+            path: member.path,
+          }),
+        ),
+        Effect.mapError(
+          (cause) => new WorktreeRecreateError({ threadId: thread.id, path: member.path, cause }),
+        ),
+      );
+    if (thread.worktrees === undefined) {
+      // A plain thread's worktree comes from its project's checkout, and a
+      // snapshot thread's from its own primary folder, which a relink of the
+      // project's workspace file never moves. The project is read only once
+      // the worktree is known to be gone.
+      const { worktreePath, branch } = thread;
+      if (worktreePath === null || branch === null || !(yield* missing(worktreePath))) return;
+      const repositoryRoot =
+        thread.workspaceFolders?.[0]?.path ?? (yield* getProjectRoot(thread.projectId));
+      if (repositoryRoot === undefined) return;
+      yield* recreate({ repositoryRoot, path: worktreePath, branch });
+      return;
+    }
+    for (const member of creationOrder(thread.worktrees)) {
+      if (yield* missing(member.path)) yield* recreate(member);
+    }
+  });
+
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const git = yield* GitWorkflow.GitWorkflowService;
@@ -803,52 +863,14 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const recreateMissing: WorktreeSetService["Service"]["recreateMissing"] = Effect.fn(
-    "WorktreeSetService.recreateMissing",
-  )(function* (thread) {
-    const missing = (path: string) =>
-      fileSystem.exists(path).pipe(
-        Effect.map((exists) => !exists),
-        Effect.orElseSucceed(() => false),
-      );
-    const recreate = (member: OrchestrationV2ThreadWorktree) =>
-      Effect.logWarning("recreating missing worktree", {
-        threadId: thread.id,
-        worktreePath: member.path,
-        branch: member.branch,
-      }).pipe(
-        Effect.andThen(git.pruneWorktrees({ cwd: member.repositoryRoot })),
-        Effect.andThen(
-          git.createWorktree({
-            cwd: member.repositoryRoot,
-            refName: member.branch,
-            path: member.path,
-          }),
-        ),
-        Effect.mapError(
-          (cause) => new WorktreeRecreateError({ threadId: thread.id, path: member.path, cause }),
-        ),
-      );
-    if (thread.worktrees === undefined) {
-      // A plain thread's worktree comes from its project's checkout, and a
-      // snapshot thread's from its own primary folder, which a relink of the
-      // project's workspace file never moves. The project is read only once
-      // the worktree is known to be gone.
-      const { worktreePath, branch } = thread;
-      if (worktreePath === null || branch === null || !(yield* missing(worktreePath))) return;
-      const repositoryRoot =
-        thread.workspaceFolders?.[0]?.path ??
-        (yield* projects.getById(thread.projectId).pipe(
-          Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
-          Effect.orElseSucceed(() => undefined),
-        ));
-      if (repositoryRoot === undefined) return;
-      yield* recreate({ repositoryRoot, path: worktreePath, branch });
-      return;
-    }
-    for (const member of creationOrder(thread.worktrees)) {
-      if (yield* missing(member.path)) yield* recreate(member);
-    }
+  const recreateMissing = makeRecreateMissingWorktrees({
+    fileSystem,
+    git,
+    getProjectRoot: (projectId) =>
+      projects.getById(projectId).pipe(
+        Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
+        Effect.orElseSucceed(() => undefined),
+      ),
   });
 
   const resolveForReuse: WorktreeSetService["Service"]["resolveForReuse"] = Effect.fn(

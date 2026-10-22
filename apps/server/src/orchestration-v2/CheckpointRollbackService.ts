@@ -20,9 +20,10 @@ import * as Schema from "effect/Schema";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import type * as ServerConfig from "../config.ts";
 import type * as ServerSettings from "../serverSettings.ts";
-import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
-import { isSamePath } from "@t3tools/shared/workspaceFolders";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { makeCheckoutLeaseKeys } from "./checkoutLease.ts";
+import { makeManagedWorktreeRecreation } from "./managedWorktreeRecreation.ts";
+import { makeRecreateMissingWorktrees } from "./WorktreeSetService.ts";
 import {
   fileRestoreRefusal,
   fileRestoreRefusalMessage,
@@ -171,7 +172,17 @@ export const layer: Layer.Layer<
     const projects = yield* ProjectStore.ProjectStoreV2;
     const path = yield* Path.Path;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
-    const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
+    const { keys: checkoutLeaseKeys } = yield* makeCheckoutLeaseKeys;
+    const recreateManagedWorktrees = yield* makeManagedWorktreeRecreation;
+    const recreateMissing = makeRecreateMissingWorktrees({
+      fileSystem,
+      git: gitWorkflow,
+      getProjectRoot: (projectId) =>
+        projects.get(projectId).pipe(
+          Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
+          Effect.orElseSucceed(() => undefined),
+        ),
+    });
 
     const execute = Effect.fn("orchestrationV2.checkpointRollback.execute")(function* (input: {
       readonly threadId: ThreadId;
@@ -236,33 +247,7 @@ export const layer: Layer.Layer<
                   providerTurn: targetTurn,
                 };
               });
-      const members = context.thread.worktrees ?? [];
-      const locations = [...members];
-      const { worktreePath, branch } = context.thread;
-      if (worktreePath != null && branch != null && members.length === 0) {
-        const project = yield* projects.get(context.thread.projectId);
-        if (Option.isSome(project)) {
-          locations.push({
-            repositoryRoot: project.value.workspaceRoot,
-            path: worktreePath,
-            branch,
-          });
-        }
-      }
-      // Parents must exist before nested members are recreated. Only managed locations are eligible.
-      for (const member of locations.toSorted((a, b) => a.path.length - b.path.length)) {
-        if (
-          !(yield* fileSystem.exists(member.path)) &&
-          (yield* isManagedWorktreePath(member.path))
-        ) {
-          yield* gitWorkflow.pruneWorktrees({ cwd: member.repositoryRoot });
-          yield* gitWorkflow.createWorktree({
-            cwd: member.repositoryRoot,
-            refName: member.branch,
-            path: member.path,
-          });
-        }
-      }
+      yield* recreateManagedWorktrees(context.thread, recreateMissing);
       if (restoreFiles) {
         const refusal = yield* fileRestoreRefusal(context.thread, scope, checkpoint, {
           checkpoints,
@@ -460,13 +445,7 @@ export const layer: Layer.Layer<
             ...(thread.worktrees ?? []).map((member) => member.path),
             ...(thread.worktreePath === null ? [] : [thread.worktreePath]),
           ];
-          const leases = locations
-            .map((location) => path.resolve(location))
-            .filter(
-              (location, index, all) =>
-                !all.slice(0, index).some((other) => isSamePath(other, location)),
-            )
-            .toSorted();
+          const leases = yield* checkoutLeaseKeys(locations);
           yield* leases.reduceRight(
             (effect, location) => withWorkspaceLease(location, effect),
             execute(input),

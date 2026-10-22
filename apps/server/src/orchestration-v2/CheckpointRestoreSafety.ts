@@ -203,10 +203,10 @@ export const fileRestoreRefusal = Effect.fn("orchestrationV2.fileRestoreRefusal"
         checkpoint.parts === undefined
       ) {
         const owner = yield* dependencies.projections.getThread(thread.id);
-        const project = yield* dependencies.projects.get(owner.projectId);
-        lookupParts.push(
-          Option.isSome(project) ? { ...part, cwd: project.value.workspaceRoot } : part,
-        );
+        const repositoryRoot =
+          owner.workspaceFolders?.[0]?.path ??
+          Option.getOrUndefined(yield* dependencies.projects.get(owner.projectId))?.workspaceRoot;
+        lookupParts.push(repositoryRoot === undefined ? part : { ...part, cwd: repositoryRoot });
       } else {
         lookupParts.push(part);
       }

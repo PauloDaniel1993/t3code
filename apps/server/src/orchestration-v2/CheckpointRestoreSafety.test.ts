@@ -437,3 +437,48 @@ it.effect("checks removed members' refs at their sources only during admission",
     assert.deepEqual(checked, [members.map((member) => member.path)]);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect.each([false, true])(
+  "checks a removed singular worktree's refs using its frozen binding: %s",
+  (frozen) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-restore-frozen-" });
+      const original = path.join(parent, "original");
+      const relinked = path.join(parent, "relinked");
+      const cwd = path.join(parent, "removed-worktree");
+      const thread = { id: ThreadId.make("restore-frozen"), worktreePath: cwd };
+      const scope = { cwd } as OrchestrationV2CheckpointScope;
+      const checkpoint = {
+        ref: CheckpointRef.make("refs/t3/checkpoint/frozen"),
+      } as OrchestrationV2Checkpoint;
+      const checked: string[][] = [];
+      const refusal = yield* fileRestoreRefusal(thread, scope, checkpoint, {
+        fileSystem,
+        path,
+        projects: { get: () => Effect.succeed(Option.some({ workspaceRoot: relinked })) } as never,
+        projections: {
+          getThread: () =>
+            Effect.succeed({
+              projectId: ProjectId.make("restore-frozen-project"),
+              ...(frozen ? { workspaceFolders: [{ path: original, label: "original" }] } : {}),
+            }),
+          getShellSnapshot: () => Effect.succeed({ threads: [], archivedThreads: [] }),
+        } as never,
+        checkpoints: {
+          preflightRestore: ({ checkpoint }) => {
+            const locations = checkpoint.parts?.map((part) => part.cwd) ?? [cwd];
+            checked.push(locations);
+            return Effect.succeed(
+              locations[0] === (frozen ? original : relinked)
+                ? undefined
+                : { reason: "missing-checkout" as const, folders: [] },
+            );
+          },
+        },
+      });
+      assert.isUndefined(refusal);
+      assert.deepEqual(checked, [[cwd], [frozen ? original : relinked]]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

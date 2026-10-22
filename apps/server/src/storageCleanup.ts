@@ -50,6 +50,7 @@ import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirect
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
 import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
+import { makeCheckoutLeaseKeys } from "./orchestration-v2/checkoutLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
@@ -221,6 +222,7 @@ const make = Effect.gen(function* () {
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
   const fs = yield* FileSystem.FileSystem;
+  const { keys: checkoutLeaseKeys } = yield* makeCheckoutLeaseKeys;
   const path = yield* Path.Path;
   const liveTerminals = new Map<string, Map<string, TerminalSummary>>();
   const orphanSizes = new Map<string, number | null>();
@@ -1130,13 +1132,7 @@ const make = Effect.gen(function* () {
         // Keep the bindings and branches so a resumed thread can recreate the entire set.
         yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
       });
-      const leasePaths = [
-        ...new Set(
-          yield* Effect.forEach(worktrees, (member) =>
-            fs.realPath(member.path).pipe(Effect.orElseSucceed(() => member.path)),
-          ),
-        ),
-      ].sort();
+      const leasePaths = yield* checkoutLeaseKeys(worktrees.map((member) => member.path));
       yield* leasePaths
         .reduceRight((effect, cwd) => withWorkspaceLease(cwd, effect), removal)
         .pipe(

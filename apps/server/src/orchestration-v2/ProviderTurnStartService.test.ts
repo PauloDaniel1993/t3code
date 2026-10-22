@@ -38,6 +38,7 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ServerConfig from "../config.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { makeCheckoutLeaseKeys } from "./checkoutLease.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
@@ -1009,8 +1010,9 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         }),
       );
       let cleanupEntered = false;
+      const { canonicalPath } = yield* makeCheckoutLeaseKeys;
       const cleanupEffect = withWorkspaceLease(
-        worktreePath,
+        yield* canonicalPath(worktreePath),
         Effect.gen(function* () {
           cleanupEntered = true;
           if (order === "cleanup-first") yield* Deferred.await(release);
@@ -1065,20 +1067,26 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
 
 effectIt.effect("reads current startup state after waiting for the workspace lease", () =>
   Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const worktreePath = "/tmp/provider-start-fresh-state";
     const release = yield* Deferred.make<void>();
     const readEntered = yield* Deferred.make<void>();
     const harness = makeLocalCommandHarness({
       text: "Continue",
       worktreePath,
+      fileSystem,
+      path,
       failReadsAfterRunning: true,
     });
     harness.getThreadRecords.mockImplementationOnce(() =>
       Deferred.succeed(readEntered, undefined).pipe(Effect.as(harness.projection())),
     );
-    const holder = yield* withWorkspaceLease(worktreePath, Deferred.await(release)).pipe(
-      Effect.forkChild({ startImmediately: true }),
-    );
+    const { canonicalPath } = yield* makeCheckoutLeaseKeys;
+    const holder = yield* withWorkspaceLease(
+      yield* canonicalPath(worktreePath),
+      Deferred.await(release),
+    ).pipe(Effect.forkChild({ startImmediately: true }));
     const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(readEntered);
     expect(harness.getTurnStartContext).not.toHaveBeenCalled();
@@ -1092,7 +1100,7 @@ effectIt.effect("reads current startup state after waiting for the workspace lea
     yield* Fiber.join(startup);
     expect(harness.open).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
-  }),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 // regression: #15784 superseded provider startups kept running

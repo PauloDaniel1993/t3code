@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as FileSystem from "effect/FileSystem";
 
 import * as ServerConfig from "../config.ts";
@@ -31,6 +32,8 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { makeCheckoutLeaseKeys } from "../orchestration-v2/checkoutLease.ts";
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 
 // What workspace actions read; tests of single-checkout methods never reach them.
 const unusedWorkspaceDependencies = Layer.mergeAll(
@@ -56,6 +59,65 @@ function layer(input: {
 }
 
 describe("GitWorkflowService", () => {
+  it.effect("shares the rollback and cleanup lease across Windows checkout spellings", () =>
+    Effect.gen(function* () {
+      const checkout = "C:\\Projects\\Checkout";
+      const alias = "C:\\Alias\\CHECKOUT";
+      const release = yield* Deferred.make<void>();
+      const calls: string[] = [];
+      const workflow = yield* GitWorkflowService.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+              resolve: () =>
+                Effect.succeed({
+                  kind: "git",
+                  repository: { rootPath: alias },
+                } as VcsDriverRegistry.VcsDriverHandle),
+            }),
+            Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+            Layer.mock(GitManager.GitManager)({
+              runStackedAction: (input) =>
+                Effect.sync(() => {
+                  calls.push("git");
+                  return stackedResult(input);
+                }),
+            }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+            Layer.mock(ProjectStore.ProjectStoreV2)({}),
+            Layer.mock(WorkspaceFolderResolver.WorkspaceFolderResolver)({}),
+          ),
+        ),
+      );
+      const { canonicalPath } = yield* makeCheckoutLeaseKeys;
+      const holder = yield* withWorkspaceLease(
+        yield* canonicalPath(checkout.toLowerCase()),
+        Deferred.await(release).pipe(Effect.tap(() => Effect.sync(() => calls.push("cleanup")))),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      const mutation = yield* workflow
+        .runStackedAction({
+          actionId: "lease-test",
+          cwd: alias,
+          action: "push",
+          featureBranch: true,
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      expect(calls).toEqual([]);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(holder);
+      yield* Fiber.join(mutation);
+      expect(calls).toEqual(["cleanup", "git"]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.merge(
+          NodePath.layerWin32,
+          FileSystem.layerNoop({ realPath: () => Effect.succeed("C:\\Projects\\Checkout") }),
+        ),
+      ),
+    ),
+  );
+
   it.effect("reports a non-Git VCS repository as not a Git repository", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
@@ -379,9 +441,10 @@ function makeWorkspaceLayer(input: {
     Layer.provide(
       input.canonicalRoot === undefined
         ? NodeServices.layer
-        : FileSystem.layerNoop({
-            realPath: () => Effect.succeed(input.canonicalRoot!),
-          }),
+        : Layer.merge(
+            NodePath.layer,
+            FileSystem.layerNoop({ realPath: () => Effect.succeed(input.canonicalRoot!) }),
+          ),
     ),
     Layer.provide(
       Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({

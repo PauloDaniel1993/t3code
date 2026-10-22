@@ -1,4 +1,3 @@
-import { isPathWithin } from "@t3tools/shared/workspaceFolders";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -25,9 +24,9 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { makeCheckoutLeaseKeys } from "./checkoutLease.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import {
@@ -51,6 +50,7 @@ import {
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as WorktreeSet from "./WorktreeSetService.ts";
+import { makeManagedWorktreeRecreation } from "./managedWorktreeRecreation.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -118,35 +118,13 @@ export const layer: Layer.Layer<
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const worktreeSets = yield* WorktreeSet.WorktreeSetService;
     const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
-    const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
-
-    // Set members may sit below the two-level session path. Check both its managed
-    // anchor and the member's real location so a symlink cannot escape that anchor.
-    const realLocation = (target: string): Effect.Effect<string> =>
-      fileSystem.realPath(target).pipe(
-        Effect.catch(() => {
-          const parent = path.dirname(target);
-          return parent === target
-            ? Effect.succeed(target)
-            : Effect.map(realLocation(parent), (real) => path.join(real, path.basename(target)));
-        }),
-      );
-    const isManagedSetMember = Effect.fn("ProviderTurnStartService.isManagedSetMember")(function* (
-      target: string,
-    ) {
-      if (!path.isAbsolute(target) || path.resolve(target) !== target) return false;
-      for (let anchor = target; path.dirname(anchor) !== anchor; anchor = path.dirname(anchor)) {
-        if (!(yield* isManagedWorktreePath(anchor))) continue;
-        return isPathWithin(yield* realLocation(anchor), yield* realLocation(target));
-      }
-      return false;
-    });
+    const { keys: checkoutLeaseKeys } = yield* makeCheckoutLeaseKeys;
+    const recreateManagedWorktrees = yield* makeManagedWorktreeRecreation;
 
     // These callbacks outlive startup while a run drains background work. Build
     // them outside start's scope so they cannot retain its full thread history.
@@ -531,22 +509,8 @@ export const layer: Layer.Layer<
         });
         return;
       }
-      const recreationThread =
-        projection.thread.worktrees === undefined
-          ? projection.thread.worktreePath !== null &&
-            (yield* isManagedWorktreePath(projection.thread.worktreePath))
-            ? projection.thread
-            : undefined
-          : {
-              ...projection.thread,
-              worktrees: yield* Effect.filter(projection.thread.worktrees, (member) =>
-                isManagedSetMember(member.path),
-              ),
-            };
       const recreated = yield* Effect.result(
-        recreationThread === undefined
-          ? Effect.void
-          : worktreeSets.recreateMissing(recreationThread),
+        recreateManagedWorktrees(projection.thread, worktreeSets.recreateMissing),
       );
       if (recreated._tag === "Failure") {
         if (input.willRetry === true) {
@@ -1409,9 +1373,7 @@ export const layer: Layer.Layer<
             ...(thread.worktreePath === null ? [] : [thread.worktreePath]),
             ...(thread.worktrees ?? []).map((member) => member.path),
           ];
-          const leasePaths = [
-            ...new Set(yield* Effect.forEach(checkoutPaths, realLocation)),
-          ].sort();
+          const leasePaths = yield* checkoutLeaseKeys(checkoutPaths);
           const providerTurn = yield* leasePaths.reduceRight(
             (effect, cwd) => withWorkspaceLease(cwd, effect),
             start(input),

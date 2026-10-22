@@ -3,7 +3,6 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as FileSystem from "effect/FileSystem";
 
 import {
   GitManagerError,
@@ -49,6 +48,7 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { makeCheckoutLeaseKeys } from "../orchestration-v2/checkoutLease.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 
 export class GitWorkflowService extends Context.Service<
@@ -228,14 +228,11 @@ export const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const folderResolver = yield* WorkspaceFolderResolver.WorkspaceFolderResolver;
-  const fileSystem = yield* FileSystem.FileSystem;
+  const { canonicalPath } = yield* makeCheckoutLeaseKeys;
 
   // Nested projects and path aliases must share the checkout's branch-mutation lease.
   const withCheckoutLease = <A, E, R>(rootPath: string, effect: Effect.Effect<A, E, R>) =>
-    fileSystem.realPath(rootPath).pipe(
-      Effect.orElseSucceed(() => rootPath),
-      Effect.flatMap((cwd) => withWorkspaceLease(cwd, effect)),
-    );
+    canonicalPath(rootPath).pipe(Effect.flatMap((cwd) => withWorkspaceLease(cwd, effect)));
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,

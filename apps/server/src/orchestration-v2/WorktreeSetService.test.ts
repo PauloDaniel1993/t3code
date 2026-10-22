@@ -153,6 +153,7 @@ const withCoordinator = <A, E, R>(
                     branchExists(cwd, refName.replace(/^refs\/heads\//, "")).pipe(
                       Effect.provideService(GitVcsDriver.GitVcsDriver, driver),
                     ),
+                  resolveWorktreeBaseRemote: driver.resolveWorktreeBaseRemote,
                   remoteExists: driver.remoteExists,
                   fetchRemote: driver.fetchRemote,
                   remoteBranchExists: driver.remoteBranchExists,

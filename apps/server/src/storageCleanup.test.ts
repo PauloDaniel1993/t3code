@@ -6,7 +6,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Path from "effect/Path";
+import * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { SCAN_CACHE_FILE_NAME } from "./usage/usageScanCache.ts";
@@ -20,6 +20,8 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "./config.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
+import { makeCheckoutLeaseKeys } from "./orchestration-v2/checkoutLease.ts";
+import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Settings from "./serverSettings.ts";
@@ -479,6 +481,33 @@ const runCleanupTest = <A, E>(
     | Scope.Scope
   >,
 ) => effect.pipe(Effect.provide(cleanupTestLayer), Effect.scoped);
+
+it.live("holds the canonical checkout lease while cleanup measures a symlinked checkout", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* pausedMeasurementFixture();
+      const path = yield* Path.Path;
+      const alias = path.join(path.dirname(fixture.config.worktreesDir), "worktree-alias");
+      yield* fixture.fs.symlink(fixture.config.worktreesDir, alias);
+      const { keys } = yield* makeCheckoutLeaseKeys;
+      const [rollbackKey] = yield* keys([path.join(alias, "feature")]);
+      const cleanup = yield* fixture.service.runNow.pipe(Effect.forkChild);
+      yield* Deferred.await(fixture.measuring);
+      let rollbackEntered = false;
+      const rollback = yield* withWorkspaceLease(
+        rollbackKey!,
+        Effect.sync(() => {
+          rollbackEntered = true;
+        }),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      expect(rollbackEntered).toBe(false);
+      yield* Deferred.succeed(fixture.resume, undefined);
+      expect((yield* Fiber.join(cleanup)).counts.removed).toBe(1);
+      yield* Fiber.join(rollback);
+      expect(rollbackEntered).toBe(true);
+    }),
+  ),
+);
 
 const submoduleCleanupFixture = () =>
   Effect.gen(function* () {
@@ -1802,7 +1831,8 @@ const worktreeSetFixture = Effect.fn("StorageCleanupTest.worktreeSetFixture")(fu
   yield* fixture.command(secondaryRoot, ["init", "-b", "main"]);
   yield* fixture.command(secondaryRoot, ["config", "user.email", "cleanup@example.test"]);
   yield* fixture.command(secondaryRoot, ["config", "user.name", "Cleanup test"]);
-  yield* fixture.fs.writeFileString(`${secondaryRoot}/tracked.txt`, "original\n");
+  // NTFS stores tiny files in the MFT with zero data blocks. Give byte-total assertions a real allocation.
+  yield* fixture.fs.writeFileString(`${secondaryRoot}/tracked.txt`, "original\n".repeat(1024));
   yield* fixture.command(secondaryRoot, ["add", "."]);
   yield* fixture.command(secondaryRoot, ["commit", "-m", "initial"]);
   const secondary = `${fixture.config.worktreesDir}/secondary`;
