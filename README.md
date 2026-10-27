@@ -1,143 +1,150 @@
 # T3 Code
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+An open-source workspace for running coding agents across projects, computers, and devices.
+Use your existing provider accounts from the desktop app, a browser, or the mobile app.
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, Kimi Code, OpenCode, and Google Antigravity. If they're set up on your computer, T3 Code can control them.
+This is a development fork of [T3 Code](https://github.com/pingdotgg/t3code), maintained on
+`dev`. It combines upstream's clients and integrations with multi-folder workspaces,
+coordinated worktrees, task controls, and Wayfinder dependency maps.
 
-## "Wait, what are you selling me?"
+T3 Code uses the agents' existing runtimes. It organizes their work; the selected provider
+still determines model capabilities, supported permission modes, usage limits, and billing. See the
+[provider guides](./docs/README.md#using-t3-code) for setup and differences.
 
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
+## Why use this fork?
 
-We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
+- **Coordinate work across providers.** Choose a provider, model, and supported reasoning or
+  speed setting for each task. Run implementation, tests, and independent reviews in separate
+  conversations, with results returned to the parent thread.
+- **Treat related repositories as one workspace.** Import a VS Code workspace file, give
+  threads a fixed set of folders, and create coordinated worktrees across their Git repositories.
+  Open terminals, inspect changes, and run source-control actions for the relevant folders.
+- **Make larger efforts easier to follow.** Wayfinder maps show tickets, dependencies,
+  blockers, and work ready to start. Open a ticket as a task without copying its details by hand.
+- **Continue work across devices.** Run agents on your computer or server and use the same
+  projects from desktop, web, or mobile. The host must remain running and reachable.
+- **Keep control of the application.** The code is MIT-licensed. The local desktop build uses
+  its own installation and state directory, and you choose when to rebuild and update it.
 
-## Installation
+## What you can do
 
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build, Kimi, OpenCode, and Antigravity. Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
-> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
-> - Kimi: install the current [Kimi Code CLI](https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html) and run `kimi login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-> - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
+| Workflow                  | Capabilities                                                                                                                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Choose an agent           | Codex, Claude Code, Cursor, Grok Build, Kimi, OpenCode, Antigravity, fx, Pi, Muse Code, and supported ACP agents; provider instances and project defaults.                      |
+| Manage ongoing work       | Parallel tasks, visible child-agent progress, queued or steered follow-ups, supported goals, pinned and snoozed threads, notifications, and resuming after usage limits.        |
+| Work across repositories  | Multi-folder projects, per-repository worktrees, folder-specific terminals, combined changes, and batch commit, push, and pull-request actions.                                 |
+| Keep useful context       | Search conversations, attach files or threads, quote replies, save prompt drafts, fork conversations, and hand selected history to another provider.                            |
+| Review and ship           | File and branch diffs, supported checkpoint restore, pull-request reviews and checks, and integrations for GitHub, GitLab, Forgejo/Gitea, Bitbucket, Azure DevOps, and GitCafe. |
+| Inspect files and results | File editing; previews for documents, PDFs, notebooks, archives, databases, diagrams, images, audio, and video; interactive HTML replies and supported MCP apps.                |
+| Inspect running software  | A shared browser, screenshot and annotation tools, desktop SnapShots, and supported simulator or device access. Platform prerequisites apply.                                   |
+| Automate and collaborate  | Recurring and webhook-triggered tasks, external-agent access through MCP, and guest links with approval of guest messages before they run.                                      |
+| Personalize and monitor   | Themes, fonts, keyboard shortcuts, project overrides, usage and limit visibility, estimated API-equivalent costs, and storage cleanup.                                          |
 
-### Command line
+Capabilities vary by provider and client. Wayfinder maps are available on web and desktop.
+Guest links and mobile push notifications require T3 Connect. Provider handoffs transfer selected
+conversation context, not the outgoing agent's full internal state or attachments. Usage estimates
+are not your subscription bill.
 
-```bash
-curl -fsSL https://t3.codes/install.sh | sh
-```
+Start with [working with threads](./docs/user/thread-sidebar.md),
+[multi-folder projects](./docs/user/project-settings.md#vs-code-workspace-files),
+[Wayfinder maps](./docs/user/wayfinder-maps.md), or the [full user guide](./docs/README.md#using-t3-code).
 
-On Windows, in PowerShell:
+## If you only use Claude
 
-```powershell
-irm https://t3.codes/install.ps1 | iex
-```
+You can use this fork with one Claude account. Its value is organizing work around Claude:
+separate implementation and review tasks, several related repositories, visual dependency maps,
+and conversations, terminals, files, and pull requests in one workspace.
 
-Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer release, and `t3 --help` has the full reference.
+For one repository and one conversation at a time, native Claude Code may be simpler. If you
+coordinate larger efforts or want to customize the workspace, this fork gives you more ways to
+manage that work. Parallel tasks still consume the same account's allowance; T3 Code does not
+make Claude inherently smarter or remove its limits.
 
-To try it once without installing, run `npx t3@latest` instead.
+## Choosing between T3 Code and a native client
 
-### Desktop app
+Native clients offer overlapping capabilities: [Codex has worktrees and scheduled work](https://learn.chatgpt.com/docs/environments/git-worktrees),
+[Claude Code has parallel sessions, scheduling, and remote access](https://code.claude.com/docs/en/overview),
+and [Cursor has an Agents Window alongside its editor](https://cursor.com/docs/agent/agents-window).
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+Choose this fork for a shared workflow across agent runtimes, multi-repository tasks, and its
+workspace customizations. Choose a native client when you prefer its direct integration and
+access to newly released features. Cursor remains useful alongside T3 Code when you want a full
+IDE for manual editing and extensions.
 
-#### Windows (`winget`)
+This development fork needs maintenance and can lag new provider features. Your agents run on
+the host you choose, but their requests still go to the configured provider. A local installation
+does not imply offline inference.
 
-```bash
-winget install T3Tools.T3Code
-```
+## Build this fork
 
-#### Windows (`scoop`)
-
-```bash
-scoop install extras/t3code
-```
-
-#### macOS (Homebrew)
-
-```bash
-brew install --cask t3-code
-```
-
-#### Debian, Ubuntu (`.deb`)
-
-Download the `.deb` from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), then:
-
-```bash
-sudo apt install ./T3-Code-*.deb
-```
-
-#### Arch Linux (AUR)
-
-Stable:
-
-```bash
-yay -S t3code-bin
-```
-
-Nightly:
-
-```bash
-yay -S t3code-nightly-bin
-```
-
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
-
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are (mostly) not accepting contributions yet. Small fixes may be considered. Big features will not be.
-
-## Documentation
-
-Full docs live in [docs/](./docs). There's no docs site yet.
-
-- [FAQ](./docs/user/faq.md)
-- [Install and first run](./docs/user/install.md)
-- [Permission modes](./docs/user/permission-modes.md)
-- [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Project settings](./docs/user/project-settings.md)
-- [Appearance preferences](./docs/user/appearance.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Connect Claude Code, Codex, ChatGPT and other agents over MCP](./docs/user/outside-agents.md)
-- [Keeping app and server in sync](./docs/user/updating.md)
-- [Source control integrations](./docs/user/source-control.md)
-- Provider guides: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md) · [Kimi](./docs/user/kimi.md) · [OpenCode](./docs/user/providers-opencode.md) · [Antigravity](./docs/user/providers-antigravity.md)
-- [Run T3 Code as a background service](./docs/user/background-service.md)
-
-Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
-
-## If you REALLY want to contribute still.... read this first
+Official T3 Code installers and package-manager releases install upstream, not this fork.
+To use the features described here, build the `dev` branch.
 
 ### Install `vp`
 
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
+Install the [global Vite+ CLI](https://viteplus.dev/guide/) first:
 
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
-```
-
-#### Windows
-
-```bash
+```powershell
+# Windows PowerShell
 irm https://vite.plus/ps1 | iex
 ```
 
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
-
-```bash
-vp i
+```sh
+# macOS or Linux
+curl -fsSL https://vite.plus | bash
 ```
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
+### Windows x64
 
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
+Open a new terminal after installation. Vite+ manages the repository's Node.js and package-manager
+versions. Install the platform's [desktop build prerequisites](./docs/operations/development.md#desktop-artifacts)
+before building. Windows needs Rust, Python 3, and Visual Studio C++ Build Tools with the Windows
+SDK and x64 Spectre libraries.
 
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+For a Windows x64 local installation:
+
+```powershell
+git clone --branch dev --single-branch https://github.com/PauloDaniel1993/t3code.git t3code-dev
+Set-Location t3code-dev
+
+rustup target add x86_64-pc-windows-msvc
+vp env install
+vp install --frozen-lockfile
+vp run --filter @t3tools/desktop ensure:electron
+
+vp node scripts/install-desktop-build.ts `
+  --install-dir "$env:LOCALAPPDATA\T3 v2.local" `
+  --state-dir "$env:USERPROFILE\.t3.v2" `
+  --platform win --arch x64 `
+  --launch
+```
+
+The installer builds, packages, and launches **T3 v2.local**. It keeps its state in `.t3.v2`
+and disables automatic app updates. To update an existing checkout, close T3 v2.local,
+run `git pull --ff-only` and `vp install --frozen-lockfile`, then repeat the installer command.
+Use `--build-version` to give a build a custom version label.
+
+Other platforms and development-server workflows are covered in the
+[development runbook](./docs/operations/development.md). Install and authenticate at least one
+agent on the host before starting a conversation; see [provider setup](./docs/user/install.md#requirements).
+
+## Use an upstream release
+
+If you want the official distribution, use the [upstream installation guide](./docs/user/install.md)
+or [upstream desktop releases](https://github.com/pingdotgg/t3code/releases).
+The official [web app](https://app.t3.codes) and mobile apps
+([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824),
+[Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)) connect to a compatible
+T3 Code server. Fork-specific client changes require a matching client build.
+
+## Documentation and contributions
+
+- [User guides and provider setup](./docs/README.md#using-t3-code)
+- [Remote access](./docs/user/remote-access.md) and [guest links](./docs/user/guest-links.md)
+- [Source control](./docs/user/source-control.md) and [permission modes](./docs/user/permission-modes.md)
+- [Development and verification](./docs/operations/development.md)
+- [Contribution policy](./CONTRIBUTING.md)
+
+This fork builds on the work of the [upstream T3 Code maintainers](https://github.com/pingdotgg/t3code).
+Read the contribution policy before preparing an upstream submission; fork-specific features
+are not automatically part of upstream's supported scope.
