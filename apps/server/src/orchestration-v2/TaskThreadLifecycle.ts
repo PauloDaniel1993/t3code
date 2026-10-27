@@ -3,6 +3,7 @@ import {
   isProviderNativeSubagentThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ServerCommand,
+  type RunId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -13,6 +14,7 @@ import type { ProjectionStoreV2, ProjectionStoreV2Error } from "./ProjectionStor
 type Plan = {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   readonly effects: ReadonlyArray<PendingOrchestrationEffectV2>;
+  readonly updateDelegatedCompletionOnlyRunId?: RunId;
   readonly cancelUnsettledEffects?: {
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
     readonly reason: string;
@@ -46,9 +48,7 @@ export function withTaskThreadLifecycle<E, R>(
     for (const id of childIds) {
       const thread = yield* projectionStore
         .getThread(id)
-        .pipe(
-          Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(undefined) }),
-        );
+        .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.void }));
       if (
         thread !== undefined &&
         thread.deletedAt === null &&

@@ -1,3 +1,4 @@
+// oxlint-disable-next-line t3code/require-disposable-render -- This headless compiler regression uses react-test-renderer's hook-order checks.
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
@@ -21,7 +22,7 @@ const detail = vi.hoisted(() => ({ subagents: [] as OrchestrationV2Subagent[] })
 vi.mock("../state/threads", async () => {
   const { Atom } = await import("effect/reactivity");
   const atom = Atom.make(() => ({ projection: { runs: [], subagents: detail.subagents } }));
-  return { environmentThreadDetails: { threadAtom: () => atom } };
+  return { environmentThreadDetails: { threadAtom: () => atom }, useThreadFamily: () => {} };
 });
 vi.mock("./SidebarTaskPeek", () => ({
   closeSidebarTaskPeek: () => {},
@@ -98,6 +99,7 @@ const titles = (tree: ReactTestRenderer) =>
 
 let tree: ReactTestRenderer | undefined;
 beforeEach(() => {
+  // oxlint-disable-next-line t3code/require-disposable-render -- React's headless renderer requires its act flag for this compiler harness.
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers();
   useUiStateStore.setState({ sidebarTaskGroupsExpandedById: {}, threadLastVisitedAtById: {} });

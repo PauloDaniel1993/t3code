@@ -53,7 +53,7 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const idAllocator = yield* IdAllocator.IdAllocatorV2;
+          yield* IdAllocator.IdAllocatorV2;
           const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-folders-live-" });
           const primary = path.join(root, "primary");
           const extra = path.join(root, "extra folder");
@@ -72,12 +72,12 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
             cwd: primary,
             additionalDirectories: [extra],
           });
-          const config = yield* ServerConfig.ServerConfig.pipe(
+          yield* ServerConfig.ServerConfig.pipe(
             Effect.provide(
               ServerConfig.layerTest(primary, { prefix: "t3-opencode-folders-config-" }),
             ),
           );
-          const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
+          yield* OpenCodeRuntime.OpenCodeRuntime;
           const settings = yield* decodeSettings(
             process.env.T3_OPENCODE_LIVE_BINARY
               ? { binaryPath: process.env.T3_OPENCODE_LIVE_BINARY }

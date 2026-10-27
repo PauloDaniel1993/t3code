@@ -103,13 +103,13 @@ export function parseLatestKimiAcpFailure(text: string): KimiAcpFailure | undefi
   return undefined;
 }
 
-function readFileBestEffort(
-  fileSystem: FileSystem.FileSystem,
-  filePath: string,
-  offset = 0,
-  maxBytes = MAX_INDEX_READ_BYTES,
-): Effect.Effect<string | undefined> {
-  return Effect.gen(function* () {
+const readFileBestEffort = Effect.fn("KimiAcpDiagnostics.readFileBestEffort")(
+  function* (
+    fileSystem: FileSystem.FileSystem,
+    filePath: string,
+    offset = 0,
+    maxBytes = MAX_INDEX_READ_BYTES,
+  ) {
     const stat = yield* fileSystem.stat(filePath);
     const size = Number(stat.size);
     const start = Math.max(size < offset ? 0 : offset, size - maxBytes);
@@ -118,8 +118,9 @@ function readFileBestEffort(
       .pipe(Stream.decodeText(), Stream.mkString);
     // A bounded tail can begin inside a UTF-8 character or JSON record.
     return start > offset ? text.slice(text.indexOf("\n") + 1) : text;
-  }).pipe(Effect.catch(() => Effect.undefined));
-}
+  },
+  Effect.catch(() => Effect.undefined),
+);
 
 function expandHomePath(input: string, homeDirectory: string, path: Path.Path): string {
   if (input === "~") {

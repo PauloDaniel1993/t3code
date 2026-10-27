@@ -55,7 +55,10 @@ it("creates a Linux launcher without overwriting the packaged executable", async
     );
     assert.notEqual(launcher, executable);
     assert.equal(await NodeFSP.readFile(executable, "utf8"), "packaged executable fixture");
-    assert.isNotEmpty(await NodeFSP.readFile(launcher, "utf8"));
+    assert.include(
+      await NodeFSP.readFile(launcher, "utf8"),
+      'export T3CODE_DESKTOP_LAUNCHER_PATH="$SCRIPT_DIR/t3code-v2-local-launcher"',
+    );
   } finally {
     await NodeFSP.rm(root, { recursive: true, force: true });
   }

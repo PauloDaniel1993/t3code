@@ -15,7 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { EffectOutboxV2 } from "../EffectOutbox.ts";
 
 export const ATTACHMENT_REFERENCE_TABLE = "fork_v2_attachment_references";
-export const ATTACHMENT_REFERENCE_VERSION = 3;
+export const ATTACHMENT_REFERENCE_VERSION = 4;
 export const ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE = 64;
 export const ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS = 25;
 const stateTable = "fork_v2_attachment_reference_state";
@@ -44,6 +44,18 @@ const sources = [
     payload: (row: string) => `${row}.attachments_json`,
     changed:
       "NEW.attachments_json IS NOT OLD.attachments_json OR NEW.thread_id IS NOT OLD.thread_id OR NEW.message_id IS NOT OLD.message_id",
+  },
+  {
+    name: "guest",
+    table: "orchestration_v2_projection_threads",
+    key: "thread_id",
+    payload: (
+      row: string,
+    ) => `(SELECT json_group_array(json_extract(message.value, '$.attachments'))
+      FROM json_each(${row}.payload_json, '$.guestShare.messages') AS message
+      WHERE json_extract(message.value, '$.status') IN ('pending', 'sent'))`,
+    changed:
+      "CASE WHEN json_valid(NEW.payload_json) AND json_valid(OLD.payload_json) THEN json_extract(NEW.payload_json, '$.guestShare') IS NOT json_extract(OLD.payload_json, '$.guestShare') OR NEW.thread_id IS NOT OLD.thread_id ELSE 1 END",
   },
 ];
 
@@ -213,7 +225,7 @@ export const isCompleteAttachmentReferenceIndex = Effect.fnUntraced(function* ()
 /** Source lookups during rebuilding only; never use them to authorize deletion. */
 export const attachmentSourceRows = Effect.fnUntraced(function* (
   threadId?: string,
-  row?: { source: "message" | "item"; id: string },
+  row?: { source: "message" | "item" | "guest"; id: string },
   remaining?: RebuildState,
 ) {
   const sql = yield* SqlClient.SqlClient;

@@ -62,6 +62,7 @@ vi.mock("../state/entities", () => ({
     runtime: null,
     latestRun: null,
     lineage: { rootThreadId: "thread", parentThreadId: null, relationshipToParent: null },
+    source: { creationSource: "user" },
   }),
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
 }));
@@ -157,6 +158,7 @@ const createMenu = () =>
     threadRef: target,
     project: { workspaceRoot: "/project" },
     onStartRename: () => recordEffect("rename"),
+    canShareWithGuest: false,
   });
 
 beforeEach(() => {

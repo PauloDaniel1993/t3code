@@ -19,7 +19,7 @@ describe("openFileOutsideT3", () => {
     const createAssetUrl = vi.fn(async () =>
       AsyncResult.success({
         relativeUrl: "/api/assets/signed/quarterly-report.pdf",
-        expiresAt: Date.now() + 60_000,
+        expiresAt: 1_800_000_060_000,
       }),
     );
     const openExternal = vi.fn(async () => undefined);
@@ -54,7 +54,7 @@ describe("openFileOutsideT3", () => {
       filePath: "output/report.pdf",
       httpBaseUrl: "http://localhost:13785",
       createAssetUrl: async () =>
-        AsyncResult.success({ relativeUrl: "http://[", expiresAt: Date.now() + 60_000 }),
+        AsyncResult.success({ relativeUrl: "http://[", expiresAt: 1_800_000_060_000 }),
       openExternal: vi.fn(async () => undefined),
     });
 
@@ -72,7 +72,7 @@ describe("openFileOutsideT3", () => {
       createAssetUrl: async () =>
         AsyncResult.success({
           relativeUrl: "/api/assets/signed/report.pdf",
-          expiresAt: Date.now() + 60_000,
+          expiresAt: 1_800_000_060_000,
         }),
       openExternal: vi.fn(async () => {
         throw new Error("launch failed");

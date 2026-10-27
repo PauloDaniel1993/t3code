@@ -1,7 +1,7 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
 import { projectScriptCwd } from "@t3tools/shared/projectScripts";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 interface TerminalLocationLike {
   readonly cwd: string;
@@ -94,10 +94,10 @@ export function resolveTerminalOpenLocation(input: {
   };
 }
 
+/** The first location resolved for a terminal target stays fixed for that target. */
 export function useInitialTerminalLaunchLocation(input: {
-  readonly targetKey: string | null;
+  readonly targetKey: string;
   readonly pendingLaunch: PendingTerminalLaunch | null;
-  readonly hasResolvedPendingLaunch: boolean;
   readonly isAuthenticated: boolean;
   readonly canRead: boolean;
   readonly canOperate: boolean;
@@ -105,12 +105,7 @@ export function useInitialTerminalLaunchLocation(input: {
   readonly location: Parameters<typeof resolveTerminalOpenLocation>[0] | null;
 }) {
   let candidate: TerminalLocationLike | null = null;
-  if (
-    input.location !== null &&
-    input.hasResolvedPendingLaunch &&
-    input.isAuthenticated &&
-    (input.canRead || input.canOperate)
-  ) {
+  if (input.location !== null && input.isAuthenticated && (input.canRead || input.canOperate)) {
     if (input.pendingLaunch !== null) {
       candidate = {
         cwd: input.pendingLaunch.cwd,
@@ -122,11 +117,9 @@ export function useInitialTerminalLaunchLocation(input: {
     }
   }
   const [entry, setEntry] = useState(() => ({ key: input.targetKey, location: candidate }));
-  useEffect(() => {
-    if (entry.key === input.targetKey && (entry.location !== null || candidate === null)) {
-      return;
-    }
+  if (entry.key !== input.targetKey || (entry.location === null && candidate !== null)) {
     setEntry({ key: input.targetKey, location: candidate });
-  }, [candidate, entry.key, entry.location, input.targetKey]);
-  return entry.key === input.targetKey ? entry.location : null;
+    return candidate;
+  }
+  return entry.location;
 }

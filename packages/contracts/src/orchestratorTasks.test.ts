@@ -12,6 +12,9 @@ import {
 } from "./orchestratorTasks.ts";
 
 const decode = Schema.decodeUnknownSync(OrchestratorMcpTaskListInput);
+const decodeTaskModelsInput = Schema.decodeUnknownSync(ForkTaskModelsInput);
+const decodeTaskCreate = Schema.decodeSync(ForkTaskCreateInput);
+const decodeDelegateTask = Schema.decodeSync(OrchestratorMcpDelegateTaskInput);
 
 describe("delegated task model catalog", () => {
   it("accepts existing requests and optional model search", () => {
@@ -24,7 +27,7 @@ describe("delegated task model catalog", () => {
   });
 
   it.each(["", "   ", "x".repeat(201), 123])("rejects invalid model search %s", (search) => {
-    expect(() => Schema.decodeUnknownSync(ForkTaskModelsInput)({ search })).toThrow();
+    expect(() => decodeTaskModelsInput({ search })).toThrow();
   });
 
   it("accepts legacy results and preserves optional omission counts", () => {
@@ -95,23 +98,14 @@ describe("delegated task list input", () => {
 
 it.each([121, 512])("allows a %s-character task title in both delegation tools", (length) => {
   const title = "x".repeat(length);
-  expect(
-    Schema.decodeUnknownSync(ForkTaskCreateInput)({ title, prompt: "Review", context: "none" })
-      .title,
-  ).toBe(title);
-  expect(
-    Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput)({ title, task: "Review" }).title,
-  ).toBe(title);
+  expect(decodeTaskCreate({ title, prompt: "Review", context: "none" }).title).toBe(title);
+  expect(decodeDelegateTask({ title, task: "Review" }).title).toBe(title);
 });
 
 it("rejects task titles over 512 characters in both delegation tools", () => {
   const title = "x".repeat(513);
-  expect(() =>
-    Schema.decodeUnknownSync(ForkTaskCreateInput)({ title, prompt: "Review", context: "none" }),
-  ).toThrow();
-  expect(() =>
-    Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput)({ title, task: "Review" }),
-  ).toThrow();
+  expect(() => decodeTaskCreate({ title, prompt: "Review", context: "none" })).toThrow();
+  expect(() => decodeDelegateTask({ title, task: "Review" })).toThrow();
 });
 
 it("represents an unreadable task explicitly in list results", () => {

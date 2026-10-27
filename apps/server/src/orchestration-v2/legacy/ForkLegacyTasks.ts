@@ -37,13 +37,8 @@ const LegacyTask = Schema.Struct({
 });
 const decodeTask = Schema.decodeUnknownOption(Schema.fromJsonString(LegacyTask));
 
-/**
- * Native subagent/node/timeline records, with no invented run or pending delivery.
- * task_summary_json is a parent aggregate; derive each task from task_json instead
- * of assigning the parent's latest delivery time to every child. A delivered
- * task's own delivery time becomes `deliveredAt`, the watermark V2 stamps when a
- * provider accepts a result; the sidebar compares it with the parent's visits.
- */
+// Derive each native task from task_json, not the parent aggregate's latest delivery time.
+// A task's own delivery timestamp becomes deliveredAt; do not invent a run or pending delivery.
 export const forkLegacyTaskEvents = Effect.fn("forkLegacyTaskEvents")(function* (
   child: OrchestrationV2AppThread,
   parent: OrchestrationV2AppThread,

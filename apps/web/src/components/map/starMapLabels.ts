@@ -1,15 +1,5 @@
-/**
- * Deterministic screen-space label placement for the star map. Text is never
- * measured (that would need a canvas); widths are estimated from a fixed
- * per-character width so placement is pure, reproducible, and testable in
- * Node. Labels sit at a fixed offset right of their star; collisions are
- * resolved greedily by semantic priority, then ascending ticket order. This
- * keeps the selected ticket, its neighbors, and frontier work readable before
- * settled background tickets while remaining deterministic.
- *
- * Below `STAR_MAP_NARROW_LABEL_THRESHOLD` every label degrades to its ticket
- * number — the panel that narrow has no room for titles.
- */
+// Estimate text widths without a canvas so label placement stays deterministic.
+// Selected tickets, neighbors, and frontier work win collisions; narrow panels show ticket numbers.
 
 export const STAR_MAP_NARROW_LABEL_THRESHOLD = 300;
 

@@ -97,12 +97,32 @@ vi.mock("../state/environments", () => ({
 }));
 const identities = [{ environmentId: "local", label: "Local" }];
 const machines = new Map();
-vi.mock("../state/threads", () => ({ threadEnvironment: {}, environmentThreadDetails: {} }));
+vi.mock("../state/threads", () => ({
+  threadEnvironment: {},
+  environmentThreadDetails: {},
+  useThreadFamily: () => {},
+}));
 vi.mock("../state/vcs", () => ({ vcsEnvironment: {} }));
 vi.mock("../state/query", () => ({
   useEnvironmentQuery: () => ({ data: null, dataUpdatedAt: 0 }),
 }));
-vi.mock("../state/queries", () => ({ useThreadSearch: () => ({ matches: [] }) }));
+vi.mock("../state/queries", () => ({
+  useThreadSearch: (_environments: unknown, query: string) => ({
+    matches: [],
+    query,
+    isPending: false,
+  }),
+}));
+vi.mock("../state/olderSettledShelf", () => ({
+  useOlderSettledShelf: () => ({
+    isListed: () => true,
+    unloadedCount: () => 0,
+    loading: false,
+    failed: false,
+    retry: () => {},
+  }),
+  useOlderSettledShelfGrowth: () => {},
+}));
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => noop }));
 vi.mock("../state/use-orchestration-command", () => ({ useOrchestrationCommand: () => noop }));
 const noop = () => {};
@@ -171,7 +191,25 @@ vi.mock("@tanstack/react-router", () => ({
   },
   useRouter: () => router,
 }));
-const router = { navigate: sidebarHarness.navigate, state: { location: { pathname: "/" } } };
+const router = {
+  navigate: sidebarHarness.navigate,
+  state: {
+    location: { pathname: "/" },
+    get matches() {
+      const target = sidebarHarness.routeTarget;
+      return [
+        {
+          params:
+            target?.kind === "server"
+              ? target.threadRef
+              : target?.kind === "draft"
+                ? { draftId: target.draftId }
+                : {},
+        },
+      ];
+    },
+  },
+};
 vi.mock("../localApi", () => ({
   readLocalApi: () => ({
     contextMenu: { show: sidebarHarness.menu },
@@ -210,6 +248,10 @@ vi.mock("./ThreadStatusIndicators", () => ({
 vi.mock("./Sidebar.motion", () => ({
   createSidebarListMotion: () => ({ dispose: noop, update: noop, release: noop, suspend: noop }),
 }));
+vi.mock("./chat/guestShareAvailability", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { canShareWithGuestAtom: () => Atom.make(false) };
+});
 vi.mock("./chat/ThreadContextDragGhost", () => ({ ThreadContextDragGhost: () => null }));
 vi.mock("./chat/ProviderInstanceIcon", () => ({ ProviderInstanceIcon: () => null }));
 vi.mock("./ProjectFavicon", () => ({ ProjectFavicon: () => null }));

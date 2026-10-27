@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { AgentOptions, RunResult } from "@cursor/sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -68,35 +69,42 @@ describe("Cursor workspace folders", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it("maps directories without loosening sandbox, approval or plan controls", () => {
-    for (const runtimeMode of ["full-access", "auto-accept-edits", "approval-required"] as const) {
-      for (const interactionMode of ["default", "plan"] as const) {
-        for (const sandboxPolicy of [undefined, { type: "readOnly" }] as const) {
-          const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-            additionalDirectories: [],
-            cwd: "/workspace/primary",
-            runtimeMode,
-            interactionMode,
-            ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
-          });
-          const options = (additionalDirectories: string[]) =>
-            makeCursorAgentOptions({
-              platform: process.platform,
-              threadId: ThreadId.make("cursor-workspace-policy"),
-              mcpSession: undefined,
-              modelSelection,
-              runtimePolicy: { ...runtimePolicy, additionalDirectories },
+  it.effect("maps directories without loosening sandbox, approval or plan controls", () =>
+    Effect.gen(function* () {
+      const platform = yield* HostProcess.Platform;
+      for (const runtimeMode of [
+        "full-access",
+        "auto-accept-edits",
+        "approval-required",
+      ] as const) {
+        for (const interactionMode of ["default", "plan"] as const) {
+          for (const sandboxPolicy of [undefined, { type: "readOnly" }] as const) {
+            const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+              additionalDirectories: [],
+              cwd: "/workspace/primary",
+              runtimeMode,
+              interactionMode,
+              ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
             });
-          const single = options([]);
-          const multi = options(["/workspace/second", "/workspace/third"]);
-          assert.deepEqual(multi.local?.dirs, ["/workspace/second", "/workspace/third"]);
-          assert.deepEqual({ ...multi.local, dirs: [] }, single.local);
-          assert.equal(multi.mode, single.mode);
+            const options = (additionalDirectories: string[]) =>
+              makeCursorAgentOptions({
+                platform,
+                threadId: ThreadId.make("cursor-workspace-policy"),
+                mcpSession: undefined,
+                modelSelection,
+                runtimePolicy: { ...runtimePolicy, additionalDirectories },
+              });
+            const single = options([]);
+            const multi = options(["/workspace/second", "/workspace/third"]);
+            assert.deepEqual(multi.local?.dirs, ["/workspace/second", "/workspace/third"]);
+            assert.deepEqual({ ...multi.local, dirs: [] }, single.local);
+            assert.equal(multi.mode, single.mode);
+          }
         }
       }
-    }
-    assert.equal(CursorProviderCapabilitiesV2.runtimePolicy.workspaceFolderAccess, "unverified");
-  });
+      assert.equal(CursorProviderCapabilitiesV2.runtimePolicy.workspaceFolderAccess, "unverified");
+    }),
+  );
 
   it.effect("reuses equal scopes, replaces and clears changed scopes after the turn settles", () =>
     Effect.gen(function* () {

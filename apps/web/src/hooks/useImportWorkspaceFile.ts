@@ -7,7 +7,6 @@ import {
 import { projectEnvironment } from "../state/projects";
 import { useAtomCommand } from "../state/use-atom-command";
 import { newProjectId } from "../lib/utils";
-import { useCallback } from "react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { listProjectFolderOverlaps } from "@t3tools/client-runtime/operations/projects";
 import { readProjects, waitForProject } from "../state/entities";
@@ -27,47 +26,44 @@ export function useImportWorkspaceFile() {
   const importWorkspaceFile = useAtomCommand(projectEnvironment.importWorkspaceFile, {
     reportFailure: false,
   });
-  return useCallback(
-    async (environmentId: EnvironmentId, workspaceFilePath: string) => {
-      let projectId = newProjectId();
-      const result = await importWorkspaceFile({
-        environmentId,
-        input: { projectId, workspaceFilePath },
-      });
-      if (result._tag === "Failure") {
-        const error = squashAtomCommandFailure(result);
-        if (
-          !isAtomCommandInterrupted(result) &&
-          isProjectMutationError(error) &&
-          error.diagnostic?.code === "conflict" &&
-          error.conflictingProjectId
-        ) {
-          projectId = error.conflictingProjectId;
-        } else {
-          throw error;
-        }
+  return async (environmentId: EnvironmentId, workspaceFilePath: string) => {
+    let projectId = newProjectId();
+    const result = await importWorkspaceFile({
+      environmentId,
+      input: { projectId, workspaceFilePath },
+    });
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      if (
+        !isAtomCommandInterrupted(result) &&
+        isProjectMutationError(error) &&
+        error.diagnostic?.code === "conflict" &&
+        error.conflictingProjectId
+      ) {
+        projectId = error.conflictingProjectId;
+      } else {
+        throw error;
       }
-      const project = await waitForProject(scopeProjectRef(environmentId, projectId)).catch(() => {
-        toastManager.add({
-          type: "info",
-          title: "The project is ready on the environment",
-          description: "It will appear in the sidebar once this client catches up.",
-        });
-        return null;
+    }
+    const project = await waitForProject(scopeProjectRef(environmentId, projectId)).catch(() => {
+      toastManager.add({
+        type: "info",
+        title: "The project is ready on the environment",
+        description: "It will appear in the sidebar once this client catches up.",
       });
-      if (project === null) return null;
-      const others = readProjects().filter(
-        (candidate) => candidate.environmentId === environmentId && candidate.id !== projectId,
-      );
-      for (const overlapping of listProjectFolderOverlaps(others, project)) {
-        toastManager.add({
-          type: "info",
-          title: `This folder is also used by ${overlapping.projects.map((candidate) => candidate.title).join(", ")}`,
-          description: overlapping.path,
-        });
-      }
-      return projectId;
-    },
-    [importWorkspaceFile],
-  );
+      return null;
+    });
+    if (project === null) return null;
+    const others = readProjects().filter(
+      (candidate) => candidate.environmentId === environmentId && candidate.id !== projectId,
+    );
+    for (const overlapping of listProjectFolderOverlaps(others, project)) {
+      toastManager.add({
+        type: "info",
+        title: `This folder is also used by ${overlapping.projects.map((candidate) => candidate.title).join(", ")}`,
+        description: overlapping.path,
+      });
+    }
+    return projectId;
+  };
 }

@@ -1,7 +1,7 @@
 import { Spinner } from "~/components/ui/spinner";
 import { AuthFilesystemReadScope, type ProjectContentMatch } from "@t3tools/contracts";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { useActiveProjectTarget, type ActiveProjectTarget } from "~/hooks/useActiveProjectTarget";
 import { useRenderedAppearance, useTheme } from "~/hooks/useTheme";
@@ -23,10 +23,7 @@ interface ProjectContentSearchDialogProps {
   readonly onOpenChange: (open: boolean) => void;
 }
 
-/**
- * Result rows are syntax highlighted, so mounting all 500 possible rows at once
- * stalls the UI.
- */
+/** Syntax-highlighting all 500 result rows at once stalls the UI. */
 const VISIBLE_MATCH_WINDOW = 100;
 
 interface MatchGroup {
@@ -102,6 +99,10 @@ function EmptyContentSearchDialog() {
   );
 }
 
+const scrollSelectedRowIntoView = (row: HTMLElement | null) => {
+  row?.scrollIntoView({ block: "nearest" });
+};
+
 function OpenContentSearchDialog(props: {
   readonly onOpenChange: (open: boolean) => void;
   readonly target: ActiveProjectTarget;
@@ -111,13 +112,9 @@ function OpenContentSearchDialog(props: {
   const renderedAppearance = useRenderedAppearance();
   const [query, setQuery] = useState("");
   const [folderPath, setFolderPath] = useState<string>();
-  const scope = useMemo(
-    () =>
-      target.workspace
-        ? { ...target.workspace.scope, ...(folderPath ? { folderPath } : {}) }
-        : undefined,
-    [target.workspace, folderPath],
-  );
+  const scope = target.workspace
+    ? { ...target.workspace.scope, ...(folderPath ? { folderPath } : {}) }
+    : undefined;
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const [useRegex, setUseRegex] = useState(false);
@@ -136,25 +133,17 @@ function OpenContentSearchDialog(props: {
   });
   const canOpenMatches = search.canReadFiles && !search.isPending && search.error === null;
   const matches = search.matches;
-  // New results restart the selection and the rendered window.
   const [resultsFor, setResultsFor] = useState(matches);
   if (resultsFor !== matches) {
     setResultsFor(matches);
     setSelectedIndex(0);
     setVisibleCount(VISIBLE_MATCH_WINDOW);
   }
-  // Keyboard selection past the window grows it before the row has to scroll into view.
   if (selectedIndex >= visibleCount) {
     setVisibleCount(selectedIndex + VISIBLE_MATCH_WINDOW);
   }
   const visibleMatches = matches.slice(0, visibleCount);
   const groups = groupMatches(visibleMatches);
-
-  useEffect(() => {
-    document
-      .querySelector<HTMLElement>(`[data-content-search-result="${selectedIndex}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [selectedIndex]);
 
   const observeLoadMoreSentinel = (sentinel: HTMLElement | null) => {
     if (!sentinel) return;
@@ -311,7 +300,9 @@ function OpenContentSearchDialog(props: {
                     <button
                       type="button"
                       key={`${match.path}:${match.lineNumber}:${match.resultIndex}`}
-                      data-content-search-result={match.resultIndex}
+                      ref={
+                        match.resultIndex === selectedIndex ? scrollSelectedRowIntoView : undefined
+                      }
                       className={cn(
                         "flex h-7 w-full min-w-0 items-center gap-3 px-3 text-left font-mono text-xs hover:bg-accent/60 disabled:pointer-events-none",
                         match.resultIndex === selectedIndex && "bg-accent text-accent-foreground",

@@ -5,12 +5,8 @@ const isTerminal = (status: string | undefined) =>
   status === "cancelled";
 
 /**
- * Retains one latest update per tool; first, status changes, and terminals pass.
- * A later update of the same status supersedes the held one; a status change or
- * terminal releases it first, so a burst never hides the last progress shown
- * before the tool moved on.
- * State lasts for the owning turn: evicting pending values loses last states,
- * and evicting terminal tombstones lets stale updates reopen completed tools.
+ * Keep state for the whole turn: dropping pending values loses final progress,
+ * and dropping terminal tombstones lets stale updates reopen completed tools.
  */
 export function makeAcpToolProgressCoalescer<A>(
   options: {

@@ -134,7 +134,7 @@ function WorkspaceFolderGroup({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-        className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-2 text-left text-2xs font-medium text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-2 text-left text-2xs font-medium text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <ChevronRightIcon className={cn("size-3", open && "rotate-90")} />
         {title === "Git repositories" ? (

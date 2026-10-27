@@ -1,4 +1,5 @@
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { expect, it } from "@effect/vitest";
 import {
@@ -75,6 +76,7 @@ it.effect(
             Layer.mock(CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
             idLayer,
             McpAppModelContext.layerEmpty,
+            PreviewAgentActivity.layer,
             ServerSettings.layerTest(),
             Layer.mock(TurnItemPositionStoreV2)({
               allocate: () => Effect.die("Unused position allocation"),
@@ -111,7 +113,11 @@ it.effect(
         const service = yield* RunExecutionServiceV2;
         yield* service.startRootRun({
           commandId: CommandId.make("command"),
-          appThread: { id: threadId, projectId: "project" } as OrchestrationV2AppThread,
+          appThread: {
+            id: threadId,
+            projectId: "project",
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          } as OrchestrationV2AppThread,
           providerSessionId,
           session: {
             instanceId: providerInstanceId,

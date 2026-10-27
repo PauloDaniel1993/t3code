@@ -10,11 +10,11 @@ import { type OrchestrationV2Subagent, type ScopedThreadRef } from "@t3tools/con
 import { deriveSubagentElapsedMs, formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 import { newMessageId } from "../lib/utils";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { create } from "zustand";
 import { useThreadProjection, useThreadShell } from "../state/entities";
-import { threadEnvironment } from "../state/threads";
+import { threadEnvironment, useEnvironmentThread, useThreadFamily } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
   isAtomCommandInterrupted,
@@ -24,6 +24,7 @@ import { toastManager } from "./ui/toast";
 import { Button } from "./ui/button";
 import { SidebarTaskMark } from "./SidebarTaskMark";
 import { sidebarTaskLeaseClock } from "./sidebarTaskLeases";
+import { observeResize } from "../lib/observeResize";
 
 type Peek = {
   anchor: HTMLElement;
@@ -56,6 +57,7 @@ export function openSidebarTaskPeek(entry: Peek) {
 
 function usePeekClock(anchor: HTMLElement) {
   const [now, setNow] = useState(Date.now);
+  // oxlint-disable-next-line t3code/react-effect-budget -- The peek clock follows the lifetime of its external anchor.
   useEffect(() => {
     let cancel: (() => void) | undefined;
     const tick = () => {
@@ -74,6 +76,7 @@ function usePeekClock(anchor: HTMLElement) {
 /** Chrome switches immediately; a fleeting hover never hydrates a transcript. */
 function usePeekDetailDwell(key: string) {
   const [readyKey, setReadyKey] = useState<string | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Delay the external detail subscription until the hover settles.
   useEffect(() => sidebarTaskLeaseClock.after(150, () => setReadyKey(key)), [key]);
   return readyKey === key;
 }
@@ -84,6 +87,7 @@ export function SidebarTaskPeek({
   onOpenThread: (ref: ScopedThreadRef) => void;
 }) {
   const entry = usePeek((state) => state.entry);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Closing the external peek store cancels its outstanding timers.
   useEffect(() => closeSidebarTaskPeek, []);
   return entry === null ? null : entry.nativeAgent === undefined ? (
     <TaskPeek
@@ -122,6 +126,7 @@ function NativePeek({
   );
   const frame = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: 0, top: 0 });
+  // oxlint-disable-next-line t3code/react-effect-budget -- The portal follows anchor geometry before paint.
   useLayoutEffect(() => {
     const place = () => {
       if (!entry.anchor.isConnected) {
@@ -138,16 +143,16 @@ function NativePeek({
       });
     };
     place();
-    const resize = new ResizeObserver(place);
-    if (frame.current) resize.observe(frame.current);
+    const releaseResize = frame.current ? observeResize(frame.current, place) : undefined;
     window.addEventListener("scroll", place, true);
     window.addEventListener("resize", place);
     return () => {
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
-      resize.disconnect();
+      releaseResize?.();
     };
   }, [entry.anchor]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Global dismissal listeners belong to the open portal.
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeSidebarTaskPeek();
@@ -226,6 +231,16 @@ function TaskPeek({
   const ref = scopeThreadRef(entry.thread.environmentId, entry.thread.id);
   const shell = useThreadShell(ref) ?? entry.thread;
   const ready = usePeekDetailDwell(`${ref.environmentId}:${ref.threadId}`);
+  useThreadFamily(ready ? ref.environmentId : null, ready ? shell.lineage.rootThreadId : null);
+  const detailState = useEnvironmentThread(
+    ready ? ref.environmentId : null,
+    ready ? ref.threadId : null,
+  );
+  const deleted = detailState.status === "deleted";
+  // oxlint-disable-next-line t3code/react-effect-budget -- Confirmed server deletion retires the externally stored peek.
+  useEffect(() => {
+    if (deleted) closeSidebarTaskPeek();
+  }, [deleted]);
   const detail = useThreadProjection(ready ? ref : null)?.projection;
   const parentRef =
     shell.lineage.parentThreadId === null
@@ -244,6 +259,7 @@ function TaskPeek({
   const send = useAtomCommand(threadEnvironment.startTurn);
   const interrupt = useAtomCommand(threadEnvironment.interruptTurn);
   const cancelQueued = useAtomCommand(threadEnvironment.cancelQueuedRun);
+  // oxlint-disable-next-line t3code/react-effect-budget -- The portal follows anchor geometry before paint.
   useLayoutEffect(() => {
     const place = () => {
       if (!entry.anchor.isConnected) {
@@ -260,16 +276,16 @@ function TaskPeek({
       });
     };
     place();
-    const resize = new ResizeObserver(place);
-    if (frame.current) resize.observe(frame.current);
+    const releaseResize = frame.current ? observeResize(frame.current, place) : undefined;
     window.addEventListener("scroll", place, true);
     window.addEventListener("resize", place);
     return () => {
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
-      resize.disconnect();
+      releaseResize?.();
     };
   }, [entry.anchor]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Global dismissal listeners belong to the open portal.
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeSidebarTaskPeek();
@@ -300,7 +316,7 @@ function TaskPeek({
     )?.text ??
     task?.result ??
     "";
-  const reportFailure = useCallback((result: Awaited<ReturnType<typeof send>>) => {
+  const reportFailure = (result: Awaited<ReturnType<typeof send>>) => {
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       toastManager.add({
         type: "error",
@@ -308,7 +324,7 @@ function TaskPeek({
         description: String(squashAtomCommandFailure(result)),
       });
     }
-  }, []);
+  };
   const steer = async () => {
     if (busy || text.trim() === "" || blocked || native) return;
     setBusy(true);

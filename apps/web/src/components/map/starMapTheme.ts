@@ -1,19 +1,6 @@
 import type { StarMapNodeStatus } from "./starMapGraph";
 
-/**
- * Theme tokens for the star map canvas (design decision 15). The starfield is
- * intrinsically dark, so the panel scopes its own `[data-star-map]` token block
- * in `index.css` with light and dark variants — the same technique as
- * `[data-sidebar-version]`. The engine reads those tokens ONCE per theme change
- * through `resolveStarMapTheme`; nothing here is called per frame.
- *
- * Status hues bind to `--success` / `--warning` / `--info` / `--destructive`
- * so the active modular theme supplies the same semantic palette used by the
- * rest of the interface.
- *
- * Everything in this module is pure and DOM-free so it runs under the Node
- * test harness. The canvas element only ever sees pre-parsed colors.
- */
+// Resolve theme tokens outside the frame loop; drawing uses the cached palette.
 
 /** One parsed color: channels 0-255, alpha 0-1. */
 export interface StarMapColor {

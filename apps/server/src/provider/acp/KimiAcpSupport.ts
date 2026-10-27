@@ -170,18 +170,19 @@ export const makeKimiAcpRuntime = Effect.fn("makeKimiAcpRuntime")(function* (
     authMethodId: "login",
     authenticateEagerly: true,
     resumeMethod: "resume" as "load" | "resume",
-    onInitialized: (initialized: AcpSchema.InitializeResponse) =>
-      Effect.gen(function* () {
-        if (!isKimiAcpCompatible(initialized)) {
-          // initialize observers cannot fail; start validates compatibility below.
-          return;
-        }
-        // V2's startup reads this after initialize. Prefer resume, falling back
-        // to load for Kimi versions that advertise only loadSession.
-        runtimeOptions.resumeMethod =
-          initialized.agentCapabilities?.sessionCapabilities?.resume != null ? "resume" : "load";
-        yield* input.onInitialized?.(initialized) ?? Effect.void;
-      }),
+    onInitialized: Effect.fn("KimiAcpSupport.onInitialized")(function* (
+      initialized: AcpSchema.InitializeResponse,
+    ) {
+      if (!isKimiAcpCompatible(initialized)) {
+        // initialize observers cannot fail; start validates compatibility below.
+        return;
+      }
+      // V2's startup reads this after initialize. Prefer resume, falling back
+      // to load for Kimi versions that advertise only loadSession.
+      runtimeOptions.resumeMethod =
+        initialized.agentCapabilities?.sessionCapabilities?.resume != null ? "resume" : "load";
+      yield* input.onInitialized?.(initialized) ?? Effect.void;
+    }),
     transformSessionUpdate: (notification: AcpSchema.SessionNotification) => {
       const transformed = input.transformSessionUpdate?.(notification) ?? notification;
       return transformed.update.sessionUpdate === "config_option_update"
@@ -222,15 +223,14 @@ export const makeKimiAcpRuntime = Effect.fn("makeKimiAcpRuntime")(function* (
   });
   const policyRuntime = {
     getModeState,
-    setMode: (modeId: string) =>
-      Effect.gen(function* () {
-        const modeConfig = (yield* getConfigOptions).find(isKimiModeConfigOption);
-        if (modeConfig) {
-          yield* runtime.setConfigOption(modeConfig.id, modeId);
-          return {};
-        }
-        return yield* runtime.setMode(modeId);
-      }),
+    setMode: Effect.fn("KimiAcpSupport.setMode")(function* (modeId: string) {
+      const modeConfig = (yield* getConfigOptions).find(isKimiModeConfigOption);
+      if (modeConfig) {
+        yield* runtime.setConfigOption(modeConfig.id, modeId);
+        return {};
+      }
+      return yield* runtime.setMode(modeId);
+    }),
   };
   return {
     ...runtime,
@@ -254,30 +254,28 @@ export const makeKimiAcpRuntime = Effect.fn("makeKimiAcpRuntime")(function* (
       ),
     getConfigOptions,
     getModeState,
-    setModel: (model) =>
-      Effect.gen(function* () {
-        const option = (yield* getConfigOptions).find(isKimiModelConfigOption);
-        if (!option || !kimiConfigChoices(option).some((choice) => choice.value === model)) {
-          return yield* AcpErrors.AcpRequestError.invalidParams(
-            `Kimi model "${model}" is not available in this session.`,
-          );
-        }
-        yield* runtime.setConfigOption(option.id, model);
-      }),
+    setModel: Effect.fn("KimiAcpSupport.setModel")(function* (model) {
+      const option = (yield* getConfigOptions).find(isKimiModelConfigOption);
+      if (!option || !kimiConfigChoices(option).some((choice) => choice.value === model)) {
+        return yield* AcpErrors.AcpRequestError.invalidParams(
+          `Kimi model "${model}" is not available in this session.`,
+        );
+      }
+      yield* runtime.setConfigOption(option.id, model);
+    }),
     // Stored model options cannot turn on autonomous approval, including the
     // generic adapter's synthetic session-mode option. setMode owns policy.
-    setConfigOption: (id, value) =>
-      Effect.gen(function* () {
-        const options = yield* runtime.getConfigOptions;
-        const option = options.find((option) => option.id === id);
-        if (
-          id === "mode" ||
-          id === "_t3/session-mode" ||
-          (option && (isKimiModeConfigOption(option) || isKimiModelConfigOption(option)))
-        )
-          return { configOptions: options };
-        return yield* runtime.setConfigOption(id, value);
-      }),
+    setConfigOption: Effect.fn("KimiAcpSupport.setConfigOption")(function* (id, value) {
+      const options = yield* runtime.getConfigOptions;
+      const option = options.find((option) => option.id === id);
+      if (
+        id === "mode" ||
+        id === "_t3/session-mode" ||
+        (option && (isKimiModeConfigOption(option) || isKimiModelConfigOption(option)))
+      )
+        return { configOptions: options };
+      return yield* runtime.setConfigOption(id, value);
+    }),
     setMode: (requested) =>
       AUTONOMOUS_MODES.has(requested.toLowerCase())
         ? Effect.succeed({})
@@ -286,45 +284,44 @@ export const makeKimiAcpRuntime = Effect.fn("makeKimiAcpRuntime")(function* (
       runtime.handleRequestPermission((request, context) =>
         handler(normalizeKimiPermissionRequest(request), context),
       ),
-    prompt: (payload, options) =>
-      Effect.gen(function* () {
-        const started = yield* runtime.start();
-        const checkpoint = yield* captureKimiAcpLogCheckpoint({
-          sessionId: started.sessionId,
-          environment: input.environment,
-        }).pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-        );
-        const prompt =
-          input.supervisionGuidance === false
-            ? payload.prompt
-            : [
-                { type: "text" as const, text: KIMI_SUBAGENT_SUPERVISION_GUIDANCE },
-                ...payload.prompt,
-              ];
-        const result = yield* runtime.prompt({ ...payload, prompt }, options).pipe(Effect.exit);
-        const failure =
-          Exit.isSuccess(result) && result.value.stopReason === "cancelled"
-            ? undefined
-            : yield* readKimiAcpFailureSince(checkpoint).pipe(
-                Effect.provideService(FileSystem.FileSystem, fileSystem),
-              );
-        if (failure) {
-          const safe = makeProviderFailure({ ...failure, class: "provider_error" });
-          return yield* new AcpErrors.AcpRequestError({
-            code: -32603,
-            errorMessage: safe.message,
-            data: {
-              kimiFailure: {
-                message: safe.message,
-                ...(safe.code === null ? {} : { code: safe.code }),
-                ...(safe.retryable === null ? {} : { retryable: safe.retryable }),
-              },
+    prompt: Effect.fn("KimiAcpSupport.prompt")(function* (payload, options) {
+      const started = yield* runtime.start();
+      const checkpoint = yield* captureKimiAcpLogCheckpoint({
+        sessionId: started.sessionId,
+        environment: input.environment,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      const prompt =
+        input.supervisionGuidance === false
+          ? payload.prompt
+          : [
+              { type: "text" as const, text: KIMI_SUBAGENT_SUPERVISION_GUIDANCE },
+              ...payload.prompt,
+            ];
+      const result = yield* runtime.prompt({ ...payload, prompt }, options).pipe(Effect.exit);
+      const failure =
+        Exit.isSuccess(result) && result.value.stopReason === "cancelled"
+          ? undefined
+          : yield* readKimiAcpFailureSince(checkpoint).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+            );
+      if (failure) {
+        const safe = makeProviderFailure({ ...failure, class: "provider_error" });
+        return yield* new AcpErrors.AcpRequestError({
+          code: -32603,
+          errorMessage: safe.message,
+          data: {
+            kimiFailure: {
+              message: safe.message,
+              ...(safe.code === null ? {} : { code: safe.code }),
+              ...(safe.retryable === null ? {} : { retryable: safe.retryable }),
             },
-          });
-        }
-        return yield* result;
-      }),
+          },
+        });
+      }
+      return yield* result;
+    }),
   } satisfies AcpSessionRuntime.AcpSessionRuntime["Service"];
 });

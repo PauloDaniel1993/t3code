@@ -66,13 +66,8 @@ export class WorkspaceFiles extends Context.Service<
     readonly read: (
       filePath: string,
     ) => Effect.Effect<WorkspaceFileDefinition, WorkspaceFileReadError>;
-    /**
-     * Watch a linked project's workspace file until it is unwatched, replacing
-     * the project's earlier watch. `onHint` runs after each burst of changes
-     * to the file, and once more if the watch stops working; it only hints
-     * that the file should be read again. False when the file can't be
-     * watched, so changes are seen only when something reads it.
-     */
+    // Replace a project's earlier watch; hints follow change bursts and watch failure, never perform reads.
+    // False means unwatched, so later readers must refresh the file themselves.
     readonly watch: (
       projectId: ProjectId,
       filePath: string,

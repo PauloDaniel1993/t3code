@@ -1,4 +1,9 @@
-import type { AssetResource, ChatFileAttachment, EnvironmentId } from "@t3tools/contracts";
+import {
+  SOURCE_CONTROL_MEDIA_ASSET,
+  type AssetResource,
+  type ChatFileAttachment,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { videoMimeType } from "@t3tools/shared/video";
 
 import type { DraftComposerFileAttachment } from "./composerImages";
@@ -22,8 +27,8 @@ export type MediaVideoPreviewSource = {
             | "attachment"
             | "media-file"
             | "draft-workspace-file"
-            | "github-media"
-            | "workspace-scope-file";
+            | "workspace-scope-file"
+            | typeof SOURCE_CONTROL_MEDIA_ASSET;
         }
       >;
     }
@@ -63,10 +68,10 @@ export function mediaVideoThumbnailKey(source: MediaVideoPreviewSource): string 
                 source.resource.path,
                 source.srcFragment ?? "",
               ]
-            : source.resource._tag === "github-media"
+            : source.resource._tag === SOURCE_CONTROL_MEDIA_ASSET
               ? [
                   "media-video",
-                  "github-media",
+                  SOURCE_CONTROL_MEDIA_ASSET,
                   source.environmentId,
                   source.resource.cwd,
                   source.resource.url,

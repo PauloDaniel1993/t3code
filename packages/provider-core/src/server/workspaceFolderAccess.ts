@@ -11,6 +11,7 @@ export const WORKSPACE_FOLDER_ACCESS = {
   claudeAgent: "supported",
   cursor: "unverified",
   kimi: "unverified",
+  fx: "unverified",
   // Registry agents stay unverified even when they advertise extra directories.
   acpRegistry: "unverified",
   antigravity: "unverified",

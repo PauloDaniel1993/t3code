@@ -1,6 +1,5 @@
 import {
   workspaceFileReference,
-  workspaceFileScopeKey,
   workspaceResultFolderPath,
   type WorkspaceFileContext,
 } from "./workspaceFiles";
@@ -8,7 +7,7 @@ import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { Spinner } from "~/components/ui/spinner";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { PierreEntryIcon } from "~/components/chat/PierreEntryIcon";
 import {
@@ -23,7 +22,6 @@ import {
 } from "~/components/ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useTheme } from "~/hooks/useTheme";
-import { useWorkspaceMutationRefresh } from "~/hooks/useWorkspaceMutationRefresh";
 import { cn } from "~/lib/utils";
 import { isHostPath } from "@t3tools/shared/path";
 
@@ -45,9 +43,9 @@ interface FileBreadcrumbsProps {
   readonly onNavigateFolder: (relativePath: string, folderPath?: string) => void;
   readonly onOpenFile: (relativePath: string, folderPath?: string) => void;
   readonly projectName: string;
-  /** The current path; `""` is the workspace root. */
+  /** Current path; an empty path is the workspace root. */
   readonly relativePath: string;
-  /** The deepest path to show: `relativePath`, or a path inside it the browser came up from. */
+  /** Deepest visible path, including descendants retained after navigating up. */
   readonly trail: string;
   readonly workspaceMutationId: string | null;
 }
@@ -93,22 +91,15 @@ function BreadcrumbMenuContent(props: {
   readonly rootPath: string;
   readonly workspaceMutationId: string | null;
 }) {
-  const scope = useMemo(
-    () =>
-      workspaceFileReference(props.workspace, props.directoryPath)?.scope ?? props.workspace?.scope,
-    [props.workspace, props.directoryPath],
-  );
+  const scope =
+    workspaceFileReference(props.workspace, props.directoryPath)?.scope ?? props.workspace?.scope;
   const entriesQuery = useProjectEntriesQuery(
     props.environmentId,
     props.cwd,
     props.directoryPath,
     scope,
+    props.workspaceMutationId,
   );
-  useWorkspaceMutationRefresh({
-    mutationId: props.workspaceMutationId,
-    refresh: entriesQuery.refresh,
-    resourceKey: `files:${props.environmentId}:${workspaceFileScopeKey(props.cwd, scope)}`,
-  });
   const { resolvedTheme } = useTheme();
   const folders = entriesQuery.data?.folders ?? [];
   const entries =
@@ -223,7 +214,7 @@ function BreadcrumbMenuContent(props: {
           <MenuSeparator />
           <MenuItem closeOnClick={false} onClick={entriesQuery.refresh}>
             <RefreshIcon refreshing={entriesQuery.isPending} />
-            Refresh failed — retry
+            Refresh failed. Retry
           </MenuItem>
         </>
       ) : null}
@@ -237,11 +228,9 @@ function BreadcrumbMenuContent(props: {
   );
 }
 
-/** The chevron after a folder crumb lists that folder's entries. */
 function FolderContentsMenu(props: FileBreadcrumbsProps & { readonly crumb: FileBreadcrumb }) {
   const [open, setOpen] = useState(false);
   const [directoryPath, setDirectoryPath] = useState(props.crumb.path);
-  // Opening another file or moving the crumb closes the menu and returns it to the crumb's folder.
   const [shownFor, setShownFor] = useState({
     crumbPath: props.crumb.path,
     relativePath: props.relativePath,
@@ -291,7 +280,7 @@ function FolderContentsMenu(props: FileBreadcrumbsProps & { readonly crumb: File
 
 function FolderBreadcrumb(props: {
   readonly crumb: FileBreadcrumb;
-  /** Below the current folder, kept from where the browser came from. */
+  /** Whether this crumb is below the current folder. */
   readonly descendant: boolean;
   readonly onNavigate: (path: string) => void;
   readonly projectName: string;
@@ -317,11 +306,7 @@ function FolderBreadcrumb(props: {
   );
 }
 
-/**
- * Each folder crumb moves the browser to that folder, and the chevron after it
- * lists the folder's entries. A host path outside the workspace has no contents
- * menu: the browser below already lists the folder it moves to.
- */
+/** Host paths outside the workspace omit contents menus; the browser already lists their destination. */
 export function FileBreadcrumbs(props: FileBreadcrumbsProps) {
   const hostPath = isHostPath(props.relativePath);
   const breadcrumbs = fileBreadcrumbs(props.projectName, props.trail);

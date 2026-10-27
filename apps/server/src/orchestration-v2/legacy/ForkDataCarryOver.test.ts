@@ -17,6 +17,8 @@ import { assertForkTaskLinksRepaired, repairForkTaskLinks } from "./ForkTaskLink
 
 import { TestLayer, stamp, seedThreads } from "./ForkDataCarryOver.testkit.ts";
 
+const encodeLegacyAttachments = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 it.effect(
   "carries source tags and reasoning through previews, lazy hydration, replay and compaction",
   () =>
@@ -40,7 +42,7 @@ it.effect(
           ${sources[index % sources.length] ?? null}, ${index === 122 ? 1 : 0}, ${stamp}, ${stamp})`;
       }
       yield* importer.reconcileShells;
-      assert.equal((yield* Effect.exit(maintenance.compactEventStore))._tag, "Failure");
+      assert.equal((yield* Effect.exit(maintenance.compactEventStore()))._tag, "Failure");
       assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 2 });
       const preview = yield* projections.getThreadProjection(ThreadId.make("child"));
       assert.equal(preview.turnItems.find((item) => item.type === "reasoning")?.ordinal, 123);
@@ -120,7 +122,7 @@ it.effect(
         eventCount,
       );
       yield* repairForkTaskLinks();
-      yield* maintenance.compactEventStore;
+      yield* maintenance.compactEventStore();
       assert.isTrue((yield* maintenance.rebuild).valid);
       yield* importer.reconcileShells;
       const replayed = yield* projections.getThreadProjection(ThreadId.make("child"));
@@ -162,7 +164,7 @@ it.effect(
       );
       assert.equal((yield* Effect.exit(interrupted))._tag, "Failure");
       const maintenance = yield* ProjectionMaintenanceV2;
-      assert.equal((yield* Effect.exit(maintenance.compactEventStore))._tag, "Failure");
+      assert.equal((yield* Effect.exit(maintenance.compactEventStore()))._tag, "Failure");
       assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 1 });
       assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 0 });
       const sql = yield* SqlClient.SqlClient;
@@ -171,7 +173,7 @@ it.effect(
       WHERE command_type = 'fork.legacy-task-links.repair-v2'`)[0]?.count,
         2,
       );
-      yield* maintenance.compactEventStore;
+      yield* maintenance.compactEventStore();
     }).pipe(Effect.provide(TestLayer)),
 );
 
@@ -209,7 +211,7 @@ it.effect.each([
     assert.equal(warnings[0]?.entity_id, "child");
     assert.include(warnings[0]?.reason ?? "", name);
     yield* repairForkTaskLinks();
-    yield* (yield* ProjectionMaintenanceV2).compactEventStore;
+    yield* (yield* ProjectionMaintenanceV2).compactEventStore();
   }).pipe(Effect.provide(TestLayer)),
 );
 
@@ -226,7 +228,7 @@ it.effect("keeps valid attachments beside a malformed entry and maps document PD
     };
     yield* sql`INSERT INTO projection_thread_messages
       (message_id, thread_id, role, text, attachments_json, is_streaming, created_at, updated_at)
-      VALUES ('attachment-message', 'root', 'user', 'read these', ${yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))([pdf, { type: "image" }])}, 0, ${stamp}, ${stamp})`;
+      VALUES ('attachment-message', 'root', 'user', 'read these', ${yield* encodeLegacyAttachments([pdf, { type: "image" }])}, 0, ${stamp}, ${stamp})`;
     const importer = yield* LegacyV1ThreadImporter;
     yield* importer.reconcileShells;
     yield* importer.ensureTranscript(ThreadId.make("root"));

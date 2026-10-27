@@ -221,19 +221,17 @@ const makeImporter = Effect.fn(function* (
           Layer.mock(ProjectService.ProjectService)({
             snapshotWorkspaceFolders: () => Effect.succeed(workspace.snapshot ?? workspaceFolders),
             getById: () =>
-              Effect.succeed(
-                Option.some({
-                  id: projectId,
-                  title: "Project",
-                  workspaceRoot: "/workspace/project",
-                  ...(workspace.linked ? { workspaceFile: "/workspace/team.code-workspace" } : {}),
-                  defaultModelSelection: null,
-                  scripts: [],
-                  createdAt: timestamp,
-                  updatedAt: timestamp,
-                  deletedAt: null,
-                }),
-              ),
+              Effect.succeedSome({
+                id: projectId,
+                title: "Project",
+                workspaceRoot: "/workspace/project",
+                ...(workspace.linked ? { workspaceFile: "/workspace/team.code-workspace" } : {}),
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                deletedAt: null,
+              }),
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({
             getThreadRecords: (threadId, fields) =>

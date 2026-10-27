@@ -93,6 +93,7 @@ export function summarizeForkTask(
     createdBy: task.createdBy === "user" ? "user" : "agent",
     context: { kind: "none" },
     createdAt: DateTime.formatIso(task.startedAt ?? task.updatedAt),
+    ...(status.next === undefined ? {} : { next: status.next }),
     result:
       status.summary === null
         ? null

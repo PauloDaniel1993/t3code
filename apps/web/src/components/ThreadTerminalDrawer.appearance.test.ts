@@ -204,6 +204,7 @@ vi.mock("react/compiler-runtime", () => ({
 
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: () => undefined,
+  useAtomMount: () => undefined,
 }));
 
 vi.mock("~/terminal/ghostty/surface", () => {
@@ -293,8 +294,15 @@ vi.mock("../state/terminal", () => ({
 
 vi.mock("../state/terminalSessions", async () => {
   const { EMPTY_TERMINAL_SESSION_STATE } = await import("@t3tools/client-runtime/state/terminal");
-  return { useAttachedTerminalSession: () => EMPTY_TERMINAL_SESSION_STATE };
+  return { attachedTerminalSessionAtom: () => EMPTY_TERMINAL_SESSION_STATE };
 });
+
+vi.mock("../rpc/atomRegistry", () => ({
+  appAtomRegistry: {
+    get: (atom: unknown) => atom,
+    subscribe: () => () => {},
+  },
+}));
 
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: () => testState.resize,

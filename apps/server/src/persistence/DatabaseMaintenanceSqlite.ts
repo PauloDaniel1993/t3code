@@ -4,14 +4,9 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeURL from "node:url";
 import { Platform as HostProcessPlatform } from "@t3tools/shared/HostProcess";
 
-/**
- * Read without checkpointing or touching WAL/SHM, including a crashed writer's WAL.
- * A normal readOnly connection can still create or update SHM. The no-lock VFS
- * plus EXCLUSIVE mode instead builds a private WAL index in memory. Never use
- * this connection for writes. Preflight is advisory until the real lock is held;
- * final validation uses it while that lock prevents any concurrent changes.
- * https://sqlite.org/wal.html#use_of_wal_without_shared_memory
- */
+// Normal read-only connections can modify SHM; the no-lock VFS and EXCLUSIVE mode keep WAL indexes private.
+// Never write through this connection. Preflight is advisory; final validation holds the real writer lock.
+// https://sqlite.org/wal.html#use_of_wal_without_shared_memory
 export function withMaintenanceReadOnlyDatabase<A>(
   path: string,
   run: (database: NodeSqlite.DatabaseSync) => A,

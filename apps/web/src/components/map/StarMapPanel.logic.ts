@@ -50,13 +50,7 @@ function goBackOneLevel(state: StarMapPanelState): StarMapPanelState {
   }
 }
 
-/**
- * Re-points navigation at a freshly received snapshot. A selected ticket that
- * vanished drops back to the map level rather than rendering an empty detail
- * view; a selected map that vanished (the agent deleted `.plan/<effort>/`)
- * drops back to the map list — where the panel's empty states take over — and
- * raises the `"map-removed"` notice so the jump is explained, not silent.
- */
+// A vanished ticket returns to its map; a vanished map returns to the list with a notice.
 function reconcileWithSnapshot(
   state: StarMapPanelState,
   snapshot: WayfinderMapsSnapshot,

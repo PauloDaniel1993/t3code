@@ -73,13 +73,12 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
       );
     };
     const existingRealPath = (candidate: string) =>
-      fileSystem
-        .realPath(candidate)
-        .pipe(
-          Effect.catch((error) =>
-            error.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
-          ),
-        );
+      fileSystem.realPath(candidate).pipe(
+        Effect.catchIf(
+          (error) => error.reason._tag === "NotFound",
+          () => Effect.succeed(null),
+        ),
+      );
     const resolve = (candidate: string) =>
       existingRealPath(candidate).pipe(Effect.map((real) => real ?? path.resolve(candidate)));
     // realPath keeps the caller's casing, and Windows paths ignore it.
@@ -169,11 +168,8 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
 );
 
 /**
- * Why `checkpoint`'s files can't be restored now, or undefined when they can.
- * File restore is all or nothing: every git part must be ready, its checkout
- * present with the part's ref, and the checkout this thread's alone. Command
- * admission asks, and the rollback effect asks again before the provider
- * rewinds, so a newly shared worktree is refused too.
+ * Admission and rollback both require every part's ref and exclusive checkout,
+ * so a worktree shared after admission is still refused before rewinding.
  */
 export const fileRestoreRefusal = Effect.fn("orchestrationV2.fileRestoreRefusal")(function* (
   thread: Pick<OrchestrationV2AppThread, "id" | "worktreePath" | "worktrees">,

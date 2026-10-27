@@ -84,6 +84,7 @@ const queuedFollowupPrompt = "Complete the queued follow-up and return the final
 const queuedFollowupResult = "Queued delegated follow-up completed.";
 
 const decodeDelegateTaskResult = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskResult);
+const decodeCreateThreadsResult = Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsResult);
 const decodeThreadInterruptResult = Schema.decodeUnknownEffect(
   OrchestratorMcpThreadInterruptResult,
 );
@@ -240,18 +241,16 @@ describe("orchestrator MCP toolkit", () => {
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
               getById: (id) =>
-                Effect.succeed(
-                  Option.some({
-                    id,
-                    title: "Replay project",
-                    workspaceRoot: cwd,
-                    defaultModelSelection: null,
-                    scripts: [],
-                    createdAt: "2026-01-01T00:00:00.000Z",
-                    updatedAt: "2026-01-01T00:00:00.000Z",
-                    deletedAt: null,
-                  }),
-                ),
+                Effect.succeedSome({
+                  id,
+                  title: "Replay project",
+                  workspaceRoot: cwd,
+                  defaultModelSelection: null,
+                  scripts: [],
+                  createdAt: "2026-01-01T00:00:00.000Z",
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                  deletedAt: null,
+                }),
             }),
           ),
           Layer.provideMerge(
@@ -526,6 +525,14 @@ describe("orchestrator MCP toolkit", () => {
           expect(finalProjection.runs.find((run) => run.id === queuedFollowup.runId)?.status).toBe(
             "completed",
           );
+          expect(
+            finalProjection.turnItems.find(
+              (item) =>
+                item.runId === runningFollowup.runId && item.type === "run_interrupt_result",
+            ),
+          ).toMatchObject({
+            message: "Stopped by an agent: Allow the queued replay follow-up to run.",
+          });
           yield* orchestrator
             .streamStoredEventsFrom({
               threadId: parentThreadId,
@@ -605,9 +612,7 @@ describe("orchestrator MCP toolkit", () => {
             clientRequestId: "create-workspace-thread",
             threads: [{ title: "Inherited workspace" }],
           });
-          const created = yield* Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsResult)(
-            createdCall.structuredContent,
-          );
+          const created = yield* decodeCreateThreadsResult(createdCall.structuredContent);
           const createdProjection = yield* orchestrator.getThreadProjection(
             created.threads[0]!.threadId,
           );

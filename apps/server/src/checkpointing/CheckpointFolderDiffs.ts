@@ -33,12 +33,12 @@ export function checkpointFolderDiffs(part: OrchestrationV2CheckpointScopePart) 
 }
 
 /** Spend one output budget in folder order instead of giving every git call 10 MB. */
-export function collectCheckpointDiffs(
-  inputs: ReadonlyArray<DiffCheckpointsInput & { readonly label?: string }>,
-  diffCheckpoints: CheckpointStore["Service"]["diffCheckpoints"],
-  maxOutputBytes = CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
-) {
-  return Effect.gen(function* () {
+export const collectCheckpointDiffs = Effect.fn("CheckpointFolderDiffs.collectCheckpointDiffs")(
+  function* (
+    inputs: ReadonlyArray<DiffCheckpointsInput & { readonly label?: string }>,
+    diffCheckpoints: CheckpointStore["Service"]["diffCheckpoints"],
+    maxOutputBytes = CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+  ) {
     const budget = Math.min(maxOutputBytes, CHECKPOINT_DIFF_MAX_OUTPUT_BYTES);
     let remainingBytes = budget;
     const diffs: Array<{ readonly label: string | undefined; diff: string }> = [];
@@ -64,5 +64,5 @@ export function collectCheckpointDiffs(
       remainingBytes -= outputBytes;
     }
     return diffs;
-  });
-}
+  },
+);

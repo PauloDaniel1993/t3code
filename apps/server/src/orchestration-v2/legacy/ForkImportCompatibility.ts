@@ -1,34 +1,7 @@
-/**
- * Startup check for a V1 import that an unpatched V2 build made first.
- *
- * It refuses only on positive evidence, and the one thing an unpatched build
- * leaves that this build never does is the absence of this build's own writes:
- * reasoning items, source tags and task-link receipts. So the directory is
- * refused when V1 marks legacy messages as reasoning or with a source, in an
- * imported transcript or a shell preview, and the directory holds none of those
- * writes. Upstream's import ids, payload ordinals and position reservations are
- * never evidence, since a merge can rename or compact them; any disagreement
- * with the fork's mapping there starts the server with a warning. A thread
- * without reasoning or sources in V1 is never evidence of anything.
- *
- * A shell-only unpatched import whose previews carry no reasoning or source is
- * not refused: before the ordinal check, `ForkShellPreviewRepair` rewrites the
- * items of every thread still to hydrate with this build's mapping, which makes
- * the result that of a fresh import. The three real unpatched databases the
- * verification used each have tagged previews and are refused.
- *
- * Limits, recorded rather than fixed:
- * - The decision is per directory. One this build imported and an unpatched build
- *   extended later starts with a warning.
- * - The verified marker is trusted. A hand-written
- *   `import-compatibility-verified` row skips the check, even on an unpatched
- *   import; no build writes it except this one after a passed check. Recover by
- *   moving the files aside, never by writing or deleting that row.
- * - V1 projects damaged before upstream migration 26 are not repaired:
- *   `ForkLegacyProjects` validates after migrating to 54, and migration 26 fails
- *   first on a malformed `default_model_selection_json`. The supplied baselines
- *   are at migration 35 and 54.
- */
+// Refuse only positive evidence of an unpatched import: missing fork reasoning, source or task-link writes.
+// IDs and ordinals can change on merge/compaction; mismatches warn, while pending shells are repaired first.
+// Checks cover the whole directory and trust the verified marker; never edit that marker to recover.
+// Pre-migration-26 malformed model JSON can fail upstream before the fork's migration-54 validation.
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -66,15 +39,8 @@ export type ForkImportInspection =
   | { readonly _tag: "unpatched"; readonly omission: Omission }
   | { readonly _tag: "unknown"; readonly mismatch: Mismatch };
 
-/**
- * Look for an unpatched import, then for evidence the fork's mapping cannot
- * place. The passed check is recorded once every legacy transcript is imported,
- * here or with the last transcript (see `recordForkImportVerifiedWhenComplete`).
- * After that no importer, patched or not, writes another `migration:v1:*` item:
- * every shell exists, nothing is left to hydrate, and upstream's metadata repair
- * writes only thread metadata. Later starts read that one row and stop.
- * `repairPending` runs between the two, once refusal is ruled out.
- */
+// Record verification only after all legacy transcripts are imported; later starts read the marker.
+// Run pending repairs after ruling out an incompatible import and before checking mapped ordinals.
 export const inspectForkImport = Effect.fn("inspectForkImport")(function* <E = never>(
   repairPending: Effect.Effect<void, E> = Effect.void,
 ) {

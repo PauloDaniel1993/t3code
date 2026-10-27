@@ -70,17 +70,9 @@ function snapshotWorkspace(
   };
 }
 
-/**
- * Plan a run's checkpoint parts from its thread's folder snapshot. Each git
- * checkout is one part at its top, in the thread's worktree set when it has
- * one, with its member folders as pathspecs; a checkout nested inside a member
- * folder is excluded, since it is a part of its own. A folder outside git, or
- * without a known place in a checkout, is a part that isn't checkpointed.
- * Folders this run can't reach, and URI folders, have no part.
- *
- * A thread with fewer than two snapshot folders has no parts, so its scope
- * checkpoints its cwd exactly as before.
- */
+// Each reachable checkout owns one part; nested checkouts are excluded from their parent pathspecs.
+// Unknown/non-git locations remain uncheckpointed; URI and unavailable folders have no part.
+// Fewer than two snapshot folders retain the original cwd-only checkpoint behavior.
 export function checkpointScopeParts(input: {
   readonly thread: WorkspaceThread;
   /** The run's record of snapshot folders it can't reach. */

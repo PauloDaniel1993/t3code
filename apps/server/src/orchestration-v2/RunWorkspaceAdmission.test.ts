@@ -234,7 +234,7 @@ it.layer(testLayer)("run workspace admission", (it) => {
 
   it.effect("blocks a run while a root-mode thread's primary folder is gone", () =>
     Effect.gen(function* () {
-      const { at, snapshot, remove } = yield* folders;
+      const { snapshot, remove } = yield* folders;
       const threadId = ThreadId.make("thread:admission-primary");
       yield* createThread(threadId, { workspaceFolders: snapshot });
       yield* remove("app");

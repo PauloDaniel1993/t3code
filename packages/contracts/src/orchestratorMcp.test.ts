@@ -11,6 +11,7 @@ import {
   OrchestratorMcpUpdateScheduledTaskInput,
 } from "./orchestratorMcp.ts";
 
+const decodeProviderCapability = Schema.decodeSync(OrchestratorMcpProviderCapability);
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 const decodeFailure = Schema.decodeUnknownSync(OrchestratorMcpFailure);
@@ -39,9 +40,7 @@ describe("orchestrator MCP contracts", () => {
       canRunCrossProviderChildTask: true,
       constraints: [],
     };
-    expect(Schema.decodeUnknownSync(OrchestratorMcpProviderCapability)(capability)).toEqual(
-      capability,
-    );
+    expect(decodeProviderCapability(capability)).toEqual(capability);
   });
 
   it.each([

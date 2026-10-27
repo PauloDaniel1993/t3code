@@ -12,13 +12,7 @@ export const WayfinderMapsInput = Schema.Struct({
 });
 export type WayfinderMapsInput = typeof WayfinderMapsInput.Type;
 
-/**
- * Malformed markdown degrades to lints, never to an error. These failures are
- * the genuine faults instead: the workspace root could not be resolved, a
- * discovered path escaped it, or the server's map capacity is in use. `WayfinderRpcError.ts` maps the server-side
- * `WorkspacePaths` errors onto this enum, the same way `projectEntriesFailureContext` does, so
- * the contracts package stays free of any server import.
- */
+/** Malformed Markdown produces lints; failures here represent workspace or capacity faults. */
 export const WayfinderMapsFailure = Schema.Literals([
   "workspace_root_not_found",
   "workspace_root_create_failed",

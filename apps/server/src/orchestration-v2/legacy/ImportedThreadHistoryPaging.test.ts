@@ -229,7 +229,7 @@ const pageWholeThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     projection: projectThreadProjectionForWire(opened.projection),
     snapshotSequence: opened.snapshotSequence,
   });
-  assert.isFalse(first.payloadBudgetExceeded);
+  assert.isAtMost(Buffer.byteLength(JSON.stringify(first.projection)), 1_048_576);
   const pages = [first.projection.visibleTurnItems];
   let cursor = first.historyCursor;
   let hasMoreHistory = first.hasMoreHistory;
@@ -314,12 +314,11 @@ it.effect(
           assert.isTrue(runRows.every((row) => row.item.ordinal > 1_000_000));
           assert.deepEqual(expected.slice(0, imported.length), imported);
 
-          // The first page opens on the V2 turn and the newest imported rows,
-          // not on one row of it.
+          // Keep the current turn whole; the next page resumes the imported history.
           const firstPage = pages[0]!.map(itemKey);
           for (const row of runRows) assert.include(firstPage, itemKey(row));
-          assert.isAbove(pages[0]!.length, runRows.length);
-          assert.include(firstPage, imported.at(-1));
+          assert.equal(pages[0]!.length, runRows.length);
+          assert.include(pages[1]!.map(itemKey), imported.at(-1));
 
           // Load earlier reaches the first imported message; nothing skipped or twice.
           assert.equal(new Set(timeline).size, timeline.length);
@@ -327,7 +326,6 @@ it.effect(
         }).pipe(Effect.provide(Layer.mergeAll(TestLayer, runtime)));
       }),
     ),
-  120_000,
 );
 
 /**
@@ -440,7 +438,7 @@ it("pages a thread without task records exactly as upstream does", () => {
     Array.from({ length: to - from + 1 }, (_, index) => from + index);
 
   // Upstream 977bf4a4 opens on ordinals 22..90 and loads 1..21 earlier.
-  assert.isFalse(first.payloadBudgetExceeded);
+  assert.isAtMost(Buffer.byteLength(JSON.stringify(first.projection)), 1_048_576);
   assert.isTrue(first.hasMoreHistory);
   assert.deepEqual(ordinals(first.projection.visibleTurnItems), range(22, 90));
   assert.deepEqual(ordinals(older.items), range(1, 21));

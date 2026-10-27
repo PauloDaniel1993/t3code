@@ -1,19 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off -- Installed before the SDK loads, outside an Effect runtime. stderr must match Node's default unhandled-rejection print.
 import * as NodeModule from "node:module";
 
-/**
- * The Cursor Agent SDK runs in this process and spawns a shell for tool
- * calls. The command is Cursor's sandbox wrapper (`dump_zsh_state`,
- * `dump_bash_state`, `__CURSOR_SANDBOX_ENV_RESTORE`). A bad working directory
- * makes Node report `spawn /bin/zsh ENOENT`. The SDK listens for that error,
- * then rejects an internal promise nothing awaits. Node exits on that
- * unhandled rejection and takes the server with it.
- *
- * This listener ignores only that rejection. Every other unhandled rejection
- * still prints and exits when this is the process's only listener, matching
- * Node's default. `child_process.spawn` itself is left alone, so git,
- * terminals, and other providers keep their own error handling.
- */
+// Cursor can leave its shell-spawn rejection unobserved; isolate that failure
+// without changing other unhandled rejections or patching child_process.spawn.
 const CURSOR_SHELL_SPAWN_MARKERS = [
   "dump_zsh_state",
   "dump_bash_state",

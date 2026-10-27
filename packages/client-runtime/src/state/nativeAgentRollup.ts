@@ -1,16 +1,6 @@
 /**
- * Shared native-agent selection for a thread's card, mobile history and sidebar.
- * Import deriveNativeAgentRollup from @t3tools/client-runtime/state/native-agent-rollup
- * and pass that thread's projection (or its runs and subagents arrays). Use groups
- * for turn labels, counters and disclosure defaults, or agents for a flat roster.
- * Both contain the same records: provider_native only, excluding known rolled-back
- * runs, all pending/running/waiting work, and the newest 12 idle or terminal agents
- * together. Missing runs in partial history are retained; null run IDs stay separate.
- * Groups run oldest to newest by latest update (key breaks ties); rows within each
- * group run by start time, falling back to update time, then ID. The flat roster
- * follows that group/row order. Callers should not reapply selection or history caps.
- * hiddenSettledCount includes omitted idle/resumable agents. It is a display window,
- * not deletion: older records remain in the transcript. Idle is never a success.
+ * Partial history can omit a run without deleting its agents. Keep those agents
+ * and all active work; cap only idle or terminal rows in the shared display window.
  */
 import type { OrchestrationV2Subagent, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";

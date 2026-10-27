@@ -52,14 +52,7 @@ function blockersOf(graph: StarMapGraph, nodeId: string): ReadonlyArray<StarMapG
   });
 }
 
-/**
- * Ticket level of the star map panel: the ticket's own markdown file read
- * through the same workspace file read path the Files surface uses
- * (`useProjectFileQuery` → `projects.readFile`), rendered through the shared
- * `ChatMarkdown`. There is deliberately no wayfinder-specific ticket RPC —
- * ticket bodies stay off the subscription wire and this view reuses what
- * already ships.
- */
+// Ticket bodies use the Files read path and stay off the map subscription wire.
 export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
   const { node } = props;
   const taskUnavailableId = useId();
@@ -79,16 +72,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
   const { problem: taskUnavailable } = useNewThreadTaskAvailability(props.threadRef);
   const openAsFile = () => {
     if (props.threadRef === null) return;
-    // 9.2 decision — accepted and documented: `openFile` removes an open
-    // standalone Files explorer surface (rightPanelStore.ts:286-288). That is
-    // acceptable here rather than worth an explorer-preserving variant:
-    //   1. The file surface this opens (FilePreviewPanel) embeds its own
-    //      explorer with the same open state, so nothing is actually lost.
-    //   2. Every other open-file path in the app (markdown links, diff
-    //      actions, the file picker) routes through this same `openFile`, so
-    //      a wayfinder-specific variant would fork behaviour users already
-    //      learned.
-    // The action is explicit and user-initiated — it never fires silently.
+    // openFile replaces the standalone explorer; the file preview embeds its own.
     if (fileTarget === null) return;
     useRightPanelStore
       .getState()
@@ -191,7 +175,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                   }
                 />
                 <TooltipPopup side="bottom">
-                  {blocker.ordinal}. {blocker.label} — {statusText(blocker)}
+                  {blocker.ordinal}. {blocker.label}: {statusText(blocker)}
                 </TooltipPopup>
               </Tooltip>
             ))}

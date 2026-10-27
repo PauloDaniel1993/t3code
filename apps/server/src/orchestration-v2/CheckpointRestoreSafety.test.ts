@@ -17,7 +17,6 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import {
@@ -111,7 +110,7 @@ it.effect.each([
           IdAllocator.layer,
           Layer.mock(GitWorkflowService.GitWorkflowService)({}),
           Layer.mock(ProjectStore.ProjectStoreV2)({
-            get: () => Effect.succeed(Option.some({ workspaceRoot: parent } as never)),
+            get: () => Effect.succeedSome({ workspaceRoot: parent } as never),
           }),
           Layer.mock(ProjectionStoreV2)({
             getThread: () => Effect.succeed(projection.thread),
@@ -151,7 +150,7 @@ it.effect.each([
               }),
           }),
           Layer.mock(CheckpointServiceV2)({
-            preflightRestore: () => Effect.succeed(undefined),
+            preflightRestore: () => Effect.undefined,
             restore: () =>
               Effect.gen(function* () {
                 calls.push("files");
@@ -302,7 +301,7 @@ it.effect.each([
           path,
           projections,
           projects: ProjectStore.ProjectStoreV2.of({
-            get: () => Effect.succeed(Option.some({ workspaceRoot: otherRoot } as never)),
+            get: () => Effect.succeedSome({ workspaceRoot: otherRoot } as never),
           } as never),
         },
       );
@@ -457,7 +456,7 @@ it.effect.each([false, true])(
       const refusal = yield* fileRestoreRefusal(thread, scope, checkpoint, {
         fileSystem,
         path,
-        projects: { get: () => Effect.succeed(Option.some({ workspaceRoot: relinked })) } as never,
+        projects: { get: () => Effect.succeedSome({ workspaceRoot: relinked }) } as never,
         projections: {
           getThread: () =>
             Effect.succeed({

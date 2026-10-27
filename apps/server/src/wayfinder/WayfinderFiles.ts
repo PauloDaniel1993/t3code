@@ -71,13 +71,8 @@ export const resolveRealRoot = (workspaceRoot: string) =>
     ),
   );
 
-/**
- * Watches a directory and hands each changed name, relative to it, to `onChange`. Nothing
- * else runs per event (`FileSystem.watch` stats every renamed path and queues every event),
- * so the caller's filter is the whole cost of an unrelated change. An event the platform
- * reports without a name goes to `onUnnamed`, if given. The returned deferred completes
- * when the watch closes or fails; closing the scope stops the watch.
- */
+// Forward names directly to the caller's filter; unnamed events use onUnnamed without per-event filesystem work.
+// The deferred completes on watch close/failure; scope close stops the watch.
 export const watchDirectory = (
   directory: string,
   recursive: boolean,
@@ -102,30 +97,9 @@ export const watchDirectory = (
     ({ watcher }) => Effect.sync(() => watcher.close()),
   ).pipe(Effect.map(({ closed }) => closed));
 
-/**
- * Every file and directory the Wayfinder reader touches goes through here. A path is only
- * usable when its real location (symlinks and Windows junctions resolved) is the path itself
- * under the real project root, ignoring letter case: nothing is read through a link, even one
- * that stays inside the project, because the watches do not follow links and a map read
- * through one would go stale. Anything else reads exactly as a missing file does and is logged
- * on the server only, so a client cannot learn whether something exists outside the project.
- *
- * What a file read guarantees:
- * - A link that exists while the file is read, or one swapped in once between the check and
- *   the open, is never followed.
- * - On Linux the check is made on the open descriptor, so the bytes read come from the file
- *   that was checked, whatever happens to the path.
- * - Windows and macOS have no Node call that names an open handle. There the path is
- *   resolved again after the open and must still name the same file. A process that renames
- *   a folder inside the project away, back and away again within one read can still have an
- *   outside file read. That process can already write into the project, so it could as well
- *   copy in any outside file it can read.
- * - A hard link is a file inside the project and is read.
- *
- * Directory listings and watches resolve the path and then open it, without a second check.
- * A swap there exposes nothing: a listing only supplies names that are read through the
- * check above, and a watch event only asks for a rescan.
- */
+// Reject symlink/junction escapes; Linux verifies the open descriptor, while Windows/macOS recheck the path.
+// A rapid rename-away/back race remains on Windows/macOS, but requires project write access; hardlinks are allowed.
+// Listings and watches only expose names or rescan hints, so their opens need no second check.
 export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
   workspaceRoot: string,
 ) {

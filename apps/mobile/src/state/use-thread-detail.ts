@@ -1,7 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
+import type { EnvironmentThreadStructure } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentThread } from "@t3tools/client-runtime/state/shell";
-import type { EnvironmentId, OrchestrationV2ThreadProjection, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationV2ThreadProjection,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { useMemo } from "react";
 
@@ -10,6 +16,9 @@ import { useThreadSelection } from "./use-thread-selection";
 
 const EMPTY_THREAD_PROJECTION_ATOM = Atom.make<EnvironmentThread | null>(null).pipe(
   Atom.withLabel("mobile-thread-projection:empty"),
+);
+const EMPTY_THREAD_STRUCTURE_ATOM = Atom.make<EnvironmentThreadStructure | null>(null).pipe(
+  Atom.withLabel("mobile-thread-structure:empty"),
 );
 const EMPTY_VISIBLE_TURN_ITEMS_ATOM = Atom.make<
   OrchestrationV2ThreadProjection["visibleTurnItems"]
@@ -64,6 +73,15 @@ export function useAppThread(
     [environmentId, threadId],
   );
   return useAtomValue(atom);
+}
+
+/** Keeps its value through streamed text; runs, sessions, and item status still update. */
+export function useQuietThreadStructure(
+  ref: ScopedThreadRef | null,
+): EnvironmentThreadStructure | null {
+  return useAtomValue(
+    ref === null ? EMPTY_THREAD_STRUCTURE_ATOM : environmentThreadDetails.quietThreadAtom(ref),
+  );
 }
 
 export function useSelectedThreadProjection(): EnvironmentThread | null {

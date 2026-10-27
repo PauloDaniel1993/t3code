@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -8,8 +7,11 @@ import {
   type OpenNewThreadTaskRequest,
 } from "./newThreadTaskBus";
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("app-level task requests", () => {
   it("delivers unopened parents and distinguishes the same thread id in two environments", () => {
+    vi.stubGlobal("window", new EventTarget());
     const received: OpenNewThreadTaskRequest[] = [];
     const stop = onOpenNewThreadTaskDialog((request) => received.push(request));
     try {
@@ -25,6 +27,7 @@ describe("app-level task requests", () => {
   });
 
   it("carries a Wayfinder title and multiline prompt without truncation or rewriting", () => {
+    vi.stubGlobal("window", new EventTarget());
     const received: OpenNewThreadTaskRequest[] = [];
     const stop = onOpenNewThreadTaskDialog((request) => received.push(request));
     try {
@@ -43,6 +46,7 @@ describe("app-level task requests", () => {
   });
 
   it("removes listeners when the host unmounts", () => {
+    vi.stubGlobal("window", new EventTarget());
     const received: OpenNewThreadTaskRequest[] = [];
     const stop = onOpenNewThreadTaskDialog((request) => received.push(request));
     stop();

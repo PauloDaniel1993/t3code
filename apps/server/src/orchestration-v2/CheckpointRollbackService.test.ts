@@ -264,10 +264,11 @@ it.effect.each([
             Layer.mock(ProjectStore.ProjectStoreV2)({
               get: (id) => {
                 assert.equal(id, projectId);
-                return Effect.succeed(Option.some({ workspaceRoot } as never));
+                return Effect.succeedSome({ workspaceRoot } as never);
               },
             }),
             Layer.mock(GitWorkflow.GitWorkflowService)({
+              listLocalBranchNames: () => Effect.succeed([branch]),
               pruneWorktrees: (input) =>
                 Effect.sync(() => {
                   assert.deepEqual(input, { cwd: repositoryRoot });
@@ -286,7 +287,7 @@ it.effect.each([
                 }),
             }),
             Layer.mock(CheckpointService.CheckpointServiceV2)({
-              preflightRestore: () => Effect.succeed(undefined),
+              preflightRestore: () => Effect.undefined,
               restore: () =>
                 Effect.gen(function* () {
                   assert.isTrue(yield* fileSystem.exists(worktreePath).pipe(Effect.orDie));
@@ -607,7 +608,7 @@ const seedRollbackHistory = Effect.gen(function* () {
         ThreadCommandExecutor.layer,
         IdAllocator.layer,
         Layer.mock(CheckpointService.CheckpointServiceV2)({
-          preflightRestore: () => Effect.succeed(undefined),
+          preflightRestore: () => Effect.undefined,
           restore: ({ checkpoint }) =>
             Effect.sync(() => {
               restored.push(checkpoint.id);
@@ -1036,7 +1037,7 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
       Layer.mergeAll(
         ThreadCommandExecutor.layer,
         Layer.mock(CheckpointService.CheckpointServiceV2)({
-          preflightRestore: () => Effect.succeed(undefined),
+          preflightRestore: () => Effect.undefined,
           restore,
         }),
         Layer.mock(EventSink.EventSinkV2)({}),
@@ -1231,7 +1232,7 @@ it.effect.each([
       Layer.mergeAll(
         layerThreadCommands,
         Layer.mock(CheckpointService.CheckpointServiceV2)({
-          preflightRestore: () => Effect.succeed(undefined),
+          preflightRestore: () => Effect.undefined,
           restore: () =>
             Effect.sync(() => {
               calls.push("files");

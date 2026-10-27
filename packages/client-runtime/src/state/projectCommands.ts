@@ -24,7 +24,6 @@ import {
   EnvironmentRpcUnavailableError,
   request,
   requestGuarded,
-  RpcPermissionGuard,
 } from "../rpc/client.ts";
 import type { EnvironmentProject, EnvironmentThread } from "./models.ts";
 import {
@@ -33,6 +32,7 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentQueryAtomFamily,
+  provideCommandPermissionGuard,
 } from "./runtime.ts";
 import {
   type CreateProjectInput,
@@ -292,40 +292,42 @@ export function createProjectEnvironmentAtoms<R, E>(
       tag: WS_METHODS.projectsSearchEntries,
       label: "environment-data:projects:search-entries",
       staleTimeMs: 15_000,
-      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.projectsSearchEntries>) =>
-        Effect.gen(function* () {
-          const captured = "scope" in input ? yield* captureScope(input.scope) : null;
-          return yield* fileMetadata.seedAfterRead(
-            request(WS_METHODS.projectsSearchEntries, input),
-            (result, isCurrent) =>
-              seedEntries(
-                "cwd" in input ? input.cwd : null,
-                captured?.folders ?? null,
-                result,
-                (session) => isCurrent(session) && (captured?.isCurrent() ?? true),
-              ),
-          );
-        }),
+      execute: Effect.fn("ProjectCommands.searchEntries")(function* (
+        input: EnvironmentRpcInput<typeof WS_METHODS.projectsSearchEntries>,
+      ) {
+        const captured = "scope" in input ? yield* captureScope(input.scope) : null;
+        return yield* fileMetadata.seedAfterRead(
+          request(WS_METHODS.projectsSearchEntries, input),
+          (result, isCurrent) =>
+            seedEntries(
+              "cwd" in input ? input.cwd : null,
+              captured?.folders ?? null,
+              result,
+              (session) => isCurrent(session) && (captured?.isCurrent() ?? true),
+            ),
+        );
+      }),
     }),
     listEntries: createProjectFileQuery(runtime, {
       tag: WS_METHODS.projectsListEntries,
       label: "environment-data:projects:list-entries",
       staleTimeMs: 30_000,
       idleTtlMs: 5 * 60_000,
-      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.projectsListEntries>) =>
-        Effect.gen(function* () {
-          const captured = "scope" in input ? yield* captureScope(input.scope) : null;
-          return yield* fileMetadata.seedAfterRead(
-            request(WS_METHODS.projectsListEntries, input),
-            (result, isCurrent) =>
-              seedEntries(
-                "cwd" in input ? input.cwd : null,
-                captured?.folders ?? null,
-                result,
-                (session) => isCurrent(session) && (captured?.isCurrent() ?? true),
-              ),
-          );
-        }),
+      execute: Effect.fn("ProjectCommands.listEntries")(function* (
+        input: EnvironmentRpcInput<typeof WS_METHODS.projectsListEntries>,
+      ) {
+        const captured = "scope" in input ? yield* captureScope(input.scope) : null;
+        return yield* fileMetadata.seedAfterRead(
+          request(WS_METHODS.projectsListEntries, input),
+          (result, isCurrent) =>
+            seedEntries(
+              "cwd" in input ? input.cwd : null,
+              captured?.folders ?? null,
+              result,
+              (session) => isCurrent(session) && (captured?.isCurrent() ?? true),
+            ),
+        );
+      }),
     }),
     listIgnoredFiles: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:list-ignored-files",
@@ -337,25 +339,26 @@ export function createProjectEnvironmentAtoms<R, E>(
       label: "environment-data:projects:read-file",
       staleTimeMs: 30_000,
       idleTtlMs: 5 * 60_000,
-      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.projectsReadFile>) =>
-        Effect.gen(function* () {
-          const captured = "scope" in input ? yield* captureScope(input.scope) : null;
-          return yield* fileMetadata.seedAfterRead(
-            request(WS_METHODS.projectsReadFile, input),
-            (result, isCurrent) => {
-              if (result.exists === false) return Effect.void;
-              if ("cwd" in input) return fileMetadata.rememberFile(input.cwd, result, isCurrent);
-              const located = scopedFileLocation(result.relativePath, captured?.folders ?? null);
-              return located === null
-                ? Effect.void
-                : fileMetadata.rememberFile(
-                    located.cwd,
-                    { ...result, relativePath: located.relativePath },
-                    (session) => isCurrent(session) && (captured?.isCurrent() ?? false),
-                  );
-            },
-          );
-        }),
+      execute: Effect.fn("ProjectCommands.readFile")(function* (
+        input: EnvironmentRpcInput<typeof WS_METHODS.projectsReadFile>,
+      ) {
+        const captured = "scope" in input ? yield* captureScope(input.scope) : null;
+        return yield* fileMetadata.seedAfterRead(
+          request(WS_METHODS.projectsReadFile, input),
+          (result, isCurrent) => {
+            if (result.exists === false) return Effect.void;
+            if ("cwd" in input) return fileMetadata.rememberFile(input.cwd, result, isCurrent);
+            const located = scopedFileLocation(result.relativePath, captured?.folders ?? null);
+            return located === null
+              ? Effect.void
+              : fileMetadata.rememberFile(
+                  located.cwd,
+                  { ...result, relativePath: located.relativePath },
+                  (session) => isCurrent(session) && (captured?.isCurrent() ?? false),
+                );
+          },
+        );
+      }),
     }),
     optimisticFile: (target: OptimisticProjectFileTarget) =>
       optimisticFileFamily(optimisticProjectFileKey(target)),
@@ -436,12 +439,12 @@ export function createProjectEnvironmentAtoms<R, E>(
                 : [environmentId, input.cwd, input.relativePath],
             ),
         },
-        execute: (
-          input: EnvironmentRpcInput<typeof WS_METHODS.projectsWriteFile>,
-          registry,
-          environmentId,
-        ) =>
-          Effect.gen(function* () {
+        execute: Effect.fn("ProjectCommands.writeFile")(
+          function* (
+            input: EnvironmentRpcInput<typeof WS_METHODS.projectsWriteFile>,
+            registry: AtomRegistry.AtomRegistry,
+            environmentId: EnvironmentId,
+          ) {
             yield* writePermissions.authorize(registry, environmentId, input);
             const before =
               "scope" in input ? scopeFolders(registry, environmentId, input.scope) : null;
@@ -455,12 +458,10 @@ export function createProjectEnvironmentAtoms<R, E>(
             yield* Effect.forEach(paths, fileMetadata.invalidate);
             for (const path of paths) fileMetadata.refreshPath(environmentId, path, registry);
             return result;
-          }).pipe(
-            Effect.provideService(RpcPermissionGuard, {
-              authorize: (id, method, payload) =>
-                createCommandPermissions(runtime, method).authorize(registry, id, payload),
-            }),
-          ),
+          },
+          (effect, _input, registry) =>
+            effect.pipe(provideCommandPermissionGuard(runtime, registry)),
+        ),
       }),
       requiredScopes: writePermissions.requiredScopes,
       permissionAtom: writePermissions.permissionAtom,

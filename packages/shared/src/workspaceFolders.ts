@@ -20,13 +20,8 @@ function lastSegment(location: string): string {
 }
 
 /**
- * Give each workspace folder its unique canonical path label, as in
- * `<label>/src/main.ts`. The label is the folder's name made a safe path
- * segment, else its basename, else `folder`. Every folder reserves its
- * preferred label first, unavailable folders included, so availability never
- * renumbers labels. Repeats then take the next free `-2`, `-3`, … in entry
- * order, compared case-insensitively: `app, app, app-2` becomes
- * `app, app-3, app-2`.
+ * Reserve every preferred label before suffixing duplicates, including unavailable
+ * folders, so availability changes cannot rename another folder's canonical paths.
  */
 export function allocateFolderLabels<Entry extends WorkspaceFolderEntry>(
   entries: ReadonlyArray<Entry>,
@@ -143,13 +138,7 @@ export interface ThreadWorkspace {
   readonly folders: ReadonlyArray<ResolvedWorkspaceFolder>;
 }
 
-/**
- * Resolve a thread's folders from its frozen snapshot. Each folder lives where
- * `snapshotFolderPath` puts it, and the primary at the thread's `worktreePath`. A
- * thread without a snapshot gets exactly one folder at `worktreePath ??
- * project.workspaceRoot`. `unavailableFolderPaths` is the run's record of
- * snapshot folders it can't reach.
- */
+/** A frozen snapshot keeps later project edits from changing a thread's workspace. */
 export function resolveThreadWorkspace(input: {
   readonly thread: WorkspaceThread;
   readonly project: WorkspaceProject;
@@ -211,13 +200,7 @@ export interface WorkspaceGitCheckout {
   readonly expectedBranch: string | null;
 }
 
-/**
- * The git checkouts a thread works in, the primary's first: one per checkout
- * root among its folders that were in git when it was bound, in its worktree
- * set when it has one. A submodule riding in a member's worktree is a
- * checkout of its own there, never that member. URI folders are in none. A
- * thread without a snapshot has one, at its primary path.
- */
+/** Submodules remain separate checkouts even when nested inside a worktree member. */
 export function workspaceGitCheckouts(
   thread: WorkspaceThread,
   project: WorkspaceProject,
@@ -382,13 +365,7 @@ export function worktreeSetPath(
   return appendSegments(deepest.worktree, deepest.rest);
 }
 
-/**
- * Where a snapshot folder lives in a thread's worktree set, as `worktreeSetPath`
- * places it. A folder recorded inside a git checkout maps through that
- * checkout's root and prefix: those are realpaths like each member's
- * `repositoryRoot`, so a symlinked or differently cased folder path still
- * finds its member. Undefined for a URI folder.
- */
+/** Match recorded realpaths so symlinked or differently cased folders find their worktree. */
 export function snapshotFolderPath(
   folder: Pick<OrchestrationV2ThreadWorkspaceFolder, "path" | "checkoutRoot" | "checkoutPrefix">,
   members: ReadonlyArray<OrchestrationV2ThreadWorktree>,

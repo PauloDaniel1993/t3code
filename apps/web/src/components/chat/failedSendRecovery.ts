@@ -11,11 +11,7 @@ import { readAttachmentUpload } from "../../lib/attachmentUploadQueue";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentThreadDetails } from "../../state/threads";
 import type { ChatMessage } from "../../types";
-import {
-  cloneComposerImageForRetry,
-  readFileAsDataUrl,
-  revokeUserMessagePreviewUrls,
-} from "../ChatView.logic";
+import { cloneComposerImageForRetry, readFileAsDataUrl } from "../ChatView.logic";
 import { toastManager } from "../ui/toast";
 import { stackedThreadToast } from "../ui/toastHelpers";
 
@@ -31,11 +27,7 @@ export type FailedSendDraft = Pick<
 >;
 
 export function removeFailedOptimisticMessage(messages: ChatMessage[], messageId: MessageId) {
-  const next = messages.filter((message) => {
-    if (message.id !== messageId) return true;
-    revokeUserMessagePreviewUrls(message);
-    return false;
-  });
+  const next = messages.filter((message) => message.id !== messageId);
   return next.length === messages.length ? messages : next;
 }
 

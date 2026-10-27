@@ -68,26 +68,9 @@ function releaseResult(
     : "skipped_session_active_since_check";
 }
 
-/**
- * Explains V2's idle session release: which sessions the idle timer considered,
- * why each was kept or stopped, and what the stop did. It only observes.
- * ProviderSessionManager keeps the decisions, and calls in here at each point
- * of decision, so a merge that drops a call costs a log line and never changes
- * behavior. Calls before the first decision take the manager's own session key
- * and entry lookup instead of rebuilding them here.
- *
- * Every hook is safe by construction (see `safely`), and `begin` falls back to
- * a no-op trace if it cannot even describe the candidate. Nothing is read,
- * written or allocated when the timer finds no session: `begin` returns a
- * shared no-op trace. Each decision is a `root` span, because the idle timer is
- * forked from whichever request last touched the session and would otherwise
- * attach to a trace that ended long ago.
- *
- * Read the logs of one check by `decisionId`: candidate, one decision, and for
- * a stop the stop-requested and stop-completed pair. A probe that failed is
- * logged as `pending-work-check-failed` and marks the stop that follows with
- * `pendingWorkCheck: "failed"`.
- */
+// Logging only observes decisions owned by ProviderSessionManager; every hook must tolerate logger/tracer failure.
+// No session means a shared no-op trace. Root spans avoid inheriting the timer's expired request span.
+// One decisionId links candidate, decision and stop outcome; failed probes annotate the ensuing stop.
 export function makeIdleReleaseTracer<Entry extends IdleSessionReleaseCandidate>(options: {
   readonly sessions: Ref.Ref<Map<string, Entry>>;
   readonly idleTimeoutMs: number;

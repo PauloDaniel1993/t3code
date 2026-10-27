@@ -104,6 +104,9 @@ export function ThreadFileNavigatorPane(props: {
           onSelectFolder={entriesQuery.selectFolder}
         />
       }
+      revealSelection={entriesQuery.revealSelection}
+      expandedPaths={entriesQuery.expandedPaths}
+      setExpandedPaths={entriesQuery.setExpandedPaths}
       entries={entriesQuery.entries}
       loadingDirectories={entriesQuery.loadingDirectories}
       onLoadDirectory={entriesQuery.loadDirectory}
@@ -119,10 +122,13 @@ export function ThreadFileNavigatorPane(props: {
       searchQuery={searchQuery}
       searchResultPaths={entriesQuery.searchResultPaths}
       searchTruncated={entriesQuery.searchTruncated}
-      selectedPath={props.selectedPath}
+      selectedPath={props.selectedPath ?? entriesQuery.selectedPath}
       onPreviewFile={handlePreviewFile}
       onRefresh={entriesQuery.refresh}
-      onSelectFile={(path) => props.onSelectFile(path, entriesQuery.scopeForPath(path)?.folderPath)}
+      onSelectFile={(path) => {
+        entriesQuery.selectPath(path);
+        props.onSelectFile(path, entriesQuery.scopeForPath(path)?.folderPath);
+      }}
     />
   );
 

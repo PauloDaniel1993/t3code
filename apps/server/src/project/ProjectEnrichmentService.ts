@@ -29,9 +29,7 @@ const DEFAULT_CACHE_CAPACITY = 512;
 const DEFAULT_MAX_PENDING = 512;
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_SUCCESS_TTL = Duration.minutes(1);
-// A favicon scan checks about 20 files. Shell reads (and PR sync through them) ask for every
-// linked project about once a minute, and icons rarely change, so a resolved favicon is kept
-// longer than the identity, which is only a hit on RepositoryIdentityResolver's own cache.
+// Frequent shell reads scan ~20 files per project; icons change rarely, so cache longer than identities.
 const DEFAULT_FAVICON_TTL = Duration.minutes(15);
 const DEFAULT_FAILURE_TTL = Duration.seconds(5);
 const FOLDER_PROBE_CONCURRENCY = 4;
@@ -474,11 +472,8 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     projectId,
   ) => Ref.get(workspaceFileStatuses).pipe(Effect.map((statuses) => statuses.get(projectId)));
 
-  const setWorkspaceFileStatus: ProjectEnrichmentService["Service"]["setWorkspaceFileStatus"] = (
-    projectId,
-    status,
-  ) =>
-    Effect.gen(function* () {
+  const setWorkspaceFileStatus: ProjectEnrichmentService["Service"]["setWorkspaceFileStatus"] =
+    Effect.fn("ProjectEnrichmentService.setWorkspaceFileStatus")(function* (projectId, status) {
       const changed = yield* Ref.modify(workspaceFileStatuses, (current) => {
         if (sameWorkspaceFileStatus(current.get(projectId), status))
           return [false, current] as const;

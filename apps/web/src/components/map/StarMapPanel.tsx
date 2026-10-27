@@ -22,11 +22,9 @@ import {
   X,
 } from "lucide-react";
 import {
-  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
-  useMemo,
   useReducer,
   useRef,
   useState,
@@ -41,6 +39,8 @@ import { Checkbox } from "~/components/ui/checkbox";
 import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useNewThreadTaskAvailability } from "~/hooks/useNewThreadTaskAvailability";
+import { useStableCallback } from "~/hooks/useStableCallback";
+import { observeResize } from "~/lib/observeResize";
 import { cn, newMessageId } from "~/lib/utils";
 import { withAsyncCleanup } from "~/lib/withAsyncCleanup";
 import { selectActiveRightPanel, useRightPanelStore } from "~/rightPanelStore";
@@ -180,13 +180,8 @@ function UnparseableMapEmptyState(props: { lints: ReadonlyArray<WayfinderLint> }
   );
 }
 
-/**
- * The accessible parallel view of the constellation (design decision 14).
- * Focus is a transient highlight: focusing an item highlights its star and
- * eases the camera to it; activating an item selects the ticket. Selection
- * also flows the other way — a star clicked on the canvas highlights and
- * scrolls to its list item here.
- */
+// List focus highlights and centers a star; activation selects its ticket.
+// Canvas selection scrolls the corresponding list item into view.
 function TicketList(props: {
   graph: StarMapGraph;
   selectedTicketId: string | null;
@@ -201,6 +196,7 @@ function TicketList(props: {
     (left, right) => left.rank - right.rank || left.ordinal - right.ordinal,
   );
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Scroll the selected ticket into the accessible list's viewport.
   useEffect(() => {
     if (props.selectedTicketId === null) return;
     listRef.current
@@ -259,7 +255,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const [state, dispatch] = useReducer(starMapPanelReducer, initialStarMapPanelState);
   const reloadInFlightRef = useRef(false);
   const [isReloading, setIsReloading] = useState(false);
-  const handleReloadMap = useCallback(() => {
+  const handleReloadMap = () => {
     if (reloadInFlightRef.current) return;
     reloadInFlightRef.current = true;
     setIsReloading(true);
@@ -280,13 +276,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         });
       }
     })();
-  }, [props.cwd, props.environmentId, refreshMaps]);
+  };
 
-  // The panel needs its thread's right-panel scope for two things: the
-  // surface-active gate below and the ticket detail's open-as-file action.
-  // ChatView does not pass a ref down, so resolve it from the route params —
-  // the same pattern CommandPalette uses — with draft sessions resolved to
-  // their pre-allocated thread ref.
+  // Draft routes use the preallocated thread for panel visibility and file actions.
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -294,21 +286,15 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const draftSession = useComposerDraftStore((store) =>
     routeTarget?.kind === "draft" ? store.getDraftSession(routeTarget.draftId) : null,
   );
-  const threadRef = useMemo<ScopedThreadRef | null>(() => {
+  const threadRef = (() => {
     if (routeTarget?.kind === "server") return routeTarget.threadRef;
     if (routeTarget?.kind === "draft" && draftSession !== null) {
       return scopeThreadRef(draftSession.environmentId, draftSession.threadId);
     }
     return null;
-  }, [routeTarget, draftSession]);
+  })() satisfies ScopedThreadRef | null;
 
-  // The surface-active hard stop. RightPanelSheet mounts its popup with
-  // keepMounted, so "not visible" is not necessarily "unmounted" — tell the
-  // engine whether this thread's map surface is the active one. With today's
-  // ChatView wiring an inactive surface also unmounts (destroy() covers it),
-  // but this gate is what keeps the loop stopped if the panel ever stays
-  // mounted while hidden; fail open when the thread ref is unknown, because a
-  // mounted panel is the active surface in every wiring that renders it.
+  // A kept-mounted panel can be hidden; stop its renderer when another surface is active.
   const mapSurfaceActive = useRightPanelStore((storeState) =>
     threadRef !== null ? selectActiveRightPanel(storeState.byThreadKey, threadRef) === "map" : true,
   );
@@ -323,46 +309,39 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const [showAllLinks, setShowAllLinks] = useState(false);
   const view = viewOverride ?? defaultStarMapView({ containerWidthPx, prefersReducedMotion });
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Observe the panel width to select its responsive default view.
   useLayoutEffect(() => {
     const root = panelRootRef.current;
     if (root === null) return;
-    const observer = new ResizeObserver((entries) => {
+    const stopObserving = observeResize(root, (entries) => {
       const entry = entries[0];
       if (entry !== undefined) setContainerWidthPx(entry.contentRect.width);
     });
-    observer.observe(root);
     setContainerWidthPx(root.clientWidth);
-    return () => observer.disconnect();
+    return stopObserving;
   }, []);
 
-  useEffect(() => {
-    if (snapshot !== null) dispatch({ type: "syncSnapshot", snapshot });
-  }, [snapshot]);
+  const [syncedSnapshot, setSyncedSnapshot] = useState(snapshot);
+  if (snapshot !== null && snapshot !== syncedSnapshot) {
+    setSyncedSnapshot(snapshot);
+    dispatch({ type: "syncSnapshot", snapshot });
+  }
 
   const selectedMap = snapshot?.maps.find((map) => map.id === state.selectedMapId) ?? null;
   const selectedMapComplete = selectedMap !== null && isWayfinderMapComplete(selectedMap);
-  const graph = useMemo(
-    () => (selectedMap !== null ? buildStarMapGraph(selectedMap) : null),
-    [selectedMap],
-  );
+  const graph = selectedMap !== null ? buildStarMapGraph(selectedMap) : null;
   const hiddenLinkCount = graph === null ? 0 : graph.edges.length - graph.backboneEdges.length;
   // Status and label changes keep the same topology, so retain its solver input.
   const [layoutGraph, setLayoutGraph] = useState(graph);
   if (layoutGraph?.revision !== graph?.revision) setLayoutGraph(graph);
-  const layout = useMemo(
-    () => (layoutGraph !== null ? layoutStarMap(layoutGraph) : null),
-    [layoutGraph],
-  );
+  const layout = layoutGraph !== null ? layoutStarMap(layoutGraph) : null;
   const selectedNode =
     state.selectedTicket !== null && graph !== null
       ? (graph.nodeById.get(state.selectedTicket) ?? null)
       : null;
 
-  const readyTickets = useMemo(() => graph?.nodes.filter((node) => node.isFrontier) ?? [], [graph]);
-  const readyTicketIds = useMemo(
-    () => new Set(readyTickets.map((node) => node.id)),
-    [readyTickets],
-  );
+  const readyTickets = graph?.nodes.filter((node) => node.isFrontier) ?? [];
+  const readyTicketIds = new Set(readyTickets.map((node) => node.id));
   // Picked tickets belong to the open map and stay ready-only. Reconciling
   // while rendering (React's adjust-state-on-change pattern) stores the pruned
   // selection, so a map switch or a lost frontier status forgets the pick.
@@ -462,26 +441,35 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   // List focus is a transient canvas highlight; selection is the persistent
   // one. Focus wins while it lasts so keyboard traversal glides the camera.
   const [focusedTicketId, setFocusedTicketId] = useState<string | null>(null);
-  useEffect(() => setFocusedTicketId(null), [state.selectedMapId]);
+  const [previousMapId, setPreviousMapId] = useState(state.selectedMapId);
+  if (previousMapId !== state.selectedMapId) {
+    setPreviousMapId(state.selectedMapId);
+    setFocusedTicketId(null);
+    setShowAllLinks(false);
+  }
   const canvasSelection = focusedTicketId ?? state.selectedTicket;
 
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<StarMapRenderer | null>(null);
-  // Latest-layout ref so the native pointer handlers below always read the
-  // current positions without re-registering on every snapshot.
   const layoutRef = useRef(layout);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Native pointer handlers read the committed layout without re-registering.
   useLayoutEffect(() => {
     layoutRef.current = layout;
   }, [layout]);
   // Camera survives Map/List toggles, per map — the toggle must not teleport.
   const cameraStashRef = useRef<{ mapId: string; camera: StarMapCamera } | null>(null);
   const selectedMapId = state.selectedMapId;
-  useEffect(() => setShowAllLinks(false), [selectedMapId]);
+  const readRendererOptions = useStableCallback(() => ({
+    graph,
+    layout,
+    complete: selectedMapComplete,
+    selection: canvasSelection,
+    showAllLinks,
+    surfaceActive: mapSurfaceActive,
+  }));
 
-  // 8.8: engine lifecycle plus pan/zoom input. The engine is created once per
-  // (view, selected map) entry; graph, layout, selection, and the surface
-  // gate flow through the sync effects that follow, so a status-only snapshot
-  // never rebuilds the canvas or loses the camera.
+  // Status updates must preserve the renderer's camera and gesture state.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the canvas renderer and native gesture listeners for this map and view.
   useEffect(() => {
     const host = canvasHostRef.current;
     if (view !== "map" || selectedMapId === null || host === null) return;
@@ -490,13 +478,8 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       stash !== null && stash.mapId === selectedMapId ? stash.camera : undefined;
     const renderer = new StarMapRenderer({
       container: host,
-      graph,
-      layout,
-      complete: selectedMapComplete,
+      ...readRendererOptions(),
       ...(stashedCamera !== undefined ? { camera: stashedCamera } : {}),
-      selection: canvasSelection,
-      showAllLinks,
-      surfaceActive: mapSurfaceActive,
     });
     renderer.start();
     rendererRef.current = renderer;
@@ -610,17 +593,21 @@ export default function StarMapPanel(props: StarMapPanelProps) {
       rendererRef.current = null;
       renderer.destroy();
     };
-  }, [view, selectedMapId]);
+  }, [view, selectedMapId, readRendererOptions]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Update the existing canvas without rebuilding its camera or gesture state.
   useEffect(() => {
     rendererRef.current?.setGraph(graph, layout, selectedMapComplete);
   }, [graph, layout, selectedMapComplete]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the canvas highlight with list or ticket selection.
   useEffect(() => {
     rendererRef.current?.setSelection(canvasSelection);
   }, [canvasSelection]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the canvas dependency-link display.
   useEffect(() => {
     rendererRef.current?.setShowAllLinks(showAllLinks);
   }, [showAllLinks]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Stop the canvas frame loop while its panel is inactive.
   useEffect(() => {
     rendererRef.current?.setSurfaceActive(mapSurfaceActive);
   }, [mapSurfaceActive]);
@@ -628,6 +615,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   // 8.9: eased camera move to the selected/focused star. Reduced motion jumps
   // straight there — the engine renders a single static frame either way.
   const easeRafRef = useRef<number | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Animate the imperative camera toward selection and cancel its pending frame on cleanup.
   useEffect(() => {
     if (easeRafRef.current !== null) {
       cancelAnimationFrame(easeRafRef.current);

@@ -1,3 +1,4 @@
+// oxlint-disable-next-line t3code/require-disposable-render -- This headless task-state harness inspects renderer nodes without a DOM.
 import { act } from "react";
 import { create as createRenderer, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -47,7 +48,7 @@ vi.mock("./ui/tooltip", async () => {
     TooltipPopup: ({ children }: { children: React.ReactNode }) => children,
   };
 });
-vi.mock("../state/threads", () => ({ environmentThreadDetails: {} }));
+vi.mock("../state/threads", () => ({ environmentThreadDetails: {}, useThreadFamily: () => {} }));
 vi.mock("./sidebarTaskPresentation", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./sidebarTaskPresentation")>()),
   useSidebarTaskProjection: (ref: unknown) =>
@@ -115,6 +116,7 @@ const render = (tasks: ReadonlyArray<EnvironmentThreadShell>) => (
 );
 
 beforeEach(() => {
+  // oxlint-disable-next-line t3code/require-disposable-render -- React's headless renderer requires its act flag in this task-state harness.
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-29T00:08:00.000Z"));

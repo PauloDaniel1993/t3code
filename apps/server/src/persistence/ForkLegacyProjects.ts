@@ -11,14 +11,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { recordForkImportWarning } from "./ForkImportDiagnostics.ts";
 import { runMigrations } from "./Migrations.ts";
 
-/**
- * Sanitize only the copied V1 project baseline, preserving bad values for recovery.
- * Upstream's migration 055 turns each project row into an immutable baseline
- * event, so this runs before upstream's migrations. A V1 history of any age is
- * first brought to migration 54, because earlier migrations still rewrite these
- * columns (canonical model selections, the icon column). A V2 history already
- * has its baseline and is left alone.
- */
+// Preserve damaged V1 project values for recovery, then sanitize before migration 55 freezes its baseline.
+// Migrate to 54 first because earlier migrations rewrite these columns; V2 baselines remain untouched.
 export const prepareForkLegacyProjects = Effect.fn("prepareForkLegacyProjects")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const ledger = yield* sql`

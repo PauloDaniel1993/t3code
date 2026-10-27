@@ -173,65 +173,65 @@ export function mergeShellSnapshotProjects(
 
   if (isEnrichment) {
     const nextById = new Map(next.projects.map((project) => [project.id, project] as const));
-    return {
-      ...previous,
-      projects: previous.projects.map((project) => {
-        const candidate = nextById.get(project.id);
-        if (candidate === undefined) {
-          return project;
+    const projects = previous.projects.map((project) => {
+      const candidate = nextById.get(project.id);
+      if (candidate === undefined) {
+        return project;
+      }
+      let enriched = project;
+      if (candidate.workspaceRoot === project.workspaceRoot) {
+        if (
+          resolvedRootSet?.has(project.workspaceRoot) === true ||
+          (project.repositoryIdentity == null && candidate.repositoryIdentity != null)
+        ) {
+          // Preserve project references when an enrichment refresh repeats known facts.
+          if (!sameRepositoryIdentity(project.repositoryIdentity, candidate.repositoryIdentity)) {
+            enriched = { ...enriched, repositoryIdentity: candidate.repositoryIdentity };
+          }
         }
-        let enriched = project;
-        if (candidate.workspaceRoot === project.workspaceRoot) {
-          if (
-            resolvedRootSet?.has(project.workspaceRoot) === true ||
-            (project.repositoryIdentity == null && candidate.repositoryIdentity != null)
-          ) {
-            // Preserve project references when an enrichment refresh repeats known facts.
-            if (!sameRepositoryIdentity(project.repositoryIdentity, candidate.repositoryIdentity)) {
-              enriched = { ...enriched, repositoryIdentity: candidate.repositoryIdentity };
-            }
+      }
+      if (
+        enrichedIdSet.has(project.id) &&
+        project.workspaceFile &&
+        project.workspaceFile === candidate.workspaceFile
+      ) {
+        const factsByPath = new Map(
+          candidate.folders?.map((folder) => [folderKey(folder), folder]),
+        );
+        if (project.folders !== undefined) {
+          const folders = project.folders.map((folder, index) => {
+            const facts = factsByPath.get(folderKey(folder));
+            return facts === undefined
+              ? folder
+              : mergeFolderFacts(
+                  folder,
+                  {
+                    ...facts,
+                    ...folder,
+                    availability: facts.availability,
+                    unavailableReason: facts.unavailableReason,
+                    remoteDescription: facts.remoteDescription,
+                    vcs: facts.vcs,
+                  },
+                  index === 0,
+                );
+          });
+          if (folders.some((folder, index) => folder !== project.folders?.[index])) {
+            enriched = { ...enriched, folders };
           }
         }
         if (
-          enrichedIdSet.has(project.id) &&
-          project.workspaceFile &&
-          project.workspaceFile === candidate.workspaceFile
+          candidate.workspaceFileStatus !== undefined &&
+          !sameWorkspaceFileStatus(project.workspaceFileStatus, candidate.workspaceFileStatus)
         ) {
-          const factsByPath = new Map(
-            candidate.folders?.map((folder) => [folderKey(folder), folder]),
-          );
-          if (project.folders !== undefined) {
-            const folders = project.folders.map((folder, index) => {
-              const facts = factsByPath.get(folderKey(folder));
-              return facts === undefined
-                ? folder
-                : mergeFolderFacts(
-                    folder,
-                    {
-                      ...facts,
-                      ...folder,
-                      availability: facts.availability,
-                      unavailableReason: facts.unavailableReason,
-                      remoteDescription: facts.remoteDescription,
-                      vcs: facts.vcs,
-                    },
-                    index === 0,
-                  );
-            });
-            if (folders.some((folder, index) => folder !== project.folders?.[index])) {
-              enriched = { ...enriched, folders };
-            }
-          }
-          if (
-            candidate.workspaceFileStatus !== undefined &&
-            !sameWorkspaceFileStatus(project.workspaceFileStatus, candidate.workspaceFileStatus)
-          ) {
-            enriched = { ...enriched, workspaceFileStatus: candidate.workspaceFileStatus };
-          }
+          enriched = { ...enriched, workspaceFileStatus: candidate.workspaceFileStatus };
         }
-        return enriched;
-      }),
-    };
+      }
+      return enriched;
+    });
+    return projects.every((project, index) => project === previous.projects[index])
+      ? previous
+      : { ...previous, projects };
   }
 
   const previousById = new Map(previous.projects.map((project) => [project.id, project] as const));

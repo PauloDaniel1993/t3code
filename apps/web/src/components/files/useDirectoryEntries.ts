@@ -1,10 +1,13 @@
 import type { EnvironmentId, ProjectEntry, WorkspaceScopeFolder } from "@t3tools/contracts";
+import { useAtomMount, useAtomSubscribe } from "@effect/atom-react";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { environmentCatalog } from "~/connection/catalog";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { projectEnvironment } from "~/state/projects";
+import { useStableCallback } from "~/hooks/useStableCallback";
 
 import {
   workspaceFileContextKey,
@@ -18,14 +21,9 @@ export function useDirectoryEntries(
   workspace?: WorkspaceFileContext,
 ) {
   const workspaceKey = workspaceFileContextKey(cwd, workspace);
-  const workspaceRef = useRef(workspace);
-  useLayoutEffect(() => {
-    workspaceRef.current = workspace;
-  }, [workspace]);
   const [folders, setFolders] = useState<readonly WorkspaceScopeFolder[]>([]);
   const [directories, setDirectories] = useState(new Map<string, readonly ProjectEntry[]>());
   const [errors, setErrors] = useState(new Map<string, string>());
-  // The root starts counted as loading because the mount effect requests it.
   const [pending, setPending] = useState(1);
   const [loadingDirectories, setLoadingDirectories] = useState<ReadonlySet<string>>(
     () => new Set([""]),
@@ -39,12 +37,11 @@ export function useDirectoryEntries(
   const waiting = useRef<Array<() => void>>([]);
 
   // Callers count the request as pending first; the mount load is counted by the initial state.
-  const startRequest = useCallback(
+  const startRequest = useStableCallback(
     (directoryPath: string, refresh: boolean): Promise<void> => {
       const requestGeneration = generation.current;
       loaded.current.add(directoryPath);
       requested.current.add(directoryPath);
-      const workspace = workspaceRef.current;
       const reference = directoryPath ? workspaceFileReference(workspace, directoryPath) : null;
       const scope = reference?.scope ?? workspace?.scope;
       const atom = projectEnvironment.listEntries({
@@ -116,7 +113,6 @@ export function useDirectoryEntries(
       requests.current.set(directoryPath, request);
       return request;
     },
-    [cwd, environmentId, workspaceKey],
   );
 
   const load = function loadDirectory(directoryPath: string, refresh = false): Promise<void> {
@@ -135,23 +131,39 @@ export function useDirectoryEntries(
     return startRequest(directoryPath, refresh);
   };
 
+  const contextKey = `${environmentId}:${workspaceKey}`;
+  const [loadedContextKey, setLoadedContextKey] = useState(contextKey);
+  if (loadedContextKey !== contextKey) {
+    setLoadedContextKey(contextKey);
+    setFolders([]);
+    setDirectories(new Map());
+    setErrors(new Map());
+    setPending(1);
+    setLoadingDirectories(new Set([""]));
+  }
+
   useEffect(() => {
     generation.current++;
     active.current = true;
     requests.current.clear();
     loaded.current.clear();
     requested.current.clear();
-    setFolders([]);
-    setDirectories(new Map());
-    setErrors(new Map());
-    setPending(1);
-    setLoadingDirectories(new Set([""]));
     void startRequest("", false);
     return () => {
       active.current = false;
       generation.current++;
     };
-  }, [startRequest]);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- The stable request handler reads the new context; its generation must reset when that context changes.
+  }, [contextKey, startRequest]);
+
+  // A folder read fails at once while its environment is unreachable; read it again once a new
+  // session is up rather than leaving the error until someone retries by hand.
+  const sessionGeneration = environmentCatalog.sessionGenerationAtom(environmentId);
+  // A listener alone does not compute the atom, so nothing would follow the connection.
+  useAtomMount(sessionGeneration);
+  useAtomSubscribe(sessionGeneration, () => {
+    for (const path of errors.keys()) void load(path);
+  });
 
   const entries: ProjectEntry[] = [];
   const visit = (path: string) => {

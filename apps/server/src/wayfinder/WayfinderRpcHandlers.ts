@@ -6,15 +6,8 @@ import type { WayfinderMapsInput } from "@t3tools/contracts";
 import * as WayfinderMaps from "./WayfinderMaps.ts";
 import { toWayfinderMapsRpcError } from "./WayfinderRpcError.ts";
 
-/**
- * Bodies of the two Wayfinder RPC handlers for one connection. `ws.ts` builds this once per
- * connection and wraps the handlers in its own authorization and tracing; everything else
- * about the methods lives here, so the shared file only registers them.
- *
- * A connection holds at most `WAYFINDER_MAPS_MAX_SUBSCRIPTIONS_PER_CONNECTION` map
- * subscriptions. Past that, a new one fails at once with a capacity error the panel shows;
- * ending any subscription frees its slot.
- */
+// Build once per connection; ws.ts supplies authorization and tracing.
+// The per-connection subscription cap fails immediately, and closing a subscription frees its slot.
 export const makeWayfinderRpcHandlers = Effect.gen(function* () {
   const wayfinderMaps = yield* WayfinderMaps.WayfinderMaps;
   const subscriptions = yield* Ref.make(0);

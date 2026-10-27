@@ -2,12 +2,57 @@
 import * as NodeCrypto from "node:crypto";
 import type * as NodeSqlite from "node:sqlite";
 import * as Schema from "effect/Schema";
+import {
+  indexedMessageConditionSql,
+  indexedMessageTextSql,
+} from "../orchestration-v2/messageSearchIndex.ts";
 
 const identifier = (name: string) => `"${name.replaceAll('"', '""')}"`;
 const Table = Schema.Struct({ name: Schema.String, type: Schema.String });
 const Column = Schema.Struct({ name: Schema.String, pk: Schema.Number });
 const decodeTables = Schema.decodeUnknownSync(Schema.Array(Table));
 const decodeColumns = Schema.decodeUnknownSync(Schema.Array(Column));
+const messageSearchTable = "orchestration_v2_message_search";
+
+function derivedSearchTables(database: NodeSqlite.DatabaseSync): Set<string> {
+  const definition = database
+    .prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?")
+    .get(messageSearchTable)?.sql;
+  if (typeof definition !== "string" || !/\bUSING\s+fts5\s*\(/i.test(definition)) return new Set();
+  const shadows = new Set(
+    ["data", "idx", "content", "docsize", "config"].map(
+      (suffix) => `${messageSearchTable}_${suffix}`,
+    ),
+  );
+  return new Set(
+    decodeTables(database.prepare("PRAGMA main.table_list").all())
+      .filter(
+        (table) =>
+          (table.type === "virtual" && table.name === messageSearchTable) ||
+          (table.type === "shadow" && shadows.has(table.name)),
+      )
+      .map((table) => table.name),
+  );
+}
+
+export function rebuildDatabaseMessageSearch(database: NodeSqlite.DatabaseSync): void {
+  if (!derivedSearchTables(database).has(messageSearchTable)) return;
+  database.exec("BEGIN");
+  try {
+    database.exec(`
+      INSERT INTO ${messageSearchTable} (${messageSearchTable}) VALUES ('delete-all');
+      INSERT INTO ${messageSearchTable} (rowid, text)
+      SELECT messages.rowid, ${indexedMessageTextSql("messages.payload_json")}
+      FROM orchestration_v2_projection_messages AS messages
+      WHERE ${indexedMessageConditionSql()}
+          AND ${indexedMessageTextSql("messages.payload_json")} IS NOT NULL;
+    `);
+    database.exec("COMMIT");
+  } catch (cause) {
+    database.exec("ROLLBACK");
+    throw cause;
+  }
+}
 
 function hashValue(hash: NodeCrypto.Hash, value: NodeSqlite.SQLOutputValue): void {
   if (value === null) {
@@ -57,8 +102,27 @@ export function requireV2Database(database: NodeSqlite.DatabaseSync): void {
       "SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id DESC LIMIT 1",
     )
     .get();
-  if (latest?.migration_id !== 56 || latest.name !== "RemoveRedundantProjectionIndexes") {
-    throw new Error("Maintenance requires the supported V2 schema version (migration 56).");
+  const supported = new Map([
+    [56, "RemoveRedundantProjectionIndexes"],
+    [57, "ScheduledTaskWebhooks"],
+    [58, "WebhookRelayDeliveries"],
+    [59, "McpAppModelContext"],
+    [60, "ThreadSnapshotWindowIndexes"],
+    [61, "PullRequestReviewGuides"],
+    [62, "ThreadFailureLookupIndex"],
+    [63, "DropUnusedV1Projections"],
+    [64, "CanonicalizeThreadPullRequestLinks"],
+    [65, "CodexUsageNativeTurnIndex"],
+    [66, "RepairClientSettlementTimestamps"],
+    [67, "WebhookDedupe"],
+    [68, "ShellStopRequestIndex"],
+    [69, "ThreadMessageSearch"],
+  ]);
+  if (
+    typeof latest?.migration_id !== "number" ||
+    supported.get(latest.migration_id) !== latest.name
+  ) {
+    throw new Error("Maintenance requires a supported V2 schema version (migrations 56–69).");
   }
   for (const name of [
     "orchestration_events",
@@ -75,8 +139,9 @@ export function requireV2Database(database: NodeSqlite.DatabaseSync): void {
       throw new Error(`Required V2 table is missing: ${name}.`);
     }
   }
+  const derived = derivedSearchTables(database);
   for (const table of decodeTables(database.prepare("PRAGMA main.table_list").all())) {
-    if (table.type !== "table" && table.type !== "view") {
+    if (table.type !== "table" && table.type !== "view" && !derived.has(table.name)) {
       throw new Error(`Maintenance cannot validate ${table.type} table ${table.name}.`);
     }
   }
@@ -89,8 +154,10 @@ export function requireV2Database(database: NodeSqlite.DatabaseSync): void {
  * Hidden rowids are deliberately excluded: VACUUM may renumber those identifiers.
  */
 export function fingerprintDatabase(database: NodeSqlite.DatabaseSync): string {
+  // FTS is rebuilt from the fingerprinted messages; its rowids change with VACUUM.
+  const derived = derivedSearchTables(database);
   const tables = decodeTables(database.prepare("PRAGMA main.table_list").all())
-    .filter(({ name }) => name !== "sqlite_schema")
+    .filter(({ name }) => name !== "sqlite_schema" && !derived.has(name))
     .toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const hash = NodeCrypto.createHash("sha256");
   hash.update(

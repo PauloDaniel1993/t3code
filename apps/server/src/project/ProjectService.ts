@@ -29,6 +29,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
+import { withCommandMetrics } from "../observability/Metrics.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
@@ -292,11 +293,8 @@ export const make = Effect.gen(function* () {
   const projectLocks = yield* KeyedLock.make<ProjectId>();
   const workspaceLocks = yield* KeyedLock.make<string>();
   const workspaceFileLocks = yield* KeyedLock.make<string>();
-  // Reading a linked project's workspace file and acting on it runs in order
-  // per project, with link, relink, unlink and new bindings too, so an older
-  // read never lands after a newer one or after the link changed. It is the
-  // outermost lock: under it a command takes the project, root, file and
-  // thread locks, so nothing may wait for it while holding one of those.
+  // Serialize workspace-file reads, link changes and new bindings per project so stale reads cannot win.
+  // This lock is outermost: never wait for it while holding project, root, file or thread locks.
   const workspaceFileSyncLocks = yield* KeyedLock.make<ProjectId>();
 
   const toProject = (
@@ -459,8 +457,7 @@ export const make = Effect.gen(function* () {
         `Command ${command.commandId} was already used by ${receipt.commandType} for ${receipt.projectId}.`,
       );
     }
-    // A retried command re-plans against the state it already produced, so its
-    // first receipt, not the new plan, decides the outcome.
+    // Retries re-plan against their own effects; the first receipt determines the outcome.
     if (receipt.status === "accepted") return;
     const rejection = Option.getOrUndefined(decodeProjectCommandRejection(receipt.error));
     switch (rejection?._tag) {
@@ -483,7 +480,7 @@ export const make = Effect.gen(function* () {
           rejection ?? receipt.error ?? "The command was previously rejected.",
         );
     }
-  });
+  }, withCommandMetrics);
 
   const readCommitted = Effect.fn("ProjectService.readCommitted")(function* (projectId: ProjectId) {
     const row = yield* readRow(projectId, { includeDeleted: true });
@@ -724,13 +721,8 @@ export const make = Effect.gen(function* () {
       { discard: true },
     );
 
-  /**
-   * Read a linked project's workspace file and follow it. A changed definition
-   * commits as one update, moving the primary if entry 0 changed; a file that
-   * can't be used leaves the project as it is. Either way the read's health is
-   * recorded. The caller holds the project's sync lock. Returns why the file
-   * can't be used, if it can't.
-   */
+  // Under the project sync lock, commit usable definition changes atomically and record read health either way.
+  // Invalid definitions leave the project unchanged; entry zero determines its primary.
   const syncWorkspaceFile = Effect.fn("ProjectService.syncWorkspaceFile")(function* (
     projectId: ProjectId,
     reason: WorkspaceFileSyncReason,
@@ -1026,13 +1018,8 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  /**
-   * Linking freezes each existing thread at the project's one folder, so a
-   * later primary change never moves it and the link never widens what it
-   * reaches. A thread in its own worktree of that folder keeps working there,
-   * with the worktree as a one-member set. Each thread commits under its own
-   * lock, idempotently per link command.
-   */
+  // Linking freezes existing threads at their current single folder without widening their access.
+  // Existing worktrees become one-member sets; each thread commits idempotently under its own lock.
   const bindThreadsAtLink = Effect.fn("ProjectService.bindThreadsAtLink")(function* (input: {
     readonly commandId: CommandId;
     readonly projectId: ProjectId;
@@ -1239,11 +1226,7 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  // A machine-disabled provider instance that a deleted project's override
-  // once turned on must not stay probed and alive forever. Nothing else
-  // removes the entry, so deletion is where it goes; best-effort because a
-  // settings write failure should not block the deletion it is cleaning up
-  // after, and a server crash before a replay never revisits this project.
+  // Best-effort cleanup releases disabled instances kept alive by overrides; crashes have no replay to revisit deletion.
   const clearProjectSettingsOverrides = (projectId: ProjectId) =>
     serverSettings.updateSettings({ projectSettingsOverrides: { [projectId]: null } }).pipe(
       Effect.asVoid,
@@ -1258,8 +1241,7 @@ export const make = Effect.gen(function* () {
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {
       const { projectId } = input;
-      // A deleted row still reaches commit, so a retried command id replays its
-      // receipt and any other command id is rejected as not found.
+      // Read deleted rows so retries replay receipts and other command ids fail as not found.
       const existing = yield* readRow(projectId, { includeDeleted: true });
       if (Option.isNone(existing)) {
         return yield* new ProjectNotFoundError({ projectId });

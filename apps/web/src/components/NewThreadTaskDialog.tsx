@@ -10,7 +10,7 @@ import {
   workspaceFolderScope,
 } from "@t3tools/client-runtime/workspace-folder-access";
 import { createModelSelection } from "@t3tools/shared/model";
-import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { withAsyncCleanup } from "../lib/withAsyncCleanup";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../modelSelection";
@@ -69,33 +69,23 @@ export function NewThreadTaskDialog(props: {
   const [failure, setFailure] = useState<string | null>(null);
   const submittingRef = useRef(false);
   const formId = useId();
-  const entries = useMemo(
-    () =>
-      sortProviderInstanceEntries(
-        applyProviderInstanceSettings(
-          deriveProviderInstanceEntries(providers),
-          settings,
-          parent?.projectId ?? null,
-        ),
-      ),
-    [providers, settings, parent?.projectId],
+  const entries = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(providers),
+      settings,
+      parent?.projectId ?? null,
+    ),
   );
-  const modelOptionsByInstance = useMemo<
-    ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>
-  >(
-    () =>
-      new Map(
-        entries.map((entry) => [
-          entry.instanceId,
-          getAppModelOptionsForInstance(
-            settings,
-            entry,
-            entry.instanceId === model.instanceId ? model.model : null,
-          ),
-        ]),
+  const modelOptionsByInstance = new Map(
+    entries.map((entry) => [
+      entry.instanceId,
+      getAppModelOptionsForInstance(
+        settings,
+        entry,
+        entry.instanceId === model.instanceId ? model.model : null,
       ),
-    [entries, settings, model.instanceId, model.model],
-  );
+    ]),
+  ) satisfies ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>;
   const selectedEntry = entries.find((entry) => entry.instanceId === model.instanceId);
   const selectedModel = modelOptionsByInstance
     .get(model.instanceId)
@@ -106,20 +96,14 @@ export function NewThreadTaskDialog(props: {
   );
   const modeNotice = parent ? getNewThreadTaskModeNotice(parent, parentProvider?.driver) : null;
   // The task works in its parent's folders, so it needs a provider that reaches them all.
-  const workspaceScope = useMemo(
-    () => workspaceFolderScope({ thread: parent, project: null }),
-    [parent],
-  );
-  const getModelDisabledReason = useCallback(
-    (instanceId: ProviderInstanceId) =>
-      isProviderEligibleForScope(
-        providers.find((provider) => provider.instanceId === instanceId),
-        workspaceScope,
-      )
-        ? null
-        : PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
-    [providers, workspaceScope],
-  );
+  const workspaceScope = workspaceFolderScope({ thread: parent, project: null });
+  const getModelDisabledReason = (instanceId: ProviderInstanceId) =>
+    isProviderEligibleForScope(
+      providers.find((provider) => provider.instanceId === instanceId),
+      workspaceScope,
+    )
+      ? null
+      : PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE;
   const problem =
     parentProblem ??
     validateNewThreadTaskRequest(draft, model) ??

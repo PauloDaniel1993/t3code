@@ -17,6 +17,7 @@ import { repairForkTaskLinks } from "./ForkTaskLinkRepair.ts";
 import { TestLayer, seedThreads, stamp } from "./ForkDataCarryOver.testkit.ts";
 
 const end = "2026-01-01T00:08:00.000Z";
+const encodeLegacyTask = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const delivered = "2026-01-01T00:09:00Z";
 // The fork's per-task delivery; "failed" was delivered by a build that kept no time.
 const deliveries = {
@@ -51,7 +52,7 @@ it.effect(
           result: status === "finished" ? { summary: "Result", completedAt: end } : null,
           delivery: deliveries[status],
         };
-        yield* sql`UPDATE projection_threads SET task_json = ${yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(task)}, updated_at = ${end} WHERE thread_id = ${status}`;
+        yield* sql`UPDATE projection_threads SET task_json = ${yield* encodeLegacyTask(task)}, updated_at = ${end} WHERE thread_id = ${status}`;
       }
       const importer = yield* LegacyV1ThreadImporter;
       yield* importer.reconcileShells;
@@ -98,7 +99,7 @@ it.effect(
       });
       yield* repairForkTaskLinks();
       const maintenance = yield* ProjectionMaintenanceV2;
-      yield* maintenance.compactEventStore;
+      yield* maintenance.compactEventStore();
       assert.isTrue((yield* maintenance.rebuild).valid);
       assert.deepEqual(
         (yield* projections.getThreadProjection(ThreadId.make("root"))).subagents,

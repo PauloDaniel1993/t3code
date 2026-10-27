@@ -10,7 +10,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import type { OrchestrationV2Subagent, ScopedThreadRef } from "@t3tools/contracts";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   deriveNativeAgentRollup,
   NATIVE_AGENT_SETTLED_WINDOW,
@@ -21,6 +21,7 @@ import {
   useRememberSidebarTaskPresentation,
 } from "./sidebarTaskPresentation";
 import { useUiStateStore } from "../uiStateStore";
+import { useThreadFamily } from "../state/threads";
 import { cn } from "../lib/utils";
 import { useSidebarTaskClock } from "./sidebarTaskClock";
 import { useSidebarTaskVisibility } from "./sidebarTaskVisibility";
@@ -52,28 +53,21 @@ function useTaskGroup({
   nativeThreads = EMPTY_SIDEBAR_TASKS,
   openThreadKey = null,
 }: GroupProps) {
-  const parentRef = useMemo(
-    () => scopeThreadRef(parent.environmentId, parent.id),
-    [parent.environmentId, parent.id],
-  );
+  const parentRef = scopeThreadRef(parent.environmentId, parent.id);
   const presentation = useKnownSidebarTaskPresentation(parentRef);
   const { subagents } = presentation;
-  const rollup = useMemo(() => deriveNativeAgentRollup(presentation), [presentation]);
+  const rollup = deriveNativeAgentRollup(presentation);
   const key = scopedThreadKey(parentRef);
   const override = useUiStateStore((state) => state.sidebarTaskGroupsExpandedById[key]);
   const setExpanded = useUiStateStore((state) => state.setSidebarTaskGroupExpanded);
   const visitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[key]);
   // Revisit the remembered roster only when it changes, never on visit/clock renders.
-  const knownDeliveredAt = useMemo(
-    () =>
-      subagents.reduce(
-        (latest, task) =>
-          task.origin === "app_owned"
-            ? Math.max(latest, taskTimestamp(task.completionDelivery?.deliveredAt))
-            : latest,
-        -Infinity,
-      ),
-    [subagents],
+  const knownDeliveredAt = subagents.reduce(
+    (latest, task) =>
+      task.origin === "app_owned"
+        ? Math.max(latest, taskTimestamp(task.completionDelivery?.deliveredAt))
+        : latest,
+    -Infinity,
   );
   const delivered = Math.max(knownDeliveredAt, taskTimestamp(parent.source.latestTaskDeliveredAt));
   // Read the same server visit watermark as the parent row, alongside local
@@ -151,7 +145,7 @@ export const SidebarTaskDisclosure = memo(
         }}
         onDoubleClick={(event) => event.stopPropagation()}
         className={cn(
-          "relative z-20 inline-flex shrink-0 items-center gap-1 rounded-sm text-xs outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+          "relative z-20 inline-flex shrink-0 items-center gap-1 rounded-sm text-xs outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           // A collapsed group still points at the open task it hides.
           !expanded && hasOpenTask ? "text-foreground" : "text-muted-foreground",
         )}
@@ -193,18 +187,18 @@ export const SidebarTaskGroup = memo(
       expanded,
       scopedThreadKey(parentRef),
     );
+    useThreadFamily(
+      leased ? parentRef.environmentId : null,
+      leased ? props.parent.lineage.rootThreadId : null,
+    );
     const projection = useSidebarTaskProjection(leased ? parentRef : null);
     useRememberSidebarTaskPresentation(parentRef, projection);
     const [turnOverrides, setTurnOverrides] = useState<Record<string, boolean>>({});
     const [openedAt] = useState(() => Date.now());
-    const tasksByThreadId = useMemo(
-      () =>
-        new Map(
-          subagents
-            .filter((agent) => agent.origin === "app_owned" && agent.childThreadId !== null)
-            .map((agent) => [agent.childThreadId, agent]),
-        ),
-      [subagents],
+    const tasksByThreadId = new Map(
+      subagents
+        .filter((agent) => agent.origin === "app_owned" && agent.childThreadId !== null)
+        .map((agent) => [agent.childThreadId, agent]),
     );
     const ticking =
       expanded &&
@@ -267,7 +261,7 @@ export const SidebarTaskGroup = memo(
                   type="button"
                   aria-expanded={open}
                   onClick={() => setTurnOverrides((current) => ({ ...current, [runId]: !open }))}
-                  className="flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 >
                   <ChevronDownIcon aria-hidden className={cn("size-3", !open && "-rotate-90")} />
                   {group.label.replace(
@@ -342,7 +336,7 @@ export const SidebarTaskGroup = memo(
           onClick={() =>
             props.onNewTask(scopeThreadRef(props.parent.environmentId, props.parent.id))
           }
-          className="mb-1 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground opacity-0 outline-none hover:bg-sidebar-row-hover focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover/sidebar-task-group:opacity-100"
+          className="mb-1 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground opacity-0 outline-none hover:bg-sidebar-row-hover focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring group-hover/sidebar-task-group:opacity-100"
         >
           <PlusIcon aria-hidden className="size-3" />
           New task
@@ -372,6 +366,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
 }) {
   const { thread, task } = props;
   const committed = useRef(false);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Starting a rename closes the externally stored hover peek.
   useEffect(() => {
     if (props.isRenaming) {
       committed.current = false;
@@ -433,7 +428,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
         onFocus={(event) => openSidebarTaskPeek({ anchor: event.currentTarget, thread, task })}
         onBlur={leaveSidebarTaskPeek}
         className={cn(
-          "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           props.isActive
             ? "bg-sidebar-row-active text-sidebar-foreground"
             : "hover:bg-sidebar-row-hover focus-visible:bg-sidebar-row-hover",

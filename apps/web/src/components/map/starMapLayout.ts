@@ -1,14 +1,6 @@
 import type { StarMapGraph, StarMapGraphNode } from "./starMapGraph";
 
-/**
- * Deterministic layered layout for a dependency map.
- *
- * Ticket rank is the primary visual fact: blockers sit above the work they
- * unlock, and every node with the same rank shares a row. Repeated downward
- * and upward barycentric sweeps order nodes inside those rows so related
- * branches stay together and obvious edge crossings disappear. The layout is
- * a one-shot O(nodes + edges) pass with no animation or viewport dependency.
- */
+// Layout depends on graph topology, never panel size. Equal ranks share a row.
 
 export const STAR_MAP_MIN_SEPARATION = 48;
 export const STAR_MAP_LAYER_SPACING = 84;

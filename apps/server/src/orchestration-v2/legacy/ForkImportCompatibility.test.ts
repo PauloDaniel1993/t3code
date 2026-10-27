@@ -349,7 +349,7 @@ it.effect("upstream still provides what the fork's import check reads", () =>
       reserved,
       "Upstream no longer reserves legacy timeline positions in orchestration_v2_turn_item_positions.",
     );
-    yield* (yield* ProjectionMaintenanceV2).compactEventStore;
+    yield* (yield* ProjectionMaintenanceV2).compactEventStore();
     assert.deepEqual(
       yield* timeline,
       expected,

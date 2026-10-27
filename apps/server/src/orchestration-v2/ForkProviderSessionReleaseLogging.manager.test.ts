@@ -18,6 +18,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
@@ -215,11 +216,37 @@ function scenario<E>(input: {
     readonly closes: Ref.Ref<number>;
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
+    readonly releaseRecorded: Effect.Effect<void>;
+    readonly backgroundChecked: Effect.Effect<void>;
   }) => Effect.Effect<void, E, IdAllocatorV2 | ProjectionStoreV2>;
 }) {
   return Effect.gen(function* () {
     const closes = yield* Ref.make(0);
-    const sinkLayer = input.failReleaseWrites ? FailingReleaseEventSinkLayer : EventSinkLayer;
+    const released = yield* Deferred.make<void>();
+    const backgroundChecks = yield* Queue.unbounded<void>();
+    const sinkLayer = Layer.effect(
+      EventSinkV2,
+      Effect.gen(function* () {
+        const delegate = yield* EventSinkV2;
+        return EventSinkV2.of({
+          ...delegate,
+          write: (request) =>
+            delegate
+              .write(request)
+              .pipe(
+                Effect.tap(() =>
+                  request.events.some(
+                    (event) =>
+                      event.type === "provider-session.updated" &&
+                      (event.payload.status === "stopped" || event.payload.status === "error"),
+                  )
+                    ? Deferred.succeed(released, undefined)
+                    : Effect.void,
+                ),
+              ),
+        });
+      }),
+    ).pipe(Layer.provide(input.failReleaseWrites ? FailingReleaseEventSinkLayer : EventSinkLayer));
     const managerLayer = providerSessionManagerLayerWithOptions({
       idleTimeoutMs: IDLE_MS,
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),
@@ -231,7 +258,11 @@ function scenario<E>(input: {
               closes,
               ...(input.hasPendingBackgroundWork === undefined
                 ? {}
-                : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
+                : {
+                    hasPendingBackgroundWork: input.hasPendingBackgroundWork.pipe(
+                      Effect.tap(() => Queue.offer(backgroundChecks, undefined)),
+                    ),
+                  }),
             }),
           ),
           sinkLayer,
@@ -313,6 +344,8 @@ function scenario<E>(input: {
         closes,
         threadId,
         providerSessionId,
+        releaseRecorded: Deferred.await(released),
+        backgroundChecked: Queue.take(backgroundChecks),
       });
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(input.telemetry.layer), Effect.withTracer(input.telemetry.tracer));
@@ -550,7 +583,6 @@ it.effect("a session closed before its timer fires writes nothing", () => {
         yield* open(manager, threadId, providerSessionId);
         yield* manager.close(providerSessionId);
         yield* TestClock.adjust(IDLE_MS * 10);
-        yield* Effect.yieldNow;
 
         assert.equal(yield* Ref.get(closes), 1);
         assert.deepEqual(telemetry.logs, []);
@@ -563,14 +595,12 @@ it.effect("a logger and tracer that throw do not stop or delay the release", () 
   const telemetry = captureTelemetry({ throwing: true });
   return scenario({
     telemetry,
-    run: ({ manager, closes, threadId, providerSessionId }) =>
+    run: ({ manager, closes, threadId, providerSessionId, releaseRecorded }) =>
       Effect.gen(function* () {
         const projection = yield* ProjectionStoreV2;
         yield* open(manager, threadId, providerSessionId);
         yield* TestClock.adjust(IDLE_MS);
-        for (let turn = 0; turn < 50 && (yield* Ref.get(closes)) === 0; turn += 1) {
-          yield* Effect.yieldNow;
-        }
+        yield* releaseRecorded;
 
         assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
         assert.equal(yield* Ref.get(closes), 1);
@@ -589,17 +619,15 @@ it.effect("a throwing logger does not defeat the deferral for background work", 
     telemetry,
     hasPendingBackgroundWork: Effect.succeed(true),
     maxIdlePinMs: 2 * IDLE_MS,
-    run: ({ manager, closes, threadId, providerSessionId }) =>
+    run: ({ manager, closes, threadId, providerSessionId, releaseRecorded, backgroundChecked }) =>
       Effect.gen(function* () {
         yield* open(manager, threadId, providerSessionId);
         yield* TestClock.adjust(IDLE_MS);
-        yield* Effect.yieldNow;
+        yield* backgroundChecked;
         // Deferred, not stranded: the timer is still armed and releases once the pin expires.
         assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
         yield* TestClock.adjust(IDLE_MS * 2);
-        for (let turn = 0; turn < 50 && (yield* Ref.get(closes)) === 0; turn += 1) {
-          yield* Effect.yieldNow;
-        }
+        yield* releaseRecorded;
         assert.equal(yield* Ref.get(closes), 1);
       }),
   });

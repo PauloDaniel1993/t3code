@@ -267,7 +267,6 @@ describe("ReviewService", () => {
 
       assert.strictEqual((yield* review(projectRoot, [projectRoot])).cwd, projectRoot);
       assert.strictEqual((yield* review(projectChild, [projectRoot])).cwd, projectChild);
-      // A child whose name starts with `..` is still inside.
       const dottedChild = `${projectRoot}/..feature`;
       yield* fs.makeDirectory(dottedChild);
       assert.strictEqual((yield* review(dottedChild, [projectRoot])).cwd, dottedChild);
@@ -288,7 +287,6 @@ describe("ReviewService", () => {
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
       const project = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-project-" });
-      // Checkouts outside every managed folder, as `git worktree add ../feature` makes.
       const bound = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-bound-" });
       const deleted = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-deleted-" });
       const unbound = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-unbound-" });
@@ -322,9 +320,7 @@ describe("ReviewService", () => {
                 },
                 { worktreePath: claimed },
                 { worktreePath: deleted, deleted: true },
-                // A relative path would resolve against the server's own cwd.
                 { worktreePath: "t3-review-relative" },
-                // A filesystem root would make every folder look bound.
                 { worktreePath: "/" },
               ],
             }),

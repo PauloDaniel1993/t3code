@@ -9,6 +9,7 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   OrchestratorMcpCapabilitiesResult,
+  ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   ForkTaskModelsResult,
   ForkTaskSummary,
   OrchestratorMcpTaskListResult,
@@ -1048,7 +1049,7 @@ it.effect("bounds child reads for 120 tasks, filtered discovery, and complete pa
       firstPageReads: 1 + 2 * (first.tasks.length + 1),
       pages,
       totalReads: reads.length,
-    }).toEqual({ firstPageTasks: 25, firstPageReads: 53, pages: 6, totalReads: 256 });
+    }).toEqual({ firstPageTasks: 24, firstPageReads: 51, pages: 6, totalReads: 256 });
     expect(reads.filter((id) => id === parentId)).toHaveLength(pages);
     reads.length = 0;
     const limited = yield* service.listTasks(scope, { limit: 1 });
@@ -1570,6 +1571,7 @@ it.effect(
         taskId: child.id,
         childThreadId: child.childThreadId,
         status: "running",
+        next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
       });
       expect(commands[0]?.commandId).toEqual(commands[1]?.commandId);
       expect(commands[0]).toMatchObject({
@@ -1590,11 +1592,15 @@ it.effect(
         title: child.title,
         status: "running",
         context: { kind: "none" },
+        next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
       });
       const listed = yield* call("task_list", {});
       expect((yield* decodeListedTasks(listed.structuredContent)).tasks[0]?.taskId).toBe(
         createdTask.taskId,
       );
+      expect((yield* decodeListedTasks(listed.structuredContent)).tasks[0]).toMatchObject({
+        next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
+      });
       for (const name of ["task_create", "task_models", "task_list"]) {
         const denied = yield* call(name, name === "task_create" ? input : {}, {
           ...scope,

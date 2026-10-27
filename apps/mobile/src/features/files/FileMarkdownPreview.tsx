@@ -7,7 +7,9 @@ import type {
 } from "@t3tools/contracts";
 import { resolveMobileMarkdownMediaSource } from "../../lib/markdownMediaSource";
 import { getBrowseDirectoryPath } from "@t3tools/client-runtime/state/projects";
+import { maskMarkdownFrontmatter } from "@t3tools/shared/markdownFrontmatter";
 import { useState } from "react";
+import { StackActions, useNavigation } from "@react-navigation/native";
 import { RefreshControl, ScrollView, View } from "react-native";
 
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
@@ -20,8 +22,12 @@ import {
   ThreadMarkdownImageUnavailable,
 } from "../threads/ThreadMarkdownImage";
 import { ThreadMarkdownVideo } from "../threads/ThreadMarkdownVideo";
-import { resolveMarkdownMediaPreview } from "../../lib/markdownMedia";
-import { normalizeNativeMarkdownUrl } from "../../lib/markdownLinks";
+import { markdownFileEmbedLabel, resolveMarkdownMediaPreview } from "../../lib/markdownMedia";
+import {
+  normalizeNativeMarkdownUrl,
+  resolveMarkdownLinkPresentation,
+} from "../../lib/markdownLinks";
+import { AppText as Text } from "../../components/ui/AppText";
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import { useMarkdownImageSource } from "../../native/useMarkdownImageSource";
@@ -32,9 +38,7 @@ import {
   type NativeMarkdownTextStyle,
 } from "../../native/SelectableMarkdownText";
 import { fileRoutePathSegments, resolveWorkspaceFilePath } from "./filePath";
-import { StackActions, useNavigation } from "@react-navigation/native";
 import { parseMarkdownFileLink } from "@t3tools/shared/markdownLinks";
-import { resolveMarkdownLinkPresentation } from "../../lib/markdownLinks";
 import {
   workspaceMarkdownResource,
   workspaceRelativeMarkdownPath,
@@ -127,6 +131,24 @@ export function FileMarkdownPreview(props: {
       captured: props.captured,
       imageEmbed: true,
     });
+    const fileLink = resolveMarkdownLinkPresentation(image.href);
+    if (
+      (preview && preview.kind !== "image" && preview.kind !== "video") ||
+      (!props.captured && fileLink.kind === "file" && fileLink.line !== undefined)
+    ) {
+      const name =
+        preview?.source.name ?? (fileLink.kind === "file" ? fileLink.label : "Open file");
+      return (
+        <Text
+          accessibilityRole="link"
+          accessibilityLabel={`Open ${name}`}
+          onPress={() => openMedia(image.href, true)}
+          style={{ color: styles.nativeTextStyle.linkColor }}
+        >
+          {name}
+        </Text>
+      );
+    }
     if (media?.access === "direct") {
       if (media.kind === "video") {
         return (
@@ -196,7 +218,21 @@ export function FileMarkdownPreview(props: {
       captured: props.captured,
       imageEmbed,
     });
-    if (!media) return false;
+    if (!media || media.kind === "file") {
+      const fileLink = resolveMarkdownLinkPresentation(href);
+      if (props.captured || fileLink.kind !== "file") return false;
+      const params = {
+        environmentId: String(props.environmentId),
+        path: fileRoutePathSegments(resolveWorkspaceFilePath(markdownDirectory, fileLink.path)),
+        ...(fileLink.line ? { line: String(fileLink.line) } : {}),
+      };
+      if (props.threadId) {
+        navigation.navigate("ThreadFile", { ...params, threadId: String(props.threadId) });
+      } else {
+        navigation.dispatch(StackActions.push("NewTaskFile", { ...params, cwd: props.cwd }));
+      }
+      return true;
+    }
     if (media.kind === "video") setExpandedVideo(media.source);
     else setExpandedFile(media.source);
     return true;
@@ -255,7 +291,19 @@ export function FileMarkdownPreview(props: {
     >
       <View className="mx-auto w-full max-w-[760px]">
         <SelectableMarkdownText
-          markdown={props.markdown}
+          markdown={maskMarkdownFrontmatter(props.markdown)}
+          fileEmbedLabel={(href) =>
+            markdownFileEmbedLabel(
+              href,
+              {
+                environmentId: props.environmentId,
+                threadId: props.threadId ?? undefined,
+                workspaceRoot: markdownDirectory,
+                captured: props.captured,
+              },
+              false,
+            )
+          }
           onLinkPress={onLinkPress}
           renderImage={renderImage}
           resolveImageSource={resolveImageSource}

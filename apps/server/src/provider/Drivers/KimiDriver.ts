@@ -158,185 +158,191 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
   metadata: { displayName: "Kimi", supportsMultipleInstances: true },
   configSchema: KimiSettings,
   defaultConfig: () => decodeKimiSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
-    Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto;
-      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const httpClient = yield* HttpClient.HttpClient;
-      const host = yield* ProviderHost.ProviderHost;
-      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
-      const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
-      const serverConfig = yield* ServerConfig;
-      const idAllocator = yield* IdAllocatorV2;
-      const eventLoggers = yield* ProviderEventLoggers;
-      const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
-      const selfInvocation = yield* resolveSelfInvocation();
-      const settings = { ...config, enabled } satisfies KimiSettings;
-      const processEnvironment = yield* makeKimiEnvironment(
-        settings,
-        yield* mergeProviderInstanceEnvironment(environment),
+  create: Effect.fn("KimiDriver.create")(function* ({
+    instanceId,
+    displayName,
+    accentColor,
+    environment,
+    enabled,
+    config,
+  }) {
+    const crypto = yield* Crypto.Crypto;
+    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const httpClient = yield* HttpClient.HttpClient;
+    const host = yield* ProviderHost.ProviderHost;
+    const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+    const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
+    const serverConfig = yield* ServerConfig;
+    const idAllocator = yield* IdAllocatorV2;
+    const eventLoggers = yield* ProviderEventLoggers;
+    const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
+    const selfInvocation = yield* resolveSelfInvocation();
+    const settings = { ...config, enabled } satisfies KimiSettings;
+    const processEnvironment = yield* makeKimiEnvironment(
+      settings,
+      yield* mergeProviderInstanceEnvironment(environment),
+    );
+    const continuationIdentity = defaultProviderContinuationIdentity({
+      driverKind: DRIVER_KIND,
+      instanceId,
+    });
+    const stampIdentity = withInstanceIdentity({
+      instanceId,
+      driverKind: DRIVER_KIND,
+      displayName,
+      accentColor,
+      continuationGroupKey: continuationIdentity.continuationKey,
+    });
+    const { catalog, publish: publishCatalog } = yield* makeKimiModelCatalog({
+      cacheDir: serverConfig.providerStatusCacheDir,
+      instanceId,
+      binaryPath: settings.binaryPath,
+      environment: environment ?? [],
+      processEnvironment,
+    });
+    const provideRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
       );
-      const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
-        instanceId,
-      });
-      const stampIdentity = withInstanceIdentity({
-        instanceId,
-        driverKind: DRIVER_KIND,
-        displayName,
-        accentColor,
-        continuationGroupKey: continuationIdentity.continuationKey,
-      });
-      const { catalog, publish: publishCatalog } = yield* makeKimiModelCatalog({
-        cacheDir: serverConfig.providerStatusCacheDir,
-        instanceId,
+    const makeRuntime = (
+      input: Omit<KimiAcpRuntimeInput, "kimiSettings" | "environment" | "childProcessSpawner">,
+    ) =>
+      makeKimiAcpRuntime({
+        ...input,
+        kimiSettings: settings,
+        environment: withAgentDeviceEnvironment(processEnvironment, input),
+        childProcessSpawner,
+      }).pipe(provideRuntime);
+    const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
+      resolveProviderMaintenanceCapabilitiesEffect(KIMI_MAINTENANCE_RESOLVER, {
         binaryPath: settings.binaryPath,
-        environment: environment ?? [],
-        processEnvironment,
-      });
-      const provideRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-        effect.pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-        );
-      const makeRuntime = (
-        input: Omit<KimiAcpRuntimeInput, "kimiSettings" | "environment" | "childProcessSpawner">,
-      ) =>
-        makeKimiAcpRuntime({
-          ...input,
-          kimiSettings: settings,
-          environment: withAgentDeviceEnvironment(processEnvironment, input),
-          childProcessSpawner,
-        }).pipe(provideRuntime);
-      const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-        resolveProviderMaintenanceCapabilitiesEffect(KIMI_MAINTENANCE_RESOLVER, {
-          binaryPath: settings.binaryPath,
-          env: processEnvironment,
-        }).pipe(provideRuntime),
-      );
-      const snapshotSettings = yield* makeProviderSnapshotSettingsSource(settings);
-      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<KimiSettings>>({
-        resolveMaintenance,
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: () =>
-          SubscriptionRef.get(catalog).pipe(
-            Effect.flatMap((options) => buildInitialKimiProviderSnapshot(settings, options)),
-            Effect.map((draft) => stampIdentity({ ...draft, supportsTextGeneration: true })),
-          ),
-        checkProvider: checkKimiProviderStatus(
-          settings,
-          processEnvironment,
-          SubscriptionRef.get(catalog),
-        ).pipe(
-          provideRuntime,
+        env: processEnvironment,
+      }).pipe(provideRuntime),
+    );
+    const snapshotSettings = yield* makeProviderSnapshotSettingsSource(settings);
+    const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<KimiSettings>>({
+      resolveMaintenance,
+      getSettings: snapshotSettings.getSettings,
+      streamSettings: snapshotSettings.streamSettings,
+      haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+      initialSnapshot: () =>
+        SubscriptionRef.get(catalog).pipe(
+          Effect.flatMap((options) => buildInitialKimiProviderSnapshot(settings, options)),
           Effect.map((draft) => stampIdentity({ ...draft, supportsTextGeneration: true })),
         ),
-        enrichSnapshot: ({
-          settings: currentSettings,
-          snapshot: currentSnapshot,
-          getSnapshot,
-          publishSnapshot,
-        }) =>
-          Effect.all(
-            [
-              resolveMaintenance().pipe(
-                Effect.flatMap((capabilities) =>
-                  enrichProviderSnapshotWithVersionAdvisory(currentSnapshot, capabilities, {
-                    enableProviderUpdateChecks: currentSettings.enableProviderUpdateChecks,
-                  }).pipe(
-                    Effect.provideService(HttpClient.HttpClient, httpClient),
-                    Effect.provideService(
-                      ProviderLatestVersions.ProviderLatestVersions,
-                      latestVersions,
-                    ),
-                  ),
-                ),
-                Effect.flatMap((enriched) =>
-                  getSnapshot.pipe(
-                    Effect.flatMap((current) =>
-                      publishSnapshot({ ...current, versionAdvisory: enriched.versionAdvisory }),
-                    ),
-                  ),
-                ),
-                Effect.catchCause(() =>
-                  Effect.logWarning("Kimi version advisory enrichment failed."),
-                ),
-              ),
-              SubscriptionRef.changes(catalog).pipe(
-                Stream.runForEach((options) =>
-                  getSnapshot.pipe(
-                    Effect.flatMap((current) =>
-                      publishSnapshot({
-                        ...current,
-                        models: buildKimiModels(settings.customModels, options),
-                      }),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-            { concurrency: "unbounded", discard: true },
-          ),
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: "Could not prepare the Kimi provider snapshot.",
-              cause,
-            }),
-        ),
-      );
-      const orchestrationAdapter = yield* makeKimiAdapterV2({
-        instanceId,
-        selfInvocation,
-        makeRuntime,
-        onSessionConfigurationUpdate: (options) => publishCatalog(options),
-        onSessionEvent: (event) =>
-          event._tag === "ConfigOptionsUpdated" ? publishCatalog(event.configOptions) : Effect.void,
-        nativeLogging: (threadId) =>
-          makeNativeLogger({
-            nativeEventLogger: eventLoggers.native,
-            provider: DRIVER_KIND,
-            threadId,
-          }),
-      }).pipe(
+      checkProvider: checkKimiProviderStatus(
+        settings,
+        processEnvironment,
+        SubscriptionRef.get(catalog),
+      ).pipe(
         provideRuntime,
-        Effect.provideService(IdAllocatorV2, idAllocator),
-        Effect.provideService(ProviderHost.ProviderHost, host),
-        Effect.provideService(McpProviderSessions.McpProviderSessions, mcpSessions),
-      );
-      const textGeneration = yield* makeKimiTextGeneration({
-        makeRuntime: (cwd) =>
-          makeRuntime({
-            cwd,
-            clientInfo: { name: "t3-code-text", version: "0.0.0" },
-            supervisionGuidance: false,
-            mcpServers: [],
-            acpMcpServers: [],
-            clientCapabilities: {
-              fs: { readTextFile: false, writeTextFile: false },
-              terminal: false,
-            },
+        Effect.map((draft) => stampIdentity({ ...draft, supportsTextGeneration: true })),
+      ),
+      enrichSnapshot: ({
+        settings: currentSettings,
+        snapshot: currentSnapshot,
+        getSnapshot,
+        publishSnapshot,
+      }) =>
+        Effect.all(
+          [
+            resolveMaintenance().pipe(
+              Effect.flatMap((capabilities) =>
+                enrichProviderSnapshotWithVersionAdvisory(currentSnapshot, capabilities, {
+                  enableProviderUpdateChecks: currentSettings.enableProviderUpdateChecks,
+                }).pipe(
+                  Effect.provideService(HttpClient.HttpClient, httpClient),
+                  Effect.provideService(
+                    ProviderLatestVersions.ProviderLatestVersions,
+                    latestVersions,
+                  ),
+                ),
+              ),
+              Effect.flatMap((enriched) =>
+                getSnapshot.pipe(
+                  Effect.flatMap((current) =>
+                    publishSnapshot({ ...current, versionAdvisory: enriched.versionAdvisory }),
+                  ),
+                ),
+              ),
+              Effect.catchCause(() =>
+                Effect.logWarning("Kimi version advisory enrichment failed."),
+              ),
+            ),
+            SubscriptionRef.changes(catalog).pipe(
+              Stream.runForEach((options) =>
+                getSnapshot.pipe(
+                  Effect.flatMap((current) =>
+                    publishSnapshot({
+                      ...current,
+                      models: buildKimiModels(settings.customModels, options),
+                    }),
+                  ),
+                ),
+              ),
+            ),
+          ],
+          { concurrency: "unbounded", discard: true },
+        ),
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: "Could not prepare the Kimi provider snapshot.",
+            cause,
           }),
-      });
-      return {
-        instanceId,
-        driverKind: DRIVER_KIND,
-        continuationIdentity,
-        displayName,
-        accentColor,
-        enabled,
-        snapshot,
-        orchestrationAdapter,
-        textGeneration,
-      } satisfies ProviderInstance;
-    }),
+      ),
+    );
+    const orchestrationAdapter = yield* makeKimiAdapterV2({
+      instanceId,
+      selfInvocation,
+      makeRuntime,
+      onSessionConfigurationUpdate: (options) => publishCatalog(options),
+      onSessionEvent: (event) =>
+        event._tag === "ConfigOptionsUpdated" ? publishCatalog(event.configOptions) : Effect.void,
+      nativeLogging: (threadId) =>
+        makeNativeLogger({
+          nativeEventLogger: eventLoggers.native,
+          provider: DRIVER_KIND,
+          threadId,
+        }),
+    }).pipe(
+      provideRuntime,
+      Effect.provideService(IdAllocatorV2, idAllocator),
+      Effect.provideService(ProviderHost.ProviderHost, host),
+      Effect.provideService(McpProviderSessions.McpProviderSessions, mcpSessions),
+    );
+    const textGeneration = yield* makeKimiTextGeneration({
+      makeRuntime: (cwd) =>
+        makeRuntime({
+          cwd,
+          clientInfo: { name: "t3-code-text", version: "0.0.0" },
+          supervisionGuidance: false,
+          mcpServers: [],
+          acpMcpServers: [],
+          clientCapabilities: {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+          },
+        }),
+    });
+    return {
+      instanceId,
+      driverKind: DRIVER_KIND,
+      continuationIdentity,
+      displayName,
+      accentColor,
+      enabled,
+      snapshot,
+      orchestrationAdapter,
+      textGeneration,
+    } satisfies ProviderInstance;
+  }),
 };

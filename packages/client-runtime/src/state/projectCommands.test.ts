@@ -435,8 +435,9 @@ describe("scoped file metadata", () => {
     }).pipe(Effect.scoped),
   );
 
-  for (const query of ["searchEntries", "listEntries"] as const) {
-    it.effect("seeds " + query + " kinds at the frozen secondary worktree path", () =>
+  it.effect.each(["searchEntries", "listEntries"] as const)(
+    "seeds %s kinds at the frozen secondary worktree path",
+    (query) =>
       Effect.gen(function* () {
         const h = yield* makeHarness();
         const scope = { projectId: FILE_PROJECT_ID, threadId: FILE_THREAD_ID, folderPath: "/api" };
@@ -462,8 +463,7 @@ describe("scoped file metadata", () => {
         expect(yield* readMetadata("/api/folder.ts")).toEqual({ kind: "file", byteLength: 5 });
         expect(h.metadataRequests).toEqual([["/api/folder.ts"]]);
       }).pipe(Effect.scoped),
-    );
-  }
+  );
 
   it.effect("isolates identical canonical file paths in different thread worktrees", () =>
     Effect.gen(function* () {

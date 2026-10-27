@@ -1,17 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-/**
- * Thread tasks: a task is a full thread owned by a parent thread. The link and
- * its metadata live on the existing thread projection so every thread read path
- * picks them up without a join.
- *
- * - `parent_thread_id` — non-null on task threads.
- * - `task_json` — `ThreadTaskMetadata` for the task thread itself.
- * - `task_summary_json` — `ThreadTaskSummary` rollup for a parent thread.
- *
- * Additive and idempotent per the fork migration rules in `ForkMigrations.ts`.
- */
+// Tasks are full child threads; links and rollups share the thread projection for join-free reads.
+// Migration is additive and idempotent, including databases predating the fork ledger.
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const columns = yield* sql<{ readonly name: string }>`

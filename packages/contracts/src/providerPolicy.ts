@@ -32,11 +32,8 @@ export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 
 /**
- * Whether a provider reaches every folder of a multi-folder workspace, reading
- * and writing under the thread's runtime mode. "supported" needs a live
- * read/write test of the adapter; until then it is "unverified". Only a
- * "supported" provider may run a scope with additional directories. Absent
- * means "unverified".
+ * Additional folders require a live-verified read/write adapter; an absent
+ * capability is unverified and must not silently grant access.
  */
 export const ProviderWorkspaceFolderAccess = Schema.Literals([
   "supported",

@@ -40,6 +40,7 @@ export function useSidebarTaskVisibility(enabled: boolean, key: string) {
   const [row, rowRef] = useState<HTMLElement | null>(null);
   const [visibility, setVisibility] = useState<{ row: HTMLElement; visible: boolean } | null>(null);
   const [leased, setLeased] = useState(false);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register the row with the shared subscription lease manager.
   useEffect(
     () =>
       sidebarTaskLeases.register(key, setLeased, () =>
@@ -49,6 +50,7 @@ export function useSidebarTaskVisibility(enabled: boolean, key: string) {
       ),
     [key, row],
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Observe viewport intersections and release scroll and subscription leases.
   useEffect(() => {
     if (!enabled || row === null) {
       sidebarTaskLeases.update(key, false);

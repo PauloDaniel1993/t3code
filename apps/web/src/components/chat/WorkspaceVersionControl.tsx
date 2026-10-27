@@ -18,7 +18,7 @@ import {
 } from "@t3tools/client-runtime/state/vcs";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { ChevronDownIcon, ChevronRightIcon, GitBranchIcon, FileDiffIcon } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useOpenLink } from "../../browser/useOpenLink";
 import { usePaginatedBranches } from "../../state/queries";
 import { useWorkspaceStatuses } from "../../state/workspaceVcs";
@@ -56,7 +56,7 @@ export function WorkspaceVersionControl(props: {
   draftId?: DraftId;
 }) {
   const { environmentId, threadId, rows } = props;
-  const threadRef = useMemo(() => ({ environmentId, threadId }), [environmentId, threadId]);
+  const threadRef = { environmentId, threadId };
   const thread = props.thread ?? {
     worktreePath: null,
     workspaceFolders: rows.map((row) => ({

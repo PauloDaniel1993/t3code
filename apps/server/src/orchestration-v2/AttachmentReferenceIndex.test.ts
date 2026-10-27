@@ -5,9 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Layer from "effect/Layer";
-import * as Console from "effect/Console";
 import * as FileSystem from "effect/FileSystem";
-import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import { SqlError, ConnectionError } from "effect/sql/SqlError";
 import * as TestClock from "effect/testing/TestClock";
@@ -24,11 +22,15 @@ import {
 import * as Deferred from "effect/Deferred";
 import { vi } from "vite-plus/test";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerConfig from "../config.ts";
+import * as PreviewManager from "../preview/Manager.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ResourceCleanup from "./ResourceCleanupService.ts";
 import * as Path from "effect/Path";
 import {
   ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE,
   ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS,
-  AttachmentReferenceIndexUnavailable,
   attachmentSourceRows,
   readAttachmentReferenceIndexState,
   initializeAttachmentReferenceIndex,
@@ -68,7 +70,6 @@ const testLayer = outboxLayer.pipe(
 );
 const id = (i: number) =>
   `thread-${Math.floor(i / 10)}-00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
-const encodeBenchmark = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const smallFixture = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -84,6 +85,133 @@ const smallFixture = Effect.gen(function* () {
 });
 
 describe("attachment reference index", () => {
+  it.effect("retains extracted text with referenced files and removes both after release", () =>
+    Effect.gen(function* () {
+      yield* smallFixture;
+      yield* rebuildAttachmentReferenceIndex();
+      const sql = yield* SqlClient.SqlClient;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-0-00000000-0000-4000-8000-000000099998-pdf";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.pdf`);
+      yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fs.writeFileString(attachmentPath, "document");
+      yield* fs.writeFileString(`${attachmentPath}.txt`, "extracted text");
+      const payload = JSON.stringify({
+        attachments: [
+          {
+            type: "file",
+            id: attachmentId,
+            name: "document.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 8,
+          },
+        ],
+      });
+      yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = ${payload} WHERE message_id = 'message-000'`;
+      const cleanup = yield* ResourceCleanup.ResourceCleanupService;
+      yield* cleanup.cleanupAttachments([attachmentId]);
+      expect(yield* fs.exists(attachmentPath)).toBe(true);
+      expect(yield* fs.exists(`${attachmentPath}.txt`)).toBe(true);
+      yield* sql`DELETE FROM orchestration_v2_projection_messages WHERE message_id = 'message-000'`;
+      yield* cleanup.cleanupAttachments([attachmentId]);
+      expect(yield* fs.exists(attachmentPath)).toBe(false);
+      expect(yield* fs.exists(`${attachmentPath}.txt`)).toBe(false);
+    }).pipe(
+      Effect.provide(
+        ResourceCleanup.layer.pipe(
+          Layer.provideMerge(testLayer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-sidecar-cleanup-" }),
+          ),
+          Layer.provide(Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void })),
+          Layer.provide(Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void })),
+          Layer.provide(
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+              deleteForThread: () => Effect.void,
+            }),
+          ),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("indexes eligible guest uploads during rebuild and follows share dismissal", () =>
+    Effect.gen(function* () {
+      yield* smallFixture;
+      const sql = yield* SqlClient.SqlClient;
+      const attachment = {
+        type: "image",
+        id: "thread-0-00000000-0000-4000-8000-000000099999",
+        name: "guest.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+      };
+      const payload = (status: string) =>
+        JSON.stringify({
+          guestShare: {
+            messages: [{ id: "guest-message", status, attachments: [attachment] }],
+          },
+        });
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${payload("pending")} WHERE thread_id = 'thread-0'`;
+      expect((yield* findReadableAttachment(attachment.id))?.threadId).toBe("thread-0");
+      expect(yield* findReadableAttachment(attachment.id, "another-thread")).toBeNull();
+      yield* sql`UPDATE fork_v2_attachment_reference_state SET version = 1`;
+      yield* initializeAttachmentReferenceIndex();
+      expect((yield* findReadableAttachment(attachment.id))?.threadId).toBe("thread-0");
+      yield* rebuildAttachmentReferenceIndex();
+      expect((yield* referencedAttachmentPaths([attachment.id])).has(`${attachment.id}.png`)).toBe(
+        true,
+      );
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${payload("dismissed")} WHERE thread_id = 'thread-0'`;
+      expect(yield* findReadableAttachment(attachment.id)).toBeNull();
+      expect((yield* referencedAttachmentPaths([attachment.id])).size).toBe(0);
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${payload("pending")} WHERE thread_id = 'thread-0'`;
+      yield* sql`UPDATE projection_projects SET deleted_at = '2026-10-01' WHERE project_id = 'project'`;
+      expect(yield* findReadableAttachment(attachment.id)).toBeNull();
+      yield* sql`UPDATE projection_projects SET deleted_at = NULL WHERE project_id = 'project'`;
+      yield* sql`DELETE FROM orchestration_v2_projection_threads WHERE thread_id = 'thread-0'`;
+      expect((yield* referencedAttachmentPaths([attachment.id])).size).toBe(0);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("repairs malformed guest payloads and clears conservative references", () =>
+    Effect.gen(function* () {
+      yield* smallFixture;
+      yield* rebuildAttachmentReferenceIndex();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO orchestration_v2_projection_threads
+        (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
+        VALUES ('thread-broken', 'project', 'Broken', 'codex', 'full-access', 'default', '2026-01-01', '2026-01-01', '{')`;
+      const references = () => sql<{ attachment_id: string }>`
+        SELECT attachment_id FROM fork_v2_attachment_references
+        WHERE source = 'guest' AND row_id = 'thread-broken'`;
+      expect(yield* references()).toEqual([{ attachment_id: "*" }]);
+      const attachment = {
+        type: "image",
+        id: "thread-broken-00000000-0000-4000-8000-000000099999",
+        name: "guest.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+      };
+      const repaired = JSON.stringify({
+        guestShare: {
+          messages: [{ id: "guest-message", status: "pending", attachments: [attachment] }],
+        },
+      });
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${repaired} WHERE thread_id = 'thread-broken'`;
+      expect(yield* references()).toEqual([{ attachment_id: attachment.id }]);
+      expect((yield* findReadableAttachment(attachment.id))?.threadId).toBe("thread-broken");
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{' WHERE thread_id = 'thread-broken'`;
+      expect(yield* references()).toEqual([{ attachment_id: "*" }]);
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}' WHERE thread_id = 'thread-broken'`;
+      expect(yield* references()).toEqual([]);
+      expect(yield* findReadableAttachment(attachment.id)).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect(
     "signals workers and releases parked cleanup on startup even with a complete index",
     () =>
@@ -232,7 +360,10 @@ describe("attachment reference index", () => {
         const next = yield* readAttachmentReferenceIndexState();
         const remaining = yield* sql<{ source: string; payload_json: string }>`
         SELECT source, payload_json FROM (${yield* attachmentSourceRows(undefined, undefined, next)})`;
-        expect(remaining.every((row) => row.source === "item")).toBe(true);
+        expect(remaining.every((row) => row.source === "item" || row.source === "guest")).toBe(
+          true,
+        );
+        expect(remaining.filter((row) => row.source === "guest")).toHaveLength(1);
         const done = yield* sql<{
           attachment_id: string;
         }>`SELECT attachment_id FROM fork_v2_attachment_references WHERE source = 'item'`;
@@ -714,52 +845,28 @@ describe("attachment reference index", () => {
   );
 
   it.effect(
-    "measures the reviewed scans and streaming reads against the indexed branch on 1,000 threads and 10,000 messages",
+    "keeps indexed lookups and cleanup correct during streaming on 1,000 threads and 10,000 messages",
     () =>
       Effect.gen(function* () {
         yield* fixture;
         const sql = yield* SqlClient.SqlClient;
-        const payloads = sql`SELECT thread_id, json_extract(payload_json, '$.attachments') AS payload_json FROM orchestration_v2_projection_messages
-      UNION ALL SELECT thread_id, json_object('attachments', json_extract(payload_json, '$.attachments'), 'answers', json_extract(payload_json, '$.questionAnswer.attachmentsByQuestionId')) FROM orchestration_v2_projection_turn_items
-      UNION ALL SELECT message.thread_id, message.attachments_json FROM projection_thread_messages AS message
-        LEFT JOIN orchestration_v2_legacy_imports AS imported ON imported.thread_id = message.thread_id WHERE imported.transcript_imported_at IS NULL AND message.attachments_json IS NOT NULL`;
-        const oldLookup = (attachmentId: string) => sql`
-      SELECT attachment.value FROM (${payloads}) AS payload
-      JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = payload.thread_id
-      JOIN json_tree(payload.payload_json) AS attachment
-      WHERE thread.deleted_at IS NULL AND attachment.type = 'object'
-        AND json_extract(attachment.value, '$.type') IN ('image','file')
-        AND json_extract(attachment.value, '$.id') = ${attachmentId}`;
-        const measure = Effect.fnUntraced(function* (
-          count: number,
-          operation: () => Effect.Effect<
-            unknown,
-            SqlError | AttachmentReferenceIndexUnavailable,
-            SqlClient.SqlClient
-          >,
-        ) {
-          const started = performance.now();
-          for (let i = 0; i < count; i++) yield* operation();
-          return (performance.now() - started) / count;
-        });
-        // Warm both paths before reporting per-call wall-clock cost; no timing assertion.
-        yield* oldLookup("unknown");
-        yield* findReadableAttachment("unknown");
-        const beforeUnknownMs = yield* measure(5, () => oldLookup("unknown"));
-        const afterUnknownMs = yield* measure(100, () => findReadableAttachment("unknown"));
+        expect(yield* findReadableAttachment("unknown")).toBeNull();
         const ids = Array.from({ length: 10 }, (_, i) => id(i));
-        const beforeCleanupMs = yield* measure(2, () =>
-          Effect.forEach(ids, (value) => sql.withTransaction(oldLookup(value))),
-        );
-        const afterCleanupMs = yield* measure(100, () =>
-          sql.withTransaction(referencedAttachmentPaths(ids)),
-        );
-        // The previous helper issued this read on every streaming message/item update.
-        const beforeStreamingReadMs = yield* measure(
-          1000,
-          () =>
-            sql`SELECT json_extract(payload_json, '$.attachments') FROM orchestration_v2_projection_messages WHERE message_id = 'message-5'`,
-        );
+        for (const attachmentId of ids) {
+          expect(yield* findReadableAttachment(attachmentId)).toMatchObject({
+            threadId: "thread-0",
+            relativePath: `${attachmentId}.png`,
+          });
+        }
+        expect((yield* referencedAttachmentPaths(ids)).size).toBe(10);
+        const before = yield* sql`SELECT count(*) AS count FROM fork_v2_attachment_references`;
+        let reads = 0;
+        const counted = new Proxy(sql, {
+          apply: (target, receiver, args) => {
+            reads++;
+            return Reflect.apply(target, receiver, args);
+          },
+        });
         const now = yield* DateTime.now;
         const stored: OrchestrationV2StoredEvent = {
           sequence: 0,
@@ -785,41 +892,26 @@ describe("attachment reference index", () => {
             },
           },
         };
-        const started = performance.now();
-        for (let i = 0; i < 1000; i++) yield* applyWithAttachmentPruning(stored, Effect.void);
-        const afterStreamingHelperMs = (performance.now() - started) / 1000;
+
+        for (let i = 0; i < 1000; i++)
+          yield* applyWithAttachmentPruning(stored, Effect.void).pipe(
+            Effect.provideService(SqlClient.SqlClient, counted),
+          );
+        expect(reads).toBe(0);
         const streamPayload =
           '{"text":"' + "x".repeat(4096) + '","attachments":[],"streaming":true}';
-        yield* sql`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
-      VALUES ('stream', 'thread-0', 'assistant', 1, '2026-01-01', '2026-01-01', ${streamPayload})`;
-        const update = () =>
-          sql`UPDATE orchestration_v2_projection_messages SET payload_json = ${streamPayload} WHERE message_id = 'stream'`;
-        const afterStreamingWriteMs = yield* measure(1000, update);
+        yield* sql`INSERT INTO orchestration_v2_projection_messages
+        (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
+        VALUES ('stream', 'thread-0', 'assistant', 1, '2026-01-01', '2026-01-01', ${streamPayload})`;
+        for (let i = 0; i < 1000; i++)
+          yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = ${streamPayload}
+          WHERE message_id = 'stream'`;
+        expect(yield* sql`SELECT count(*) AS count FROM fork_v2_attachment_references`).toEqual(
+          before,
+        );
         expect((yield* referencedAttachmentPaths(ids)).size).toBe(10);
-        yield* sql`DROP TRIGGER fork_v2_attachment_message_update`;
-        const upstreamStreamingWriteMs = yield* measure(1000, update);
-        const benchmark = {
-          threads: 1000,
-          messages: 10000,
-          items: 10000,
-          beforeUnknownMs,
-          afterUnknownMs,
-          beforeCleanupMs,
-          afterCleanupMs,
-          beforeStreamingReadMs,
-          afterStreamingHelperMs,
-          afterStreamingWriteMs,
-          upstreamStreamingWriteMs,
-          addedStreamingMs:
-            afterStreamingHelperMs + afterStreamingWriteMs - upstreamStreamingWriteMs,
-        };
-        yield* Console.info("Attachment revision benchmark", benchmark);
-        const reportPath = process.env.T3_ATTACHMENT_BENCHMARK_REPORT;
-        if (reportPath !== undefined)
-          yield* (yield* FileSystem.FileSystem).writeFileString(
-            reportPath,
-            encodeBenchmark(benchmark),
-          );
+        for (const attachmentId of ids)
+          expect((yield* findReadableAttachment(attachmentId))?.threadId).toBe("thread-0");
       }).pipe(Effect.provide(testLayer)),
   );
 });

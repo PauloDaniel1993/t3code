@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { presentThreadShell, type EnvironmentThreadShell } from "./models.ts";
+import { threadFamilyRowsMissingFromShell } from "./threadFamilies.ts";
 import { v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import {
   createSidebarTaskGrouper,
@@ -78,6 +79,51 @@ function agent(overrides: Partial<OrchestrationV2Subagent> = {}): OrchestrationV
 }
 
 describe("sidebar delegated task grouping", () => {
+  it("groups completed family rows while preserving the parent's delivery and visit watermarks", () => {
+    const parent = {
+      ...v2ThreadShell,
+      id: ThreadId.make("parent"),
+      lineage: {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: ThreadId.make("parent"),
+      },
+      latestTaskDeliveredAt: "2026-09-29T00:08:00.000Z",
+      lastVisitedAt: at("2026-09-29T00:07:00.000Z"),
+    };
+    const completed = {
+      ...v2ThreadShell,
+      id: ThreadId.make("completed"),
+      lineage: {
+        parentThreadId: parent.id,
+        relationshipToParent: "subagent" as const,
+        rootThreadId: parent.id,
+      },
+      creationSource: "mcp" as const,
+      status: "completed" as const,
+      activeRunId: null,
+    };
+    const missing = threadFamilyRowsMissingFromShell({
+      shellThreads: [parent],
+      families: [
+        { snapshotSequence: 5, threads: [completed, { ...parent, latestTaskDeliveredAt: null }] },
+      ],
+      removedAt: new Map(),
+    });
+    const rows = [parent, ...missing].map((row) =>
+      presentThreadShell(EnvironmentId.make("local"), row),
+    );
+    const grouped = createSidebarTaskGrouper()({
+      threads: rows,
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+    });
+    expect(grouped.tasksByParent.get("local:parent")?.map((row) => row.id)).toEqual([completed.id]);
+    expect(grouped.topLevel).toEqual([rows[0]]);
+    expect(rows[0]?.source.latestTaskDeliveredAt).toBe(parent.latestTaskDeliveredAt);
+    expect(rows[0]?.lastVisitedAt).toBe("2026-09-29T00:07:00.000Z");
+  });
+
   it("flattens deeper tasks under the nearest displayed ancestor without a third level", () => {
     const parent = thread("parent");
     const first = child("first");

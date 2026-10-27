@@ -18,14 +18,8 @@ type ThreadWorkspaceUpdate = Pick<
   "branch" | "worktreePath" | "workspaceFolders" | "worktrees"
 >;
 
-/**
- * Why a binding is malformed, or undefined when it is sound. A folder snapshot
- * starts with the local primary folder, and each folder has exactly one of a
- * path or a URI. A worktree set belongs to a snapshot, and its first member is
- * the primary's: the thread's `worktreePath` is the primary folder's place in
- * that member's worktree, and its `branch` is that member's, unless the
- * primary is detached.
- */
+// A snapshot begins with a local primary; each folder has exactly one path or URI.
+// Its first worktree member owns the primary folder's path and branch, except a detached primary.
 export function threadWorkspaceViolation(binding: ThreadWorkspaceBinding): string | undefined {
   const folders = binding.workspaceFolders;
   const primaryFolder = folders?.[0];
@@ -61,13 +55,8 @@ export function threadWorkspaceViolation(binding: ThreadWorkspaceBinding): strin
   return undefined;
 }
 
-/**
- * Decide the binding a `thread.metadata.update` leaves. The snapshot is written
- * once and then frozen. A set the update doesn't carry follows the primary
- * scalars, so a writer that knows nothing of sets never leaves a stale one: a
- * new `worktreePath` drops the set, and a new branch becomes the primary
- * member's. A primary detached to a null branch keeps its expected branch.
- */
+// Snapshots freeze on first write. Scalar-only updates drop stale sets on path changes and update their primary branch.
+// Detaching the primary to a null branch retains the set's expected branch.
 export function planThreadWorkspaceUpdate(
   thread: ThreadWorkspaceBinding,
   update: ThreadWorkspaceUpdate,

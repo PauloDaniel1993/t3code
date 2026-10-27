@@ -18,7 +18,7 @@ import {
 } from "@t3tools/shared/workspaceFolders";
 import { isAbsolutePath } from "@t3tools/shared/path";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
-import { useMemo } from "react";
+import { useState } from "react";
 
 export interface WorkspaceFileContext {
   readonly scope: WorkspaceScope;
@@ -64,10 +64,15 @@ export function useWorkspaceFileContext(
   ]
 ) {
   const serialized = JSON.stringify(project ? workspaceFileContext(project, ...input) : undefined);
-  return useMemo(
-    () => (serialized === undefined ? undefined : (JSON.parse(serialized) as WorkspaceFileContext)),
-    [serialized],
-  );
+  const [retained, setRetained] = useState(() => ({
+    serialized,
+    value: serialized === undefined ? undefined : (JSON.parse(serialized) as WorkspaceFileContext),
+  }));
+  if (retained.serialized === serialized) return retained.value;
+  const value =
+    serialized === undefined ? undefined : (JSON.parse(serialized) as WorkspaceFileContext);
+  setRetained({ serialized, value });
+  return value;
 }
 
 /** Unpinned opens come from existing primary-relative links; canonical selections carry a pin. */
@@ -110,13 +115,23 @@ export function useWorkspaceFileScope(input: WorkspaceScope | undefined) {
   const projectId = input?.projectId;
   const threadId = input?.threadId;
   const folderPath = input?.folderPath;
-  return useMemo(
-    () =>
-      projectId === undefined
-        ? undefined
-        : { projectId, ...(threadId ? { threadId } : {}), ...(folderPath ? { folderPath } : {}) },
-    [projectId, threadId, folderPath],
-  );
+  const [retained, setRetained] = useState(input);
+  if (
+    retained?.projectId === projectId &&
+    retained?.threadId === threadId &&
+    retained?.folderPath === folderPath
+  )
+    return retained;
+  const value =
+    projectId === undefined
+      ? undefined
+      : {
+          projectId,
+          ...(threadId ? { threadId } : {}),
+          ...(folderPath ? { folderPath } : {}),
+        };
+  setRetained(value);
+  return value;
 }
 
 /** Pin the owner in the response table, including nested-folder search results. */

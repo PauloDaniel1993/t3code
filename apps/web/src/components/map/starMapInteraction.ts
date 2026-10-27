@@ -2,14 +2,6 @@ import { type StarMapCamera, clampScale } from "./starMapCamera";
 import type { StarMapLayoutResult } from "./starMapLayout";
 
 /**
- * Pure pointer/gesture and panel-breakpoint maths for the star map mount.
- * Everything the canvas mount does that can be decided without a DOM lives
- * here so it runs under the Node test harness: wheel-to-zoom conversion,
- * click-vs-drag disambiguation, star hit testing, camera easing, and the
- * width thresholds that pick the default view and the side-by-side split.
- */
-
-/**
  * Panel width (px) at which the ticket detail splits next to the map instead
  * of replacing it. Mirrored by the `@container` rule in `starMap.css` — keep
  * the two in sync. A container query, not a viewport media query, because
@@ -59,13 +51,7 @@ export function shouldSplitStarMapDetail(containerWidthPx: number): boolean {
   return containerWidthPx >= STAR_MAP_SPLIT_BREAKPOINT_PX;
 }
 
-/**
- * Converts a wheel event into a multiplicative zoom factor (> 1 zooms in).
- * Delta modes are normalised to pixels first; ctrl/cmd+wheel (browser pinch
- * gesture) uses a stronger intensity because its deltas arrive much smaller.
- * The result is clamped per event so a fling on a high-resolution wheel can
- * not skip past the usable zoom range in one step.
- */
+// Normalize wheel deltas to pixels, strengthen pinch gestures, and clamp each zoom step.
 export function zoomFactorFromWheelDelta(input: {
   readonly deltaY: number;
   readonly deltaMode: number;

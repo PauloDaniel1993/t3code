@@ -64,6 +64,12 @@ import {
   ProjectLiveServerRequestError,
 } from "./project.ts";
 
+const encodeEnvironmentRequestInvalidError = Schema.encodeEffect(
+  Schema.fromJsonString(EnvironmentRequestInvalidError),
+);
+const encodeEnvironmentInternalError = Schema.encodeEffect(
+  Schema.fromJsonString(EnvironmentInternalError),
+);
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 const runCli = (args: ReadonlyArray<string>) =>
   Command.runWith(cli, { version: "0.0.0" })(args).pipe(
@@ -458,9 +464,7 @@ it.effect("preserves live workspace diagnostics and conflict identity", () =>
       diagnostic,
       conflictingProjectId: "existing" as ProjectId,
     });
-    const body = yield* Schema.encodeEffect(Schema.fromJsonString(EnvironmentRequestInvalidError))(
-      cause,
-    );
+    const body = yield* encodeEnvironmentRequestInvalidError(cause);
     const error = yield* failingLiveMutation(() =>
       Promise.resolve(
         new Response(body, { status: 400, headers: { "content-type": "application/json" } }),
@@ -480,7 +484,7 @@ it.effect("maps declared server failures into structural project command errors"
       reason: "access_token_issuance_failed",
       traceId: "trace-123",
     });
-    const body = yield* Schema.encodeEffect(Schema.fromJsonString(EnvironmentInternalError))(cause);
+    const body = yield* encodeEnvironmentInternalError(cause);
     const error = yield* failingLiveMutation(() =>
       Promise.resolve(
         new Response(body, { status: 500, headers: { "content-type": "application/json" } }),

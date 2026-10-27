@@ -40,14 +40,8 @@ function decoded(value: string): string {
   }
 }
 
-/**
- * Read a VS Code `.code-workspace` file's folders, as VS Code reads them: JSONC,
- * paths relative to the file's directory, no `~` or variable expansion, and
- * `file:` URIs as paths. Other URIs are kept for display. Exact duplicates are
- * dropped, the first one winning, and nested folders are kept. The file is
- * rejected without partial output when it is malformed, names no folder, or
- * starts with a folder this server can't reach.
- */
+// Match VS Code JSONC paths and file URIs without tilde/variable expansion; preserve other URIs for display.
+// First exact duplicate wins; nesting remains. Reject malformed, empty or unavailable-primary files atomically.
 export function parseWorkspaceFile(
   input: WorkspaceFileParseInput,
 ): Result.Result<ReadonlyArray<WorkspaceFolderEntry>, WorkspaceFileDiagnostic> {

@@ -12,6 +12,7 @@ import {
 } from "./baseSchemas.ts";
 import {
   OrchestratorMcpCapabilitiesInput,
+  OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpTaskCancelInput,
   TASK_TITLE_MAX_LENGTH,
 } from "./orchestratorMcp.ts";
@@ -110,6 +111,7 @@ export const ForkTaskSummary = Schema.Struct({
   context: Schema.Struct({ kind: Schema.Literal("none") }),
   createdAt: IsoDateTime,
   result: Schema.NullOr(ForkTaskResult),
+  next: OrchestratorMcpDelegateTaskResult.fields.next,
 });
 export type ForkTaskSummary = typeof ForkTaskSummary.Type;
 

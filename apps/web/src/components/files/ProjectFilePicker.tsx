@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { useActiveProjectTarget, type ActiveProjectTarget } from "~/hooks/useActiveProjectTarget";
 import { useTheme } from "~/hooks/useTheme";
@@ -74,13 +74,9 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
   const { target } = props;
   const [query, setQuery] = useState("");
   const [folderPath, setFolderPath] = useState<string>();
-  const scope = useMemo(
-    () =>
-      target.workspace
-        ? { ...target.workspace.scope, ...(folderPath ? { folderPath } : {}) }
-        : undefined,
-    [target.workspace, folderPath],
-  );
+  const scope = target.workspace
+    ? { ...target.workspace.scope, ...(folderPath ? { folderPath } : {}) }
+    : undefined;
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const result = useProjectFilePickerQuery(
     target.environmentId,

@@ -81,6 +81,7 @@ export function useRememberSidebarTaskPresentation(
   presentation: Presentation | null,
 ) {
   const key = ref === null ? null : scopedThreadKey(ref);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Retain streamed task records in the shared store across detail unmounts.
   useEffect(() => {
     if (key !== null && presentation !== null)
       useSidebarTaskPresentationStore.getState().remember(key, presentation);

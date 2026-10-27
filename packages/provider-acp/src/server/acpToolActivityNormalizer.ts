@@ -1,20 +1,6 @@
 /**
- * Split field names at camelCase/acronym boundaries and separators, ignore case,
- * and redact values whose last word is authorization, cookie, credential,
- * password, passwd, secret or token, or whose last two words are api key,
- * private key, secret key or access key. Plurals count, except a plural preceded
- * by max, min, total, num or count denotes a quantity (max_tokens stays intact).
- * Earlier sensitive words and substrings do not count: token_count, tokenLimit,
- * token_type, passwordHint, tokenizer, secretary, keyboard and author survive.
- * In name/value or key/value objects, redact the value by the same name rule;
- * two-string [name, value] arrays count only inside headers or *Headers fields.
- * Replace sensitive values with [REDACTED] idempotently; never search free text.
- *
- * Inputs retain 16 KiB of encoded JSON at every status; oversized inputs keep
- * label fields (256 bytes each) beside a preview of the remaining redacted data.
- * Running output keeps 16 KiB, including JSON escaping, with the latest command
- * text at the tail. Final results retain their shape here; the event-flow stage
- * applies its 64 KiB output bound before persistence and live fan-out.
+ * Redact structured credentials without searching free text or truncating final
+ * results. The event-flow stage owns the persisted output limit.
  */
 import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";

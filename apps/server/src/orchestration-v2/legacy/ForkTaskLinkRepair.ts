@@ -32,10 +32,9 @@ const isRepairError = Schema.is(ForkTaskLinkRepairError);
  */
 const readShell = (read: Effect.Effect<OrchestrationV2AppThread, ProjectionStoreV2Error>) =>
   read.pipe(
-    Effect.catch((error) =>
-      error._tag === "ProjectionStoreReadError" && isSqlError(error.cause)
-        ? Effect.fail(error)
-        : Effect.succeed(undefined),
+    Effect.catchIf(
+      (error) => error._tag !== "ProjectionStoreReadError" || !isSqlError(error.cause),
+      () => Effect.void,
     ),
   );
 

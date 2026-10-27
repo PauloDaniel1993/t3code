@@ -23,6 +23,7 @@ import { buildBoundedThreadStreamSnapshot } from "./ThreadStream.ts";
 import {
   decodeThreadHistoryCursor,
   selectHistoryPageFromCursor,
+  THREAD_HISTORY_PAGE_POLICY,
   THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
 } from "./threadHistoryPaging.ts";
 import { v2Projection } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures.ts";
@@ -41,7 +42,7 @@ const encodeSnapshot = Schema.encodeSync(
   Schema.toCodecJson(OrchestrationV2RpcSchemas.subscribeThread.output),
 );
 
-it.effect("decodes a 10,001-row SQLite turn linearly and recovers every 200-row page", () =>
+it.effect("decodes a 10,001-row SQLite turn linearly and recovers every bounded page", () =>
   Effect.gen(function* () {
     const sink = yield* EventSinkV2;
     const projections = yield* ProjectionStoreV2;
@@ -177,10 +178,14 @@ it.effect("decodes a 10,001-row SQLite turn linearly and recovers every 200-row 
       const snapshot = buildBoundedThreadStreamSnapshot(window);
       const encoded = encodeSnapshot(snapshot);
       const bytes = Buffer.byteLength(testJson({ _tag: "Chunk", requestId: 0, values: [encoded] }));
-      expect(snapshot.projection.visibleTurnItems).toHaveLength(200);
-      expect(snapshot.projection.nodes).toHaveLength(200);
+      expect(snapshot.projection.visibleTurnItems).toHaveLength(
+        THREAD_HISTORY_PAGE_POLICY.maxItems,
+      );
+      expect(snapshot.projection.nodes).toHaveLength(
+        snapshot.projection.visibleTurnItems.filter((row) => row.item.nodeId !== null).length,
+      );
       expect(bytes).toBeLessThanOrEqual(1_048_576);
-      expect(snapshot.payloadBudgetExceeded).toBe(false);
+      expect(Buffer.byteLength(JSON.stringify(snapshot.projection))).toBeLessThanOrEqual(1_048_576);
       const ids = snapshot.projection.visibleTurnItems.map((row) => String(row.sourceItemId));
       let cursor = snapshot.historyCursor;
       let pages = 1;
@@ -197,15 +202,19 @@ it.effect("decodes a 10,001-row SQLite turn linearly and recovers every 200-row 
           cursor,
           snapshotSequence: olderWindow.snapshotSequence,
         });
-        expect(page.items).toHaveLength(Math.min(200, 10_001 - ids.length));
+        expect(page.items.length).toBeGreaterThan(0);
+        expect(page.items.length).toBeLessThanOrEqual(THREAD_HISTORY_PAGE_POLICY.maxTurnItems);
         ids.unshift(...page.items.map((row) => String(row.sourceItemId)));
         cursor = page.nextCursor;
         pages++;
       }
       expect(ids).toEqual(["prompt", ...Array.from({ length: 10_000 }, (_, i) => `tool-${i}`)]);
-      expect(pages).toBe(51);
+      expect(pages).toBeGreaterThan(1);
+      expect(pages).toBeLessThanOrEqual(
+        Math.ceil(10_001 / THREAD_HISTORY_PAGE_POLICY.maxItems) + 1,
+      );
       expect(decodedRows).toBeGreaterThanOrEqual(10_001);
-      expect(decodedRows).toBeLessThanOrEqual(10_200);
+      expect(decodedRows).toBeLessThanOrEqual(10_001 + 3 * pages);
       process.stdout.write(
         testJson({
           measurement: "SQLite node-bearing history",
@@ -357,7 +366,8 @@ it.effect(
           },
         },
       ];
-      for (let i = 0; i < 300; i++)
+      const toolCount = THREAD_HISTORY_PAGE_POLICY.maxTurnItems + 100;
+      for (let i = 0; i < toolCount; i++)
         events.push({
           id: EventId.make(`retained-tool-${i}`),
           type: "turn-item.updated",
@@ -380,7 +390,7 @@ it.effect(
         payload: {
           ...base,
           id: TurnItemId.make("question-item"),
-          ordinal: 400,
+          ordinal: toolCount + 3,
           type: "user_input_request",
           requestId,
           responseMode: "message",
@@ -402,7 +412,9 @@ it.effect(
         userTurnLimit: 10,
       });
       const snapshot = buildBoundedThreadStreamSnapshot(window);
-      expect(snapshot.projection.visibleTurnItems).toHaveLength(200);
+      expect(snapshot.projection.visibleTurnItems.length).toBeLessThanOrEqual(
+        THREAD_HISTORY_SNAPSHOT_ROW_LIMIT + 2,
+      );
       expect(snapshot.projection.messages).toMatchObject([
         { id: messageId, text: "Completed answer" },
       ]);
@@ -414,6 +426,8 @@ it.effect(
       )?.item;
       if (question?.type !== "user_input_request") throw new Error("Expected visible question");
       expect(question.questionAnswer?.answers).toEqual({ next: "continue" });
-      expect(window.projection.turnItems.length).toBeLessThanOrEqual(204);
+      expect(window.projection.turnItems.length).toBeLessThanOrEqual(
+        THREAD_HISTORY_SNAPSHOT_ROW_LIMIT + 2,
+      );
     }).pipe(Effect.provide(testLayer)),
 );

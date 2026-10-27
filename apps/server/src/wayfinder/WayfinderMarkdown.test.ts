@@ -265,11 +265,8 @@ describe("WayfinderMarkdown", () => {
     });
   });
 
-  // The frontier answers "what can I pick up right now", so a ticket someone
-  // has already claimed is not on it even when nothing blocks it. This matches
-  // the wayfinder skill's own definition (open, unblocked, AND unclaimed) and
-  // is the one place our derived status and the frontier disagree, so it is
-  // pinned here in every dialect that can express a claim.
+  // The frontier requires open, unblocked and unclaimed work, unlike derived status alone.
+  // Keep claimed tickets off it across every dialect that expresses ownership.
   it.each([
     {
       dialect: "plain-lines",

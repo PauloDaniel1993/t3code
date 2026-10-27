@@ -6,6 +6,7 @@ import {
   type GitRunStackedActionResult,
   type OrchestrationV2ServerCommand as OrchestrationCommand,
   type OrchestrationProjectShell,
+  SourceControlProviderKind,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -19,7 +20,6 @@ import {
 } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as Option from "effect/Option";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { refreshPushedPullRequests } from "./refreshPushedPullRequests.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -42,7 +42,7 @@ const project: OrchestrationProjectShell = {
       remoteName: "origin",
       remoteUrl: "git@github.acme.test:Platform/API.git",
     },
-    provider: "github",
+    provider: SourceControlProviderKind.make("github"),
     displayName: "Platform/API",
     owner: "Platform",
     name: "API",
@@ -94,7 +94,7 @@ const layerDependenciesFor = (
 ) =>
   Layer.mergeAll(
     Layer.mock(ProjectService.ProjectService)({
-      getShell: () => Effect.succeed(Option.some(project)),
+      getShell: () => Effect.succeedSome(project),
     }),
     Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
       resolve: (cwd) =>

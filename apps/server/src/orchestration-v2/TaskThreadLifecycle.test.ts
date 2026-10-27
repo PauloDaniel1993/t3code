@@ -133,7 +133,7 @@ const TestLayer = Layer.mergeAll(RuntimeLayer.layer, RuntimeLayer.layerEventSink
       probeFolders: () => Effect.succeed([]),
       getAvailableFolders: (folders) => Effect.succeed(folders),
       enrichShell: (project) => Effect.succeed({ project, repositoryIdentityResolved: false }),
-      getWorkspaceFileStatus: () => Effect.succeed(undefined),
+      getWorkspaceFileStatus: () => Effect.undefined,
       setWorkspaceFileStatus: () => Effect.void,
       subscribeChanges: Effect.never,
     }),

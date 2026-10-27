@@ -1,3 +1,5 @@
+import { observeResize } from "~/lib/observeResize";
+
 import {
   boundsFromPoints,
   clampCamera,
@@ -26,38 +28,11 @@ import {
   type StarMapTheme,
 } from "./starMapTheme";
 
-/**
- * The star map canvas engine — and a deliberate, named departure from
- * `AGENTS.md` ("No continuously repainting animations; they peg the GPU on
- * high-refresh displays"). The departure is only defensible because the loop
- * is demand-driven; every gate below is load-bearing, not polish:
- *
- * - Hard stops: the loop runs only while the document is visible, the window
- *   is focused, the surface is reported active by the mount, and the canvas
- *   intersects the viewport (`RightPanelSheet` uses `keepMounted`, so hidden
- *   is not unmounted — a `useEffect` cleanup alone would not stop this loop).
- *   Any gate failing cancels the `requestAnimationFrame` chain outright.
- * - `prefers-reduced-motion`: the loop NEVER starts. Exactly one static frame
- *   renders per invalidation (mount, content, theme, or size change).
- * - Dual rate: interaction renders at full display refresh; ambient motion
- *   renders on a ~30 fps accumulator and decays to a 4 fps tick after ~10 s
- *   idle, because full-rate ambient animation on a 240 Hz display is the
- *   precise thing the rule exists to prevent.
- * - Theme tokens are read once per theme change via `resolveStarMapTheme`;
- *   `getComputedStyle` is never called from the frame path.
- *
- * Everything testable without a DOM (gates, rate accumulator, curves,
- * particles, starfield, DPR maths) is an exported pure function below; the
- * class is the only DOM-touching part and is exercised by the documented
- * manual end-to-end pass, not by the Node test harness. `framesRendered` is
- * the observable frame counter that pass uses to prove the loop stops.
- */
+// Hidden, unfocused, inactive, and offscreen canvases stop the frame loop.
+// Reduced motion paints one static frame per invalidation. Ambient motion drops from 30 to 4 fps
+// after inactivity; only interaction uses display refresh. Theme reads stay outside the frame path.
 
 const TAU = Math.PI * 2;
-
-// ---------------------------------------------------------------------------
-// Loop gates
-// ---------------------------------------------------------------------------
 
 export interface StarMapLoopGates {
   readonly reducedMotion: boolean;
@@ -86,10 +61,6 @@ export function starMapLoopShouldRun(gates: StarMapLoopGates): boolean {
 export function starMapShouldRenderStaticFrame(gates: StarMapLoopGates): boolean {
   return !gates.documentHidden && gates.windowFocused && gates.surfaceActive && gates.onScreen;
 }
-
-// ---------------------------------------------------------------------------
-// Dual-rate governor
-// ---------------------------------------------------------------------------
 
 /** Ambient motion renders at most this often (~30 fps). */
 export const STAR_MAP_AMBIENT_FRAME_MS = 1000 / 30;
@@ -127,13 +98,7 @@ export interface StarMapFrameDecision {
   readonly dtMs: number;
 }
 
-/**
- * Called once per `requestAnimationFrame` tick. Interaction (an in-flight
- * gesture, or the tail just after one) renders every tick at full refresh.
- * Otherwise the accumulator renders only once the ambient interval — 33 ms,
- * or 250 ms past the idle threshold — has elapsed, advancing ambient motion
- * by the real elapsed time.
- */
+// Interaction uses display refresh; ambient frames accumulate elapsed time at 30 or 4 fps.
 export function advanceStarMapRateGovernor(
   governor: StarMapRateGovernor,
   now: number,
@@ -158,10 +123,6 @@ export function advanceStarMapRateGovernor(
   return { render: true, dtMs };
 }
 
-// ---------------------------------------------------------------------------
-// Device pixel ratio
-// ---------------------------------------------------------------------------
-
 /** Backing-store size for a CSS-pixel viewport at a DPR; 0/0 when hidden. */
 export function backingStoreSize(
   cssWidth: number,
@@ -182,10 +143,6 @@ export function backingStoreSize(
 export function dprMediaQueryText(dpr: number): string {
   return `(resolution: ${dpr}dppx)`;
 }
-
-// ---------------------------------------------------------------------------
-// Edges and flow particles
-// ---------------------------------------------------------------------------
 
 /** A blocker stops holding a ticket back once it is resolved or ruled out. */
 export function isSatisfiedBlockerStatus(status: StarMapNodeStatus | undefined): boolean {
@@ -348,19 +305,8 @@ export function advanceFlowParticles(particles: Array<StarMapFlowParticle>, dtMs
   }
 }
 
-// ---------------------------------------------------------------------------
-// Starfield
-// ---------------------------------------------------------------------------
-
 /** Side of the square screen-space tile the starfield repeats on. */
-/**
- * The starfield repeats on this grid. It must stay LARGER than a realistic
- * panel, or the eye reads the repeat as structure: at 512 an 851x1056 panel
- * stamped the identical 26-star arrangement six times and the field looked
- * like clumps in a pattern rather than stars. Star counts scale with the tile
- * area so density is unchanged, and the draw loop culls off-canvas stars so a
- * bigger tile costs less to draw, not more.
- */
+// Tiles exceed realistic panel sizes to hide repetition; off-canvas stars are culled.
 export const STAR_MAP_STARFIELD_TILE = 1600;
 
 export interface StarMapStarfieldLayer {
@@ -387,15 +333,8 @@ export interface StarMapStarfieldStar {
   readonly twinkleSpeed: number;
 }
 
-/**
- * MurmurHash3 finalizer. `hash32` is FNV-1a, whose avalanche is weak in the low
- * bits: for inputs differing only in a trailing digit — exactly `"0:1"`,
- * `"0:2"`, `"0:3"` — the low half advances almost linearly, so taking x from
- * the low bits and y from the high bits marched consecutive stars along a line
- * and the starfield drew as repeating clumps instead of scatter. `hash32`
- * itself is deliberately untouched: it seeds ticket layout and the content
- * revision, and changing it would move every node and break spatial memory.
- */
+// Mix the weak low bits of FNV-1a so consecutive seeds scatter.
+// Keep hash32 unchanged: it also seeds node positions and content revisions.
 function mix32(value: number): number {
   let mixed = value >>> 0;
   mixed ^= mixed >>> 16;
@@ -455,10 +394,6 @@ export function twinkleAlpha(
   return baseAlpha * (0.7 + 0.3 * Math.sin(TAU * ((speed * clockMs) / 1000) + phase));
 }
 
-// ---------------------------------------------------------------------------
-// Frontier pulse
-// ---------------------------------------------------------------------------
-
 export const STAR_MAP_FRONTIER_PULSE_MS = 2600;
 
 /**
@@ -478,10 +413,6 @@ export function frontierPulse(
   return { phase, alpha };
 }
 
-// ---------------------------------------------------------------------------
-// Reduced motion
-// ---------------------------------------------------------------------------
-
 /**
  * Standalone probe the panel mount uses to pick its default view (list under
  * reduced motion) before constructing the engine. DOM-guarded so importing
@@ -494,10 +425,6 @@ export function detectPrefersReducedMotion(): boolean {
     window.matchMedia("(prefers-reduced-motion: reduce)").matches
   );
 }
-
-// ---------------------------------------------------------------------------
-// Engine
-// ---------------------------------------------------------------------------
 
 const STAR_MAP_STATUSES = ["open", "claimed", "resolved", "out_of_scope"] as const;
 
@@ -616,7 +543,7 @@ export class StarMapRenderer {
    */
   private userFramedCamera = false;
 
-  private resizeObserver: ResizeObserver | null = null;
+  private stopObservingResize: (() => void) | null = null;
   private intersectionObserver: IntersectionObserver | null = null;
   private mutationObserver: MutationObserver | null = null;
   private motionMedia: MediaQueryList | null = null;
@@ -656,8 +583,6 @@ export class StarMapRenderer {
     this.rebuildGraphGeometry();
   }
 
-  // -- lifecycle ------------------------------------------------------------
-
   /**
    * Appends the canvas, wires every gate listener, and either starts the loop
    * or renders the single static frame, per the current gates. Idempotent.
@@ -671,11 +596,10 @@ export class StarMapRenderer {
 
     this.refreshTheme();
 
-    this.resizeObserver = new ResizeObserver((entries) => {
+    this.stopObservingResize = observeResize(this.container, (entries) => {
       const entry = entries[0];
       if (entry !== undefined) this.handleResize(entry.contentRect.width, entry.contentRect.height);
     });
-    this.resizeObserver.observe(this.container);
     this.handleResize(this.container.clientWidth, this.container.clientHeight);
     this.watchDpr();
 
@@ -715,7 +639,7 @@ export class StarMapRenderer {
     if (this.destroyed) return;
     this.destroyed = true;
     this.stopLoop();
-    this.resizeObserver?.disconnect();
+    this.stopObservingResize?.();
     this.intersectionObserver?.disconnect();
     this.mutationObserver?.disconnect();
     this.motionMedia?.removeEventListener("change", this.handleMotionChange);
@@ -725,8 +649,6 @@ export class StarMapRenderer {
     window.removeEventListener("blur", this.handleFocusChange);
     this.canvas.remove();
   }
-
-  // -- observable state -----------------------------------------------------
 
   /**
    * Frames actually painted since construction. This is the counter the manual
@@ -766,8 +688,6 @@ export class StarMapRenderer {
   toScreen(point: StarMapPoint): StarMapPoint {
     return worldToScreen(this.currentCamera(), this.viewport, point);
   }
-
-  // -- inputs from the mount --------------------------------------------------
 
   setGraph(graph: StarMapGraph | null, layout: StarMapLayoutResult | null, complete = false): void {
     this.graph = graph;
@@ -836,8 +756,6 @@ export class StarMapRenderer {
     this.invalidate();
   }
 
-  // -- gates and the loop -----------------------------------------------------
-
   private now(): number {
     return typeof performance === "undefined" ? 0 : performance.now();
   }
@@ -880,15 +798,8 @@ export class StarMapRenderer {
     }
   }
 
-  /**
-   * Coalesces static frames so one user-level change paints once. Selecting a
-   * ticket invalidates twice — once for the selection, once for the camera
-   * move it triggers — and drawing synchronously from each would paint twice
-   * under reduced motion, breaking the one-frame-per-change contract. A
-   * microtask drains after the whole React commit, so both collapse into one
-   * draw. This is deliberately NOT `requestAnimationFrame`: reduced motion must
-   * never reach that call, and `loopRunning` must stay false throughout.
-   */
+  // Coalesce selection and camera invalidations after the React commit.
+  // Reduced motion must paint once without starting an animation frame loop.
   private scheduleStaticFrame(): void {
     if (this.staticFrameScheduled) return;
     this.staticFrameScheduled = true;
@@ -993,8 +904,6 @@ export class StarMapRenderer {
     this.invalidate();
   }
 
-  // -- theme ------------------------------------------------------------------
-
   private applyTheme(theme: StarMapTheme): void {
     this.theme = theme;
     this.brushes = this.buildBrushes(theme);
@@ -1058,8 +967,6 @@ export class StarMapRenderer {
     context.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
     return sprite;
   }
-
-  // -- per-graph geometry -------------------------------------------------------
 
   private rebuildGraphGeometry(): void {
     this.edgeGeometry = [];
@@ -1130,8 +1037,6 @@ export class StarMapRenderer {
     if (this.cameraValue !== null) return this.cameraValue;
     return fitCameraToBounds(this.contentBounds(), this.viewport);
   }
-
-  // -- drawing ------------------------------------------------------------------
 
   private drawFrame(dtMs: number): void {
     const ctx = this.ctx;

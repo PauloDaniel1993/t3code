@@ -7,8 +7,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
+import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../attachmentStore.ts";
 import { referencedAttachmentPaths } from "./AttachmentReferences.ts";
 import * as ServerConfig from "../config.ts";
 import * as PreviewManager from "../preview/Manager.ts";
@@ -59,37 +59,43 @@ export const layer = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
     return {
-      cleanupScheduledTasks: (threadId: ThreadId) =>
-        scheduledTasks
+      cleanupScheduledTasks: Effect.fn("ResourceCleanupService.cleanupScheduledTasks")(function (
+        threadId: ThreadId,
+      ) {
+        return scheduledTasks
           .deleteForThread(threadId)
           .pipe(
             Effect.mapError(
               (cause) =>
                 new ResourceCleanupError({ operation: "scheduled-tasks", threadId, cause }),
             ),
-          ),
-      cleanupTerminals: (threadId: string) =>
-        terminals
+          );
+      }),
+      cleanupTerminals: Effect.fn("ResourceCleanupService.cleanupTerminals")(function (
+        threadId: string,
+      ) {
+        return terminals
           .close({ threadId, deleteHistory: true })
           .pipe(
             Effect.mapError(
               (cause) => new ResourceCleanupError({ operation: "terminal", threadId, cause }),
             ),
-          ),
-      cleanupPreviews: (threadId: string) =>
-        previews
+          );
+      }),
+      cleanupPreviews: Effect.fn("ResourceCleanupService.cleanupPreviews")(function (
+        threadId: string,
+      ) {
+        return previews
           .close({ threadId: ThreadId.make(threadId) })
           .pipe(
             Effect.mapError(
               (cause) => new ResourceCleanupError({ operation: "preview", threadId, cause }),
             ),
-          ),
+          );
+      }),
       // Delete only after the verified reference index reports no remaining reference.
-      cleanupAttachments: (
-        attachmentIds: ReadonlyArray<string>,
-        relativePaths?: ReadonlyArray<string>,
-      ) =>
-        Effect.gen(function* () {
+      cleanupAttachments: Effect.fn("ResourceCleanupService.cleanupAttachments")(
+        function* (attachmentIds: ReadonlyArray<string>, relativePaths?: ReadonlyArray<string>) {
           const inputs = relativePaths ?? attachmentIds;
           const batch = inputs.slice(0, ATTACHMENT_CLEANUP_BATCH_SIZE);
           const remaining = inputs.slice(ATTACHMENT_CLEANUP_BATCH_SIZE);
@@ -97,10 +103,18 @@ export const layer = Layer.effect(
           const paths = batch
             .flatMap((value) => {
               if (relativePaths !== undefined) return [value];
-              const resolved = resolveAttachmentPathById({
-                attachmentsDir: config.attachmentsDir,
-                attachmentId: value,
-              });
+              const extension = parseAttachmentFileExtension(value);
+              const resolved =
+                resolveAttachmentPathById({
+                  attachmentsDir: config.attachmentsDir,
+                  attachmentId: value,
+                }) ??
+                (extension === null
+                  ? null
+                  : resolveAttachmentRelativePath({
+                      attachmentsDir: config.attachmentsDir,
+                      relativePath: `${value}.${extension}`,
+                    }));
               return resolved === null ? [] : [path.relative(config.attachmentsDir, resolved)];
             })
             .flatMap((relativePath) => {
@@ -126,7 +140,11 @@ export const layer = Layer.effect(
                 const id = entry.attachmentId.toLowerCase();
                 const name = entry.relativePath.toLowerCase();
                 if (!retained.has("*") && !retained.has(id) && !retained.has(name))
-                  yield* fileSystem.remove(entry.resolved, { force: true });
+                  yield* fileSystem
+                    .remove(entry.resolved, { force: true })
+                    .pipe(
+                      Effect.andThen(fileSystem.remove(`${entry.resolved}.txt`, { force: true })),
+                    );
               }
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           );
@@ -143,9 +161,9 @@ export const layer = Layer.effect(
                 ),
                 relativePaths: remaining,
               };
-        }).pipe(
-          Effect.mapError((cause) => new ResourceCleanupError({ operation: "attachment", cause })),
-        ),
+        },
+        Effect.mapError((cause) => new ResourceCleanupError({ operation: "attachment", cause })),
+      ),
     };
   }),
 );

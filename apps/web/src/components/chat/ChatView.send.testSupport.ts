@@ -26,6 +26,7 @@ import * as ChatLogic from "../ChatView.logic";
 import { toastManager } from "../ui/toast";
 import { stackedThreadToast } from "../ui/toastHelpers";
 import * as Recovery from "./failedSendRecovery";
+import { createOptimisticBlobPreviews } from "./optimisticUserMessages";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   threadContextsOutsideEnvironment,
@@ -75,6 +76,7 @@ export function createSendHarness(
     composerSendGenerationRef: { current: 0 },
   };
   let messages: ChatMessage[] = [];
+  const blobPreviews = createOptimisticBlobPreviews();
   const failure = Runtime.settlePromise(() => {
     throw new Error("Send rejected");
   });
@@ -212,6 +214,10 @@ export function createSendHarness(
     persistThreadSettingsForNextTurn: persistSettings,
     setOptimisticUserMessages: (update: (existing: ChatMessage[]) => ChatMessage[]) => {
       messages = update(messages);
+    },
+    optimisticBlobPreviews: {
+      track: (message: ChatMessage) => blobPreviews.track(threadRef.threadId, message),
+      release: (message: ChatMessage) => blobPreviews.release(threadRef.threadId, message),
     },
     clearComposerDraftContent: store.clearComposerContent,
     setComposerDraftPrompt: store.setPrompt,

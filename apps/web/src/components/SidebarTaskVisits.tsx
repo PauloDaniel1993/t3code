@@ -10,6 +10,7 @@ import { useSidebarTaskPresentationStore } from "./sidebarTaskPresentation";
 export function SidebarTaskVisits({ threadRef }: { threadRef: ScopedThreadRef | null }) {
   const environmentId = threadRef?.environmentId;
   const threadId = threadRef?.threadId;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Persist visits when the route enters or leaves this thread.
   useEffect(() => {
     if (environmentId === undefined || threadId === undefined) return;
     const ref = scopeThreadRef(environmentId, threadId);

@@ -53,6 +53,38 @@ function leaveInterrupted(phase: "copying" | "copied" | "validated" | "rewriting
 }
 
 describe("physical maintenance", () => {
+  it("rebuilds FTS rowids in both the compacted database and its recovery snapshot", () => {
+    const db = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      const insert = db.prepare(`INSERT INTO orchestration_v2_projection_messages
+        (rowid, message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
+        VALUES (?, ?, 'search-thread', 'user', 0, '2026-10-01', '2026-10-01', ?)`);
+      insert.run(101, "discarded", JSON.stringify({ text: "discarded", createdBy: "user" }));
+      insert.run(202, "kept", JSON.stringify({ text: "search needle", createdBy: "user" }));
+      db.exec("DELETE FROM orchestration_v2_projection_messages WHERE message_id = 'discarded'");
+    } finally {
+      db.close();
+    }
+    const before = readFingerprint();
+    const result = compactDatabase({ databasePath });
+    for (const path of [databasePath, result.snapshotPath]) {
+      const compacted = new NodeSqlite.DatabaseSync(path, { readOnly: true });
+      try {
+        expect(fingerprintDatabase(compacted)).toBe(before);
+        expect(
+          compacted
+            .prepare(`SELECT message_id
+          FROM orchestration_v2_message_search AS search
+          JOIN orchestration_v2_projection_messages AS messages ON messages.rowid = search.rowid
+          WHERE orchestration_v2_message_search MATCH 'needle'`)
+            .all(),
+        ).toEqual([{ message_id: "kept" }]);
+      } finally {
+        compacted.close();
+      }
+    }
+  });
+
   it("shrinks the migrated V2 database, retains a validated snapshot and preserves all rows and schema", () => {
     const before = readFingerprint();
     const estimate = estimateDatabaseMaintenance(databasePath);
@@ -70,7 +102,7 @@ describe("physical maintenance", () => {
         "original-moved",
       );
       expect(db.prepare("SELECT count(*) AS count FROM effect_sql_migrations").get()?.count).toBe(
-        56,
+        69,
       );
     } finally {
       db.close();
@@ -468,7 +500,11 @@ describe("physical maintenance", () => {
     const db = new NodeSqlite.DatabaseSync(databasePath);
     try {
       const expected = fingerprintDatabase(db);
-      const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all();
+      const tables = db
+        .prepare(
+          "SELECT name FROM pragma_table_list WHERE type='table' AND name <> 'sqlite_schema'",
+        )
+        .all();
       let checked = 0;
       for (const { name } of tables) {
         if (name === "sqlite_sequence" || !db.prepare(`SELECT 1 FROM "${name}" LIMIT 1`).get())

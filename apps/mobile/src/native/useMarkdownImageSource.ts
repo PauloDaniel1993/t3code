@@ -83,6 +83,7 @@ export function useMarkdownImageSource(props: {
       scope,
       folders,
       documentPath,
+      // oxlint-disable-next-line react/memo-dependencies -- Rebinding must invalidate cached native image URLs even when paths are unchanged.
       bindingKey,
     ],
   );

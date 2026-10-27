@@ -1,8 +1,6 @@
-// @vitest-environment jsdom
-// ChatView.send.testSupport cuts the real onSend body from useComposerSend.ts?raw,
-// strips its TypeScript, and supplies hook bindings to a headless function.
-// After an upstream merge, fix the extraction markers or missing bindings there
-// if these tests break; keep exercising production onSend instead of copying it.
+// Executes the production onSend body with supplied hook bindings, preserving awaits
+// and failure branches. Node's EventTarget supplies the storage flush event;
+// FileReader below converts real Blob bytes without mounting the chat UI.
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   EnvironmentId,
@@ -11,7 +9,7 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   DraftId,
   type ComposerThreadTarget,
@@ -24,6 +22,27 @@ import { threadContextRecord } from "../../lib/composerContextRecords";
 import { type FailedSendDraft } from "./failedSendRecovery";
 import * as ChatViewLogic from "../ChatView.logic";
 import { createSendHarness, deferred } from "./ChatView.send.testSupport";
+
+vi.hoisted(() => {
+  const data = new Map<string, string>();
+  const storage: Storage = {
+    get length() {
+      return data.size;
+    },
+    clear: () => data.clear(),
+    key: (index) => [...data.keys()][index] ?? null,
+    getItem: (key) => data.get(key) ?? null,
+    setItem: (key, value) => {
+      data.set(key, value);
+    },
+    removeItem: (key) => {
+      data.delete(key);
+    },
+  };
+  vi.stubGlobal("localStorage", storage);
+  vi.stubGlobal("window", Object.assign(new EventTarget(), { localStorage: storage }));
+});
+afterAll(() => vi.unstubAllGlobals());
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -207,6 +226,22 @@ async function reloadDrafts() {
 
 describe("ChatView single-send failures", () => {
   beforeEach(() => {
+    vi.stubGlobal(
+      "FileReader",
+      class extends EventTarget {
+        result: string | null = null;
+        error: unknown = null;
+        async readAsDataURL(blob: Blob) {
+          try {
+            this.result = `data:${blob.type || "application/octet-stream"};base64,${Buffer.from(await blob.arrayBuffer()).toString("base64")}`;
+            this.dispatchEvent(new Event("load"));
+          } catch (error) {
+            this.error = error;
+            this.dispatchEvent(new Event("error"));
+          }
+        }
+      },
+    );
     resetDrafts();
     mocks.get.mockImplementation((atom) =>
       atom === "configs"
@@ -236,8 +271,8 @@ describe("ChatView single-send failures", () => {
         sizeBytes: image.sizeBytes,
       })),
     );
-    URL.createObjectURL = vi.fn(() => "blob:retry");
-    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:retry");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
   });
   afterEach(() => {
     resetDrafts();

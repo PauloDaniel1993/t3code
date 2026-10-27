@@ -20,6 +20,7 @@ import {
 import {
   checkDatabaseIntegrity,
   fingerprintDatabase,
+  rebuildDatabaseMessageSearch,
   requireV2Database,
 } from "./DatabaseMaintenanceValidation.ts";
 import {
@@ -193,14 +194,9 @@ export function databaseMaintenanceStatus(databasePath: string) {
   };
 }
 
-/**
- * Retain a validated VACUUM INTO recovery snapshot, then reclaim physical space
- * using SQLite's own atomic rewrite. Never rename/unlink the live database, WAL
- * or SHM: on Windows a file swap requires dropping SQLite's lock, allowing a new
- * writer between validation and replacement. VACUUM uses SQLite's journal and
- * survives interruption without a startup hook or a guessed rollback.
- * https://sqlite.org/lang_vacuum.html#how_vacuum_works
- */
+// Keep a validated VACUUM INTO snapshot, then let SQLite atomically rewrite the source.
+// Never swap database/WAL/SHM files: Windows would require dropping the lock and admit another writer.
+// SQLite journals make interrupted VACUUM recoverable: https://sqlite.org/lang_vacuum.html#how_vacuum_works
 export function compactDatabase(options: MaintenanceOptions, hooks: MaintenanceHooks = {}) {
   const progress = maintenanceProgress(
     [
@@ -267,6 +263,12 @@ export function compactDatabase(options: MaintenanceOptions, hooks: MaintenanceH
         );
         progress.run("Copying snapshot", () => {
           database.prepare("VACUUM INTO ?").run(incomplete);
+          const copy = new NodeSqlite.DatabaseSync(incomplete);
+          try {
+            rebuildDatabaseMessageSearch(copy);
+          } finally {
+            copy.close();
+          }
           syncFile(incomplete);
           syncDirectory(incomplete);
         });
@@ -287,7 +289,10 @@ export function compactDatabase(options: MaintenanceOptions, hooks: MaintenanceH
         // No destructive SQL, checkpoint, or physical rewrite happens before the
         // snapshot passes integrity, foreign-key and full-content validation.
         advance("rewriting");
-        progress.run("Rewriting database", () => database.exec("VACUUM main"));
+        progress.run("Rewriting database", () => {
+          database.exec("VACUUM main");
+          rebuildDatabaseMessageSearch(database);
+        });
         progress.run("Checkpointing WAL", () => checkpoint(database));
         // Durable before checking: even a crash or a failed failure-journal write
         // must require explicit acknowledgement, never silently bless current data.
@@ -391,6 +396,7 @@ export function recoverDatabaseMaintenance(
         }
       }
       if (terminalPhases.has(journal.phase)) return report(path, journal);
+      rebuildDatabaseMessageSearch(database);
       const current = progress.run("Fingerprinting source", () => fingerprintDatabase(database));
       let recovery: MaintenanceJournal["recovery"] = "unvalidated";
       if (journal.fingerprint !== undefined) {

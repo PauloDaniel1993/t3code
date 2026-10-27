@@ -1,13 +1,7 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import type { NewThreadTaskDraft } from "./components/NewThreadTaskDialog.logic";
 
-/**
- * App-level NewThreadTaskHost owns every request, including unopened parents.
- * Import openNewThreadTaskDialog from this module and call it with
- * { threadRef: scopeThreadRef(environmentId, parentThreadId), initialDraft?: { title, prompt } }.
- * The optional draft is copied into a new dialog; route changes never retarget the parent.
- * Sidebar (ticket 32) supplies only threadRef; Wayfinder (ticket 38) also supplies initialDraft.
- */
+// The host copies each draft and keeps its parent fixed across route changes.
 export interface OpenNewThreadTaskRequest {
   readonly threadRef: ScopedThreadRef;
   readonly initialDraft?: NewThreadTaskDraft;

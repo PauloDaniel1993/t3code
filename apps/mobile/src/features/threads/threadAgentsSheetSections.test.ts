@@ -55,6 +55,7 @@ function turn(
 ): ThreadTurnSubagents {
   return {
     runId: subagents[0]?.runId ?? null,
+    latestTurn: true,
     subagents,
     turnActive,
     liveCount: subagents.filter((entry) => isActiveSubagentStatus(entry.status)).length,
@@ -177,13 +178,18 @@ describe("thread agents sheet sections", () => {
 });
 
 describe("V2 mobile agents pill", () => {
-  it("hides after settlement for completed and idle agents even when history remains", () => {
-    for (const status of ["completed", "idle"] as const) {
+  it.each([
+    { status: "completed", label: "1 done" },
+    { status: "idle", label: "0 done" },
+  ] as const)(
+    "keeps the latest $status agents reachable until a later turn",
+    ({ status, label }) => {
       const current = [agent(status, { status })];
       expect(deriveNativeAgentRollup({ runs: [], subagents: current }).agentCount).toBe(1);
-      expect(resolveSubagentPillSegment(turn(current))).toBeNull();
-    }
-  });
+      expect(resolveSubagentPillSegment(turn(current))?.label).toBe(label);
+      expect(resolveSubagentPillSegment({ ...turn(current), latestTurn: false })).toBeNull();
+    },
+  );
 
   it("keeps the active-turn and outstanding-work meanings of V2's pill", () => {
     expect(resolveSubagentPillSegment(turn([agent("done")], true))?.label).toBe("1 done");

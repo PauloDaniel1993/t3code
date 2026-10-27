@@ -1,18 +1,6 @@
 /**
- * Before this build hydrates a transcript, bring the timeline items an earlier
- * import left for it to this build's mapping.
- *
- * An unpatched V2 build's shell import writes each thread's previews at
- * reasoning-free ordinals, reserves those positions, and writes no source tag,
- * source-derived authorship or leniently decoded attachment. Hydrating around
- * those reservations hits upstream's unique `(thread_id, ordinal)` on the first
- * reasoning item, and task items allocated after them land in the transcript's
- * slots. So, for every thread whose transcript is not imported yet, this moves
- * each imported item's position to this build's ordinal, rewrites an item whose
- * projection differs from this build's mapping, and writes a preview this
- * build's shell import would have written but the earlier one did not.
- * Afterwards the thread's items, messages and positions are those of a fresh
- * import. Items that already match are left alone, so a restart writes nothing.
+ * Older shell imports reserved reasoning-free ordinals and omitted source metadata.
+ * Repair those rows before hydration so transcript and task positions cannot collide.
  */
 import {
   EventId,
@@ -86,62 +74,64 @@ export const makeForkShellPreviewRepair = Effect.fn("makeForkShellPreviewRepair"
   const sql = yield* SqlClient.SqlClient;
   const eventSink = yield* EventSinkV2;
 
-  const repairThread = (threadId: string, rows: ReadonlyArray<StoredRow>) =>
-    Effect.gen(function* () {
-      const moves: Array<StoredRow> = [];
-      const events: Array<OrchestrationV2DomainEvent> = [];
-      // Highest ordinal first: an earlier import's ordinals never exceed this
-      // build's, so every move lands on a free slot, live and on replay.
-      for (const row of rows.toSorted((left, right) => right.ordinal - left.ordinal)) {
-        const mapped = yield* messageEvents(row);
-        let matches = true;
-        for (const event of mapped) {
-          if (event.type === "message.updated")
-            matches &&= yield* sameJson(
-              row.message_id,
-              row.message_json,
-              yield* encodeMessage(event.payload),
-            );
-          else if (event.type === "turn-item.updated")
-            matches &&= yield* sameJson(
-              row.message_id,
-              row.item_json,
-              yield* encodeTurnItem(event.payload),
-            );
-        }
-        if (row.position_ordinal !== row.ordinal) moves.push(row);
-        if (matches) continue;
-        if (row.repaired === 1) {
-          return yield* Effect.fail(`item ${row.message_id} differs again after its repair`);
-        }
-        // A missing preview gets this build's own ids, as a fresh shell import writes it.
-        const suffix = row.item_json === null ? "" : FORK_SHELL_REPAIR_EVENT_SUFFIX;
-        events.push(...mapped.map((event) => ({ ...event, id: EventId.make(event.id + suffix) })));
+  const repairThread = Effect.fn("ForkShellPreviewRepair.repairThread")(function* (
+    threadId: string,
+    rows: ReadonlyArray<StoredRow>,
+  ) {
+    const moves: Array<StoredRow> = [];
+    const events: Array<OrchestrationV2DomainEvent> = [];
+    // Highest ordinal first: an earlier import's ordinals never exceed this
+    // build's, so every move lands on a free slot, live and on replay.
+    for (const row of rows.toSorted((left, right) => right.ordinal - left.ordinal)) {
+      const mapped = yield* messageEvents(row);
+      let matches = true;
+      for (const event of mapped) {
+        if (event.type === "message.updated")
+          matches &&= yield* sameJson(
+            row.message_id,
+            row.message_json,
+            yield* encodeMessage(event.payload),
+          );
+        else if (event.type === "turn-item.updated")
+          matches &&= yield* sameJson(
+            row.message_id,
+            row.item_json,
+            yield* encodeTurnItem(event.payload),
+          );
       }
-      if (moves.length === 0 && events.length === 0) return false;
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          for (const row of moves) {
-            yield* sql`
+      if (row.position_ordinal !== row.ordinal) moves.push(row);
+      if (matches) continue;
+      if (row.repaired === 1) {
+        return yield* Effect.fail(`item ${row.message_id} differs again after its repair`);
+      }
+      // A missing preview gets this build's own ids, as a fresh shell import writes it.
+      const suffix = row.item_json === null ? "" : FORK_SHELL_REPAIR_EVENT_SUFFIX;
+      events.push(...mapped.map((event) => ({ ...event, id: EventId.make(event.id + suffix) })));
+    }
+    if (moves.length === 0 && events.length === 0) return false;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        for (const row of moves) {
+          yield* sql`
               INSERT INTO orchestration_v2_turn_item_positions (thread_id, turn_item_id, ordinal)
               VALUES (${threadId}, ${TURN_ITEM_PREFIX + row.message_id}, ${row.ordinal})
               ON CONFLICT(thread_id, turn_item_id) DO UPDATE SET ordinal = excluded.ordinal
             `;
-          }
-          if (events.length > 0) yield* eventSink.write({ events });
-          yield* clearForkImportWarning(threadId, "shell_preview_repair_failed");
-          yield* recordForkImportWarning(
-            threadId,
-            "shell_preview_repair",
-            "An earlier V2 import wrote this thread's timeline items with another mapping; they were rewritten with this build's before hydration.",
-            yield* encodeJson(
-              moves.map((row) => ({ messageId: row.message_id, ordinal: row.position_ordinal })),
-            ),
-          );
-        }),
-      );
-      return true;
-    });
+        }
+        if (events.length > 0) yield* eventSink.write({ events });
+        yield* clearForkImportWarning(threadId, "shell_preview_repair_failed");
+        yield* recordForkImportWarning(
+          threadId,
+          "shell_preview_repair",
+          "An earlier V2 import wrote this thread's timeline items with another mapping; they were rewritten with this build's before hydration.",
+          yield* encodeJson(
+            moves.map((row) => ({ messageId: row.message_id, ordinal: row.position_ordinal })),
+          ),
+        );
+      }),
+    );
+    return true;
+  });
 
   return Effect.gen(function* () {
     const rows = yield* sql<StoredRow>`

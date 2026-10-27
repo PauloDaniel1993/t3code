@@ -1,18 +1,5 @@
-/**
- * ForkMigrations - migration runner for fork-specific schema changes
- *
- * The upstream base repository owns `Migrations.ts`, the
- * `effect_sql_migrations` ledger, and its entire id space. Fork migrations
- * must use this separate ledger so they cannot collide with or block future
- * upstream migrations.
- *
- * Rules:
- *
- * - New fork migrations go in `ForkMigrations/`, numbered 1, 2, 3, ...
- * - Fork migrations must be idempotent because their schema may already exist
- *   on databases migrated before this ledger was introduced.
- * - Reconciliation runs before base migrations; fork migrations run after.
- */
+// Keep fork migrations in a separate sequential ledger so upstream IDs never collide.
+// They must be idempotent for databases predating the ledger. Reconcile before upstream, then run the fork ledger.
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -67,16 +54,8 @@ export interface RunForkMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
 }
 
-/**
- * Prepare a copied V1 database for upstream's migrations: remove only legacy
- * fork-owned base-ledger rows, then bring a V1 history to migration 54 and give
- * invalid project values safe defaults before migration 055 publishes the
- * project baseline.
- *
- * Matching both id and name preserves upstream migrations that reuse the same
- * ids. The table is intentionally kept; only stale fork rows are removed
- * before the base migrator reads its latest id.
- */
+// Remove only legacy fork ledger rows matching both ID and name, preserving reused upstream IDs and the table.
+// Bring copied V1 history to migration 54 and sanitize projects before migration 55 publishes its baseline.
 export const reconcileBaseMigrationLedger = Effect.fn("reconcileBaseMigrationLedger")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const ledger = yield* sql`

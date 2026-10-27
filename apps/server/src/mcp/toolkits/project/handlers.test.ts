@@ -21,6 +21,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { ProviderWorkspaceFolderAccessError } from "../../../orchestration-v2/RuntimePolicy.ts";
+import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
@@ -54,6 +55,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
     let launchedSender: ThreadId | undefined;
     const layerDependencies = Layer.mergeAll(
       ServerSettings.layerTest(),
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
@@ -76,7 +78,12 @@ it.effect("attributes a launched thread's first message to the calling thread", 
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
-              thread: { id: input.threadId, projectId, modelSelection },
+              thread: {
+                id: input.threadId,
+                title: input.title ?? "New thread",
+                projectId,
+                modelSelection,
+              },
               runs: [],
             },
             resumed: false,
@@ -126,6 +133,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
     const layerDependencies = Layer.mergeAll(
       ServerSettings.layerTest(),
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
@@ -148,7 +156,12 @@ it.effect("launches a scratch thread into the Scratch project", () =>
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
-              thread: { id: input.threadId, projectId: input.projectId, modelSelection },
+              thread: {
+                id: input.threadId,
+                title: input.title ?? "New thread",
+                projectId: input.projectId,
+                modelSelection,
+              },
               runs: [],
             },
             resumed: false,
@@ -335,6 +348,7 @@ it.effect("tells an agent why a launch into a linked project was refused", () =>
     const handle = (operation: ThreadLaunch.ThreadLaunchError["operation"]) => {
       const dependencies = Layer.mergeAll(
         ServerSettings.layerTest(),
+        DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         NodeCrypto.layer,
         Layer.succeed(McpInvocationContext.McpInvocationContext, {
@@ -435,6 +449,7 @@ const clientLaunchHarness = (input: {
             thread: {
               id: launch.threadId,
               projectId: launch.projectId,
+              title: launch.title,
               modelSelection: launch.modelSelection,
             },
             runs: [],
@@ -456,7 +471,7 @@ const clientLaunchHarness = (input: {
         ),
     }),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
-    NodeServices.layer,
+    DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
   ).pipe(
     Layer.provideMerge(GitVcsDriver.layer),
     Layer.provideMerge(VcsProcess.layer),
@@ -513,6 +528,7 @@ it.effect(
       expect(belowCeiling.result).toMatchObject({
         projectId: belowCeiling.projectId,
         modelSelection: belowCeiling.modelSelection,
+        link: `[Fix](t3-thread://v1/${belowCeiling.launched[0]?.threadId})`,
       });
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
@@ -592,6 +608,9 @@ it.effect("a launch binds only an existing checkout that is one of the project's
 
     expect((yield* launchInto(worktree)).at(-1)?.result).toMatchObject({ projectId });
     expect((yield* launchInto(repo)).at(-1)?.result).toMatchObject({ projectId });
+    const nestedFolder = path.join(worktree, "packages", "app");
+    yield* fileSystem.makeDirectory(nestedFolder, { recursive: true });
+    expect((yield* launchInto(nestedFolder)).at(-1)?.result).toMatchObject({ projectId });
     for (const elsewhere of [outside, path.join(worktree, "..", "outside"), "/"]) {
       expect((yield* launchInto(elsewhere)).at(-1)?.result).toMatchObject({
         code: "invalid_request",
@@ -600,6 +619,7 @@ it.effect("a launch binds only an existing checkout that is one of the project's
     expect(launched.map((launch) => launch.workspaceStrategy)).toEqual([
       { type: "existing_worktree", worktreePath: worktree },
       { type: "existing_worktree", worktreePath: repo },
+      { type: "existing_worktree", worktreePath: nestedFolder },
     ]);
 
     yield* fileSystem.remove(worktree, { recursive: true });

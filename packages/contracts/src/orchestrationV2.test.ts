@@ -33,6 +33,7 @@ import {
   OrchestrationV2ShellStreamItem,
   OrchestrationV2ThreadShell,
   OrchestrationV2Subagent,
+  OrchestrationV2ThreadShellJson,
   OrchestrationV2SubagentJson,
   OrchestrationV2ThreadHistoryPage,
   OrchestrationV2TurnItem,
@@ -40,6 +41,9 @@ import {
   ProviderReplayTranscript,
 } from "./orchestrationV2.ts";
 
+const decodePublicCommand = Schema.decodeUnknownSync(
+  OrchestrationV2RpcSchemas.dispatchCommand.input,
+);
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
 
 const LegacyShellStreamItem = Schema.Union([
@@ -216,6 +220,24 @@ describe("orchestration V2 contracts", () => {
     if (snapshot?.kind !== "snapshot") throw new Error("expected a snapshot");
     expect(snapshot.projection.turnItems.map((turnItem) => turnItem.id)).toEqual(["item-known"]);
     expect(snapshot.projection.visibleTurnItems.map((row) => row.item.id)).toEqual(["item-known"]);
+    // The same snapshot with an ID table: refs resolve before unknown items are skipped.
+    const tabled = (turnItem: { readonly id: string }, ref: number) => ({ ...turnItem, id: ref });
+    const [tabledSnapshot] = decodeWireItems([
+      {
+        kind: "snapshot",
+        snapshotSequence: 1,
+        projection: {
+          ...projection,
+          turnItems: [tabled(future, 0), tabled(known, 1)],
+          visibleTurnItems: [
+            { ...projected(0, future), sourceItemId: 0, item: tabled(future, 0) },
+            { ...projected(1, known), sourceItemId: 1, item: tabled(known, 1) },
+          ],
+        },
+        ids: ["item-future", "item-known"],
+      },
+    ]);
+    expect(tabledSnapshot).toEqual(snapshot);
     expect(futureEvent).toEqual({
       kind: "unknown-event",
       sequence: 2,
@@ -482,8 +504,8 @@ describe("orchestration V2 contracts", () => {
       files: [],
       capturedAt: "2026-04-20T00:00:00.000Z",
     };
-    expect(Schema.decodeUnknownSync(scopeJson)(JSON.stringify(scope))).not.toHaveProperty("parts");
-    expect(Schema.decodeUnknownSync(checkpointJson)(JSON.stringify(checkpoint))).not.toHaveProperty(
+    expect(Schema.decodeSync(scopeJson)(JSON.stringify(scope))).not.toHaveProperty("parts");
+    expect(Schema.decodeSync(checkpointJson)(JSON.stringify(checkpoint))).not.toHaveProperty(
       "parts",
     );
 
@@ -501,7 +523,7 @@ describe("orchestration V2 contracts", () => {
       pathspecs: ["."],
       folders: [{ folderPath: "/srv/notes", label: "notes", relativePath: "" }],
     } as const;
-    const withParts = Schema.decodeUnknownSync(checkpointJson)(
+    const withParts = Schema.decodeSync(checkpointJson)(
       JSON.stringify({
         ...checkpoint,
         parts: [
@@ -514,12 +536,11 @@ describe("orchestration V2 contracts", () => {
       ["primary", checkpoint.ref, "error"],
       ["0123456789abcdef", null, "missing"],
     ]);
+    expect(Schema.decodeSync(checkpointJson)(Schema.encodeSync(checkpointJson)(withParts))).toEqual(
+      withParts,
+    );
     expect(
-      Schema.decodeUnknownSync(checkpointJson)(Schema.encodeSync(checkpointJson)(withParts)),
-    ).toEqual(withParts);
-    expect(
-      Schema.decodeUnknownSync(scopeJson)(JSON.stringify({ ...scope, parts: [primary, notes] }))
-        .parts,
+      Schema.decodeSync(scopeJson)(JSON.stringify({ ...scope, parts: [primary, notes] })).parts,
     ).toEqual([primary, notes]);
   });
 
@@ -608,9 +629,7 @@ describe("orchestration V2 contracts", () => {
     { type: "thread.stop", commandId: "stop-1", threadId: "thread-1", reason: "User stopped" },
     { type: "queued-run.start", commandId: "start-1", threadId: "thread-1", runId: "run-1" },
   ])("accepts public $type commands through the RPC schema", (command) => {
-    expect(
-      Schema.decodeUnknownSync(OrchestrationV2RpcSchemas.dispatchCommand.input)(command),
-    ).toEqual(command);
+    expect(decodePublicCommand(command)).toEqual(command);
   });
 
   it("decodes delegated task wake-policy commands", () => {
@@ -1200,6 +1219,46 @@ it("round-trips typed notifications and keeps work outcome separate from item st
       updatedAt: now,
     }),
   ).toThrow();
+});
+
+describe("thread open stats", () => {
+  it("reads a thread whose open stats this build cannot read, without them", () => {
+    const shell = {
+      id: "thread-test",
+      projectId: "project-test",
+      title: "Thread",
+      providerInstanceId: "codex",
+      modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { rootThreadId: "thread-test", parentThreadId: null, relationshipToParent: null },
+      forkedFrom: null,
+      createdBy: "user",
+      creationSource: "mobile",
+      latestRunId: null,
+      activeRunId: null,
+      status: "idle",
+      pendingRuntimeRequest: null,
+      latestVisibleMessage: null,
+      latestUserMessageAt: null,
+      hasActionableProposedPlan: false,
+      itemCount: 0,
+      visibleItemCount: 0,
+      createdAt: "2026-10-01T00:00:00.000Z",
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      deletedAt: null,
+    };
+    const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadShellJson);
+    const opens = { openedAt: 1, score: 1, picks: [{ query: "upl", at: 1 }] };
+    expect(decode({ ...shell, opens }).opens).toEqual(opens);
+    expect(decode({ ...shell, opens: { openedAt: "2026-10-01", score: 1 } }).opens).toBeNull();
+  });
 });
 
 describe("background work kinds from older or newer servers", () => {

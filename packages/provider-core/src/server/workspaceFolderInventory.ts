@@ -1,10 +1,4 @@
-/**
- * Tell the agent which folders a multi-folder run spans: its working directory
- * (the primary folder) and the run's additional directories, in order. Paths
- * are JSON strings, so no folder name can break out of the block. This only
- * informs the agent; the adapter grants access. Undefined for a one-folder
- * scope, which needs no inventory.
- */
+/** Paths are JSON-encoded so folder names cannot escape the inventory block. */
 export function buildWorkspaceFolderInventory(scope: {
   readonly cwd: string | null;
   readonly additionalDirectories: ReadonlyArray<string>;

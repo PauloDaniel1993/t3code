@@ -21,7 +21,6 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as Option from "effect/Option";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
@@ -131,8 +130,7 @@ const external = Layer.mergeAll(
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
   Layer.mock(ProjectService.ProjectService)({
-    getById: (id) =>
-      Effect.succeed(Option.some({ id, defaultModelSelection: modelSelection } as never)),
+    getById: (id) => Effect.succeedSome({ id, defaultModelSelection: modelSelection } as never),
   }),
   Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({

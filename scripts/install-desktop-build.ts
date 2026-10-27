@@ -1011,6 +1011,7 @@ export async function writePosixLocalLauncher(
       "set -eu",
       ...envLines,
       'SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+      `export T3CODE_DESKTOP_LAUNCHER_PATH="$SCRIPT_DIR/${POSIX_LOCAL_LAUNCHER_NAME}"`,
       `exec "$SCRIPT_DIR/${executableName}" "$@"`,
       "",
     ].join("\n"),

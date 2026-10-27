@@ -43,13 +43,8 @@ function directoryIdentity(filePath: string): string | undefined {
 }
 
 /**
- * For commands a person runs at a prompt: a relative option, argument or environment value means
- * relative to the current directory, so make it a full path before the guard sees it. Only
- * `resolveRealLocalPath` decides whether that full path is acceptable; it stays strict so nothing
- * inside the app can pass it a relative path. Spellings that are not plainly relative (`/`
- * separators, `C:name`, `\name`, `\\?\`) are returned unchanged for the guard to refuse. Resolving
- * folds segments away, so the segments as typed are checked first; `.` and `..` are the ordinary
- * relative forms, and the resolved result is still judged by the guard.
+ * Only CLI callers resolve relative paths. Validate typed segments first, since
+ * resolution erases them; the shared guard still rejects ambiguous spellings.
  */
 export function resolveCommandLinePath(
   value: string,

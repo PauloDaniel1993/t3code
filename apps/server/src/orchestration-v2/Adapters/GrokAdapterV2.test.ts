@@ -25,7 +25,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -342,7 +341,7 @@ describe("Grok launch permission mode", () => {
             Layer.provide(
               Layer.mock(ProjectStore.ProjectStoreV2)({
                 // The thread names its worktree, so its project needn't exist.
-                get: () => Effect.succeed(Option.none()),
+                get: () => Effect.succeedNone,
               }),
             ),
             Layer.provide(

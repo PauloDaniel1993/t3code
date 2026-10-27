@@ -124,7 +124,7 @@ export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePol
 ) {}
 
 export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2, {
-  resolve: (input) =>
+  resolve: Effect.fn("RuntimePolicyV2.resolve")((input) =>
     Effect.succeed(
       ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
         runtimeMode: input.thread.runtimeMode,
@@ -132,7 +132,10 @@ export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2
         cwd: input.thread.worktreePath,
       }),
     ),
-  requireWorkspaceFolderAccess: (input) => requireAccess(input, undefined),
+  ),
+  requireWorkspaceFolderAccess: Effect.fn("RuntimePolicyV2.requireWorkspaceFolderAccess")((input) =>
+    requireAccess(input, undefined),
+  ),
 });
 
 function requireAccess(

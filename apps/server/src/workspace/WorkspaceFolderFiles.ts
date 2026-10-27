@@ -1,13 +1,6 @@
 /**
- * WorkspaceFolderFiles - files across a project's or thread's workspace folders.
- *
- * Resolves a `WorkspaceScope` to its folder table (a thread's frozen snapshot
- * mapped into its worktrees, else the project's current folders), resolves
- * canonical `<label>/<path>` paths inside one folder, and fans the scoped file
- * RPCs out over folders. Each folder is still served by the single-cwd
- * services, `WorkspaceEntries` and `WorkspaceFileSystem`.
- *
- * @module WorkspaceFolderFiles
+ * Thread scopes use their frozen folder snapshot; project scopes use current folders.
+ * Scoped file operations preserve each folder's single-cwd service boundary.
  */
 import {
   type ProjectContentMatch,
@@ -369,40 +362,39 @@ const make = Effect.gen(function* () {
    * Run one search per selected available folder, at most four at a time. A
    * folder whose search fails is reported in the folder table instead.
    */
-  const fanOut = <A, E>(
+  const fanOut = Effect.fn("WorkspaceFolderFiles.fanOut")(function* <A, E>(
     resolved: ResolvedWorkspaceScope,
     search: (folder: ResolvedWorkspaceFolder, cwd: string) => Effect.Effect<A, E>,
-  ) =>
-    Effect.gen(function* () {
-      const toCanonical = canonicalizer(resolved);
-      const outcomes = yield* Effect.forEach(
-        resolved.selected,
-        (folder) => {
-          const cwd = folder.effectivePath;
-          if (cwd === null) return Effect.succeed(null);
-          return search(folder, cwd).pipe(
-            Effect.tapError((cause) =>
-              Effect.logDebug("Workspace folder search failed", { folder: cwd, cause }),
-            ),
-            Effect.result,
-            Effect.map((result) => ({ folder, result, toCanonical: toCanonical(folder, cwd) })),
-          );
-        },
-        { concurrency: FOLDER_CONCURRENCY },
-      );
-      const failed = new Set<ResolvedWorkspaceFolder>();
-      const results: Array<{
-        readonly folder: ResolvedWorkspaceFolder;
-        readonly value: A;
-        readonly toCanonical: (relativePath: string) => string;
-      }> = [];
-      for (const outcome of outcomes) {
-        if (outcome === null) continue;
-        if (Result.isFailure(outcome.result)) failed.add(outcome.folder);
-        else results.push({ ...outcome, value: outcome.result.success });
-      }
-      return { results, folders: folderTable(resolved.folders, failed) };
-    });
+  ) {
+    const toCanonical = canonicalizer(resolved);
+    const outcomes = yield* Effect.forEach(
+      resolved.selected,
+      (folder) => {
+        const cwd = folder.effectivePath;
+        if (cwd === null) return Effect.succeed(null);
+        return search(folder, cwd).pipe(
+          Effect.tapError((cause) =>
+            Effect.logDebug("Workspace folder search failed", { folder: cwd, cause }),
+          ),
+          Effect.result,
+          Effect.map((result) => ({ folder, result, toCanonical: toCanonical(folder, cwd) })),
+        );
+      },
+      { concurrency: FOLDER_CONCURRENCY },
+    );
+    const failed = new Set<ResolvedWorkspaceFolder>();
+    const results: Array<{
+      readonly folder: ResolvedWorkspaceFolder;
+      readonly value: A;
+      readonly toCanonical: (relativePath: string) => string;
+    }> = [];
+    for (const outcome of outcomes) {
+      if (outcome === null) continue;
+      if (Result.isFailure(outcome.result)) failed.add(outcome.folder);
+      else results.push({ ...outcome, value: outcome.result.success });
+    }
+    return { results, folders: folderTable(resolved.folders, failed) };
+  });
 
   const searchEntries: WorkspaceFolderFiles["Service"]["searchEntries"] = Effect.fn(
     "WorkspaceFolderFiles.searchEntries",

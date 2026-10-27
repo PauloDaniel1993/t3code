@@ -234,6 +234,50 @@ const withCoordinator = <A, E, R>(
 
 const noProgress = WorktreeSet.noWorktreeSetProgress;
 
+it.effect(
+  "recovers each missing member from its surviving branch or its own current checkout",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
+      const set = yield* withCoordinator(
+        createSet({
+          workspaceFolders: workspaceFolders.slice(0, 2),
+          baseRef: api.branch,
+          branch: "recover-members",
+        }),
+      );
+      const first = set.members[0]!;
+      const second = set.members[1]!;
+      yield* fileSystem.writeFileString(path.join(first.path, "thread.txt"), "thread tip");
+      yield* git(first.path, ["add", "."]);
+      yield* git(first.path, ["commit", "-m", "thread tip"]);
+      const firstTip = yield* git(first.path, ["rev-parse", "HEAD"]);
+      yield* fileSystem.writeFileString(path.join(web.root, "current.txt"), "current checkout");
+      yield* git(web.root, ["add", "."]);
+      yield* git(web.root, ["commit", "-m", "current tip"]);
+      const secondTip = yield* git(web.root, ["rev-parse", "HEAD"]);
+      for (const member of set.members) yield* fileSystem.remove(member.path, { recursive: true });
+      yield* git(web.root, ["worktree", "prune"]);
+      yield* git(web.root, ["branch", "-D", second.branch]);
+      yield* withCoordinator(
+        Effect.flatMap(WorktreeSet.WorktreeSetService, (coordinator) =>
+          coordinator.recreateMissing({
+            id: threadId,
+            projectId,
+            ...WorktreeSet.worktreeSetBinding(set),
+            workspaceFolders,
+          }),
+        ),
+        { projectRoot: api.root },
+      );
+      assert.equal(yield* git(first.path, ["rev-parse", "HEAD"]), firstTip);
+      assert.equal(yield* git(second.path, ["rev-parse", "HEAD"]), secondTip);
+      assert.equal(yield* git(second.path, ["branch", "--show-current"]), second.branch);
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
 const branchExists = (cwd: string, branch: string) =>
   git(cwd, ["branch", "--list", branch]).pipe(Effect.map((listed) => listed !== ""));
 
@@ -1055,7 +1099,7 @@ it.effect("recreates missing members parents first, each from its own checkout",
 );
 
 it.effect(
-  "recreates a plain thread's worktree from its project, and fails without its branch",
+  "recreates a plain thread's worktree and falls back to its project's current branch",
   () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1085,7 +1129,16 @@ it.effect(
       assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "plain");
 
       yield* fileSystem.remove(worktreePath, { recursive: true });
-      const error = yield* recreate("gone").pipe(Effect.flip);
+      yield* recreate("gone");
+      assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "gone");
+      assert.equal(
+        yield* git(worktreePath, ["rev-parse", "HEAD"]),
+        yield* git(repo.root, ["rev-parse", "HEAD"]),
+      );
+
+      yield* fileSystem.remove(worktreePath, { recursive: true });
+      yield* git(repo.root, ["switch", "--detach"]);
+      const error = yield* recreate("missing-on-detached-head").pipe(Effect.flip);
       assert.equal(error._tag, "WorktreeRecreateError");
       assert.equal(error.path, worktreePath);
       assert.isFalse(yield* fileSystem.exists(worktreePath));

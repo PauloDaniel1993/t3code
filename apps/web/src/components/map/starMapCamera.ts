@@ -1,13 +1,5 @@
-/**
- * Camera for the star map canvas: fits the panel-independent world layout to
- * a pixel viewport, keeps panning and zooming from losing the constellation,
- * and converts between world units and screen pixels. This is the only place
- * panel pixels meet the world; the layout solver never sees them.
- *
- * Screen coordinates are CSS pixels with a top-left origin; world coordinates
- * are layout units centered on the world origin. `scale` is screen pixels per
- * world unit.
- */
+// Screen coordinates are CSS pixels; world coordinates are layout units.
+// Only the camera converts between them, keeping layout independent of panel size.
 
 export const STAR_MAP_MIN_SCALE = 0.05;
 export const STAR_MAP_MAX_SCALE = 4;

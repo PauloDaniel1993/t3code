@@ -1,11 +1,12 @@
-// @vitest-environment jsdom
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { onOpenNewThreadTaskDialog, type OpenNewThreadTaskRequest } from "../../newThreadTaskBus";
 import { TASK_PROMPT_MAX_LENGTH, validateNewThreadTaskDraft } from "../NewThreadTaskDialog.logic";
 import { buildStarMapTicketTaskDraft, openStarMapTicketAsTask } from "./StarMapTicketDetail.logic";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const node = {
   label: "Repair Windows destination window discovery",
@@ -125,6 +126,7 @@ describe("openStarMapTicketAsTask", () => {
   });
 
   it("reaches the app-level host through the real request bus", () => {
+    vi.stubGlobal("window", new EventTarget());
     const received: OpenNewThreadTaskRequest[] = [];
     const stop = onOpenNewThreadTaskDialog((request) => received.push(request));
     try {

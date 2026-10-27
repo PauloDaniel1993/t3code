@@ -57,38 +57,40 @@ export function makeKimiAcpAdapterFlavor(options: KimiAdapterV2Options): AcpAdap
       options.makeRuntime(input).pipe(
         Effect.map((runtime) => ({
           ...runtime,
-          prompt: (payload, promptOptions) =>
-            Effect.gen(function* () {
-              if (interactionMode === "plan") {
-                const mode = yield* runtime.getModeState;
-                if (mode?.currentModeId !== "plan" && mode?.currentModeId !== "architect") {
-                  const message =
-                    "Kimi cannot run a plan turn because this session does not report an active read-only plan mode. Start a new Kimi thread and try again.";
-                  return yield* new AcpErrors.AcpRequestError({
-                    code: -32602,
-                    errorMessage: message,
-                    data: {
-                      kimiFailure: { message, code: "plan_mode_unavailable", retryable: false },
-                    },
-                  });
-                }
+          prompt: Effect.fn("KimiAdapterV2.prompt")(function* (payload, promptOptions) {
+            if (interactionMode === "plan") {
+              const mode = yield* runtime.getModeState;
+              if (mode?.currentModeId !== "plan" && mode?.currentModeId !== "architect") {
+                const message =
+                  "Kimi cannot run a plan turn because this session does not report an active read-only plan mode. Start a new Kimi thread and try again.";
+                return yield* new AcpErrors.AcpRequestError({
+                  code: -32602,
+                  errorMessage: message,
+                  data: {
+                    kimiFailure: { message, code: "plan_mode_unavailable", retryable: false },
+                  },
+                });
               }
-              return yield* runtime.prompt(payload, promptOptions);
-            }),
+            }
+            return yield* runtime.prompt(payload, promptOptions);
+          }),
         })),
       ),
-    applyModelSelection: ({ runtime, startResult, modelSelection }) =>
-      Effect.gen(function* () {
-        // Publish fresh discovery even when the requested model was removed.
-        yield* (
-          options.onSessionConfigurationUpdate?.(
-            yield* runtime.getConfigOptions,
-            yield* runtime.getModeState,
-            startResult.sessionSetupResult.models,
-          ) ?? Effect.void
-        );
-        return yield* applyKimiAcpModelSelection({ runtime, model: modelSelection.model });
-      }),
+    applyModelSelection: Effect.fn("KimiAdapterV2.applyModelSelection")(function* ({
+      runtime,
+      startResult,
+      modelSelection,
+    }) {
+      // Publish fresh discovery even when the requested model was removed.
+      yield* (
+        options.onSessionConfigurationUpdate?.(
+          yield* runtime.getConfigOptions,
+          yield* runtime.getModeState,
+          startResult.sessionSetupResult.models,
+        ) ?? Effect.void
+      );
+      return yield* applyKimiAcpModelSelection({ runtime, model: modelSelection.model });
+    }),
     // The common adapter applies plan after saving the supervised build mode,
     // then restores it on leaving plan. T3 owns automatic approvals in all modes.
     sessionModeForPolicy: (policy) => {

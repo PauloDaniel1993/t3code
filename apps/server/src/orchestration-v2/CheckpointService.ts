@@ -447,8 +447,8 @@ export const layer: Layer.Layer<
     };
 
     const materializeBaselineCheckpoint: CheckpointServiceV2Shape["materializeBaselineCheckpoint"] =
-      (input) =>
-        Effect.gen(function* () {
+      Effect.fn("CheckpointServiceV2.materializeBaselineCheckpoint")(
+        function* (input) {
           const checkpointId = yield* checkpointIdForScopeOrdinal(idAllocator, {
             scopeId: input.scope.id,
             ordinalWithinScope: input.ordinalWithinScope,
@@ -474,15 +474,18 @@ export const layer: Layer.Layer<
             files: [],
             capturedAt: input.scope.createdAt,
           });
-        }).pipe(
-          Effect.mapError(
-            (cause) =>
-              new CheckpointCaptureError({
-                scopeId: input.scope.id,
-                cause,
-              }),
+        },
+        (effect, input) =>
+          effect.pipe(
+            Effect.mapError(
+              (cause) =>
+                new CheckpointCaptureError({
+                  scopeId: input.scope.id,
+                  cause,
+                }),
+            ),
           ),
-        );
+      );
 
     // A part's failure becomes its status, never the run's. Legacy scopes also
     // summarize their files here; parts share one summary budget after capture.
@@ -604,8 +607,8 @@ export const layer: Layer.Layer<
 
     // Writes every part's ref. The caller's one `checkpoint.captured` event
     // then publishes them all at once.
-    const capture: CheckpointServiceV2Shape["capture"] = (input) =>
-      Effect.gen(function* () {
+    const capture: CheckpointServiceV2Shape["capture"] = Effect.fn("CheckpointServiceV2.capture")(
+      function* (input) {
         const checkpointId = yield* checkpointIdForScopeOrdinal(idAllocator, {
           scopeId: input.scope.id,
           ordinalWithinScope: input.ordinalWithinScope,
@@ -643,7 +646,7 @@ export const layer: Layer.Layer<
                 cwd: part.cwd,
                 checkpointRef: previousCheckpointRef,
               }),
-            ).pipe(Effect.catch(() => Effect.succeed(false)));
+            ).pipe(Effect.orElseSucceed(() => false));
             if (!previousExists) continue;
             const authoredPaths = yield* withCheckoutLock(
               part.cwd,
@@ -733,59 +736,63 @@ export const layer: Layer.Layer<
           files,
           capturedAt: input.capturedAt,
         });
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new CheckpointCaptureError({
-              scopeId: input.scope.id,
-              cause,
-            }),
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.mapError(
+            (cause) =>
+              new CheckpointCaptureError({
+                scopeId: input.scope.id,
+                cause,
+              }),
+          ),
         ),
-      );
+    );
 
     const partLabels = (parts: ReadonlyArray<OrchestrationV2CheckpointPart>) =>
       parts.flatMap((part) => part.folders.map((folder) => folder.label));
 
-    const preflightRestore: CheckpointServiceV2Shape["preflightRestore"] = (input) =>
-      Effect.gen(function* () {
-        const parts = checkpointRestoreParts(input.scope, input.checkpoint);
-        const notReady = parts.filter((part) => part.status !== "ready" || part.ref === null);
-        if (input.checkpoint.status !== "ready" || parts.length === 0 || notReady.length > 0) {
-          return { reason: "not-ready", folders: partLabels(notReady) } as const;
-        }
-        const missing = yield* Effect.filter(
-          parts,
-          (part) =>
-            fileSystem.exists(part.cwd).pipe(
-              Effect.map((exists) => !exists),
-              Effect.orElseSucceed(() => true),
-            ),
-          { concurrency: PART_CONCURRENCY },
-        );
-        if (missing.length > 0) {
-          return { reason: "missing-checkout", folders: partLabels(missing) } as const;
-        }
-        const unresolved = yield* Effect.filter(
-          parts,
-          (part) =>
-            part.ref === null
-              ? Effect.succeed(true)
-              : checkpointStore.hasCheckpointRef({ cwd: part.cwd, checkpointRef: part.ref }).pipe(
-                  Effect.map((exists) => !exists),
-                  Effect.orElseSucceed(() => true),
-                ),
-          { concurrency: PART_CONCURRENCY },
-        );
-        if (unresolved.length > 0) {
-          return { reason: "missing-ref", folders: partLabels(unresolved) } as const;
-        }
-        return undefined;
-      });
+    const preflightRestore: CheckpointServiceV2Shape["preflightRestore"] = Effect.fn(
+      "CheckpointServiceV2.preflightRestore",
+    )(function* (input) {
+      const parts = checkpointRestoreParts(input.scope, input.checkpoint);
+      const notReady = parts.filter((part) => part.status !== "ready" || part.ref === null);
+      if (input.checkpoint.status !== "ready" || parts.length === 0 || notReady.length > 0) {
+        return { reason: "not-ready", folders: partLabels(notReady) } as const;
+      }
+      const missing = yield* Effect.filter(
+        parts,
+        (part) =>
+          fileSystem.exists(part.cwd).pipe(
+            Effect.map((exists) => !exists),
+            Effect.orElseSucceed(() => true),
+          ),
+        { concurrency: PART_CONCURRENCY },
+      );
+      if (missing.length > 0) {
+        return { reason: "missing-checkout", folders: partLabels(missing) } as const;
+      }
+      const unresolved = yield* Effect.filter(
+        parts,
+        (part) =>
+          part.ref === null
+            ? Effect.succeed(true)
+            : checkpointStore.hasCheckpointRef({ cwd: part.cwd, checkpointRef: part.ref }).pipe(
+                Effect.map((exists) => !exists),
+                Effect.orElseSucceed(() => true),
+              ),
+        { concurrency: PART_CONCURRENCY },
+      );
+      if (unresolved.length > 0) {
+        return { reason: "missing-ref", folders: partLabels(unresolved) } as const;
+      }
+      return undefined;
+    });
 
     // Each part holds its own checkout's lock, so parts restore in parallel.
     // Restore is idempotent, so a retry after a part failed converges.
-    const restore: CheckpointServiceV2Shape["restore"] = (input) =>
-      Effect.gen(function* () {
+    const restore: CheckpointServiceV2Shape["restore"] = Effect.fn("CheckpointServiceV2.restore")(
+      function* (input) {
         const parts = checkpointRestoreParts(input.scope, input.checkpoint);
         if (input.checkpoint.status !== "ready") {
           return yield* new CheckpointRestoreError({
@@ -840,23 +847,22 @@ export const layer: Layer.Layer<
           ),
           cause: failure.failure,
         });
-      }).pipe(
-        Effect.mapError((cause) =>
-          isCheckpointRestoreError(cause)
-            ? cause
-            : new CheckpointRestoreError({
-                scopeId: input.scope.id,
-                checkpointId: input.checkpoint.id,
-                cause,
-              }),
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.mapError((cause) =>
+            isCheckpointRestoreError(cause)
+              ? cause
+              : new CheckpointRestoreError({
+                  scopeId: input.scope.id,
+                  checkpointId: input.checkpoint.id,
+                  cause,
+                }),
+          ),
         ),
-      );
+    );
 
-    // Each part's refs live in its own repository, reached through the part's
-    // current checkout when the scope still has it. The primary part's refs are
-    // deleted as before; another part's checkout may be gone, so those are best
-    // effort. Only a ready part's ref was surely written, so a non-ready
-    // checkpoint gives up just its healthy parts' refs.
+    // Only ready parts have known refs; missing secondary checkouts make their deletion best effort.
     const deleteStaleRefs: CheckpointServiceV2Shape["deleteStaleRefs"] = (input) => {
       const current = scopeParts(input.scope);
       const refsByPart = new Map<

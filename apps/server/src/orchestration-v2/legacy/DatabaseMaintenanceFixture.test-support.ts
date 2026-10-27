@@ -49,7 +49,7 @@ export async function createMaintenanceFixture() {
     // a storage-preservation test, so opaque payloads need no provider runtime.
     const tables = database
       .prepare(
-        "SELECT name FROM sqlite_schema WHERE type = 'table' AND (name LIKE 'orchestration_v2_%' OR name = 'scheduled_tasks' OR name IN ('projection_projects', 'projection_threads', 'projection_thread_messages', 'projection_thread_activities'))",
+        "SELECT name FROM pragma_table_list WHERE type = 'table' AND (name LIKE 'orchestration_v2_%' OR name = 'scheduled_tasks' OR name IN ('projection_projects', 'projection_threads', 'projection_thread_messages', 'projection_thread_activities'))",
       )
       .all();
     for (const table of tables) {

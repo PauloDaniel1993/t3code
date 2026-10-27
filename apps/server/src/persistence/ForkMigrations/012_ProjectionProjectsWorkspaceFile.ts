@@ -1,14 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-/**
- * A project linked to a VS Code workspace file stores the file's path and its
- * folders as last read. NULL in both means a plain project, so existing rows
- * need no backfill. Linked projects are unique by file among active rows; the
- * index serves that lookup, and the project's commands guard uniqueness.
- *
- * Additive and idempotent per the fork migration rules in `ForkMigrations.ts`.
- */
+// NULL workspace fields retain plain projects without backfill; linked active projects are unique by file.
+// Migration is additive and idempotent; commands also guard that uniqueness.
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const columns = yield* sql<{ readonly name: string }>`

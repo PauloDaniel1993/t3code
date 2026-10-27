@@ -12,34 +12,10 @@ import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 
 import type { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
 
-/**
- * Tool payload limits apply before persistence and before live fan-out, including
- * runless artifacts. They do not modify the provider's own context. Messages,
- * reasoning, errors and approval/input requests are never clipped or redacted.
- * Split names at camelCase/acronym boundaries and separators, ignore case, and
- * match only the last word (authorization, cookie, credential, password, passwd,
- * secret, token) or pair (api/private/secret/access key), including plurals.
- * A plural preceded by max, min, total, num or count denotes a quantity and stays
- * intact. Name/value and key/value objects use the same rule; two-string tuples
- * count only inside headers or *Headers fields. Free text (source, commands,
- * diffs and JSON strings) is never searched. A command secret is stored as written.
- * Redaction is idempotent and preserves ACP's already-redacted values.
- *
- * Final tool output has its own 64 KiB encoded JSON budget, including keys and
- * escaping; input retains its own 16 KiB at every status. Only a truncated output
- * needs metadata recovery: at most 64 content blocks, 128 envelope nodes, four
- * levels and 1 MiB of JSON text are inspected. Larger text is never parsed whole.
- * Task/thread links and the error flag take priority over a large result preview.
- * Nesting beyond 128 containers becomes
- * "[TRUNCATED: depth limit]" so the store's native JSON encoder can persist it.
- * Titles/names/paths use 4 KiB; command arguments use 16 KiB. Running
- * output uses 16 KiB to match ACP; command output keeps the latest tail.
- * File-change text and path descriptors have separate running budgets, so the
- * text envelope ACP already bounded is not charged for its path metadata again.
- * Search queries share 16 KiB of input, including their array but no field wrapper.
- * Traversal charges every inspected field; JS own-key enumeration, adapter
- * decoding and the incoming raw object are outside this allocation guarantee.
- */
+// Sanitize structured tool fields before persistence and fan-out, without altering provider context or free text.
+// Messages, reasoning, errors and approval/input requests remain intact; redaction is idempotent.
+// Encoded budgets include keys/escaping; metadata recovery is bounded, and links/error flags outrank previews.
+// Running command output keeps its tail; file-change text and paths have separate budgets.
 export const PROVIDER_TOOL_DETAIL_BYTES = 4 * 1024;
 export const PROVIDER_TOOL_INPUT_BYTES = 16 * 1024;
 export const PROVIDER_TOOL_RUNNING_OUTPUT_BYTES = 16 * 1024;

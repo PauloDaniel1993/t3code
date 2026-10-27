@@ -56,7 +56,7 @@ const hostLayer = Layer.mergeAll(
   Layer.mock(Keybindings)({ start: Effect.void }),
   ServerSettings.layerTest(),
   Layer.mock(ServerEnvironment)({ getDescriptor: Effect.succeed(environment) }),
-  Layer.mock(ServiceLauncherClient)({ managed: false, prepareTrial: Effect.succeed(undefined) }),
+  Layer.mock(ServiceLauncherClient)({ managed: false, prepareTrial: Effect.undefined }),
   Layer.mock(AgentAwarenessRelay)({ start: () => Effect.void }),
   Layer.mock(ProviderSessionManagerV2)({ shutdown: Effect.void }),
   Layer.mock(OrchestrationEffectWorkerV2)({ runOnce: Effect.never }),

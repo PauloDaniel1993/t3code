@@ -55,11 +55,11 @@ function kimiModelsFromState(
   return buildKimiModels(settings.customModels, configOptions);
 }
 
-export function buildInitialKimiProviderSnapshot(
-  kimiSettings: KimiSettings,
-  configOptions: ReadonlyArray<AcpSchema.SessionConfigOption> = [],
-): Effect.Effect<ServerProviderDraft> {
-  return Effect.gen(function* () {
+export const buildInitialKimiProviderSnapshot = Effect.fn("KimiProvider.buildInitialSnapshot")(
+  function* (
+    kimiSettings: KimiSettings,
+    configOptions: ReadonlyArray<AcpSchema.SessionConfigOption> = [],
+  ): Effect.fn.Return<ServerProviderDraft> {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const models = kimiModelsFromState(kimiSettings, configOptions);
     if (!kimiSettings.enabled) {
@@ -90,28 +90,27 @@ export function buildInitialKimiProviderSnapshot(
         message: "Checking Kimi Code CLI availability...",
       },
     });
-  });
-}
+  },
+);
 
-const runKimiVersionCommand = (
+const runKimiVersionCommand = Effect.fn("KimiProvider.runKimiVersionCommand")(function* (
   kimiSettings: Pick<KimiSettings, "binaryPath">,
   environment: NodeJS.ProcessEnv,
-) =>
-  Effect.gen(function* () {
-    const command = kimiSettings.binaryPath || "kimi";
-    const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], {
+) {
+  const command = kimiSettings.binaryPath || "kimi";
+  const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], {
+    env: environment,
+    extendEnv: true,
+  });
+  return yield* spawnAndCollect(
+    command,
+    ChildProcess.make(spawnCommand.command, spawnCommand.args, {
       env: environment,
       extendEnv: true,
-    });
-    return yield* spawnAndCollect(
-      command,
-      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        env: environment,
-        extendEnv: true,
-        shell: spawnCommand.shell,
-      }),
-    );
-  });
+      shell: spawnCommand.shell,
+    }),
+  );
+});
 
 function makeKimiSnapshot(input: {
   readonly settings: KimiSettings;

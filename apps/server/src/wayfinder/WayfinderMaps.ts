@@ -206,13 +206,8 @@ const MAP_CONTAINERS = [
 ] as const;
 
 /**
- * What a path, relative to the workspace root, can be to discovery: a file it reads, a
- * folder whose appearance or removal changes what it finds, or nothing. Discovery filters
- * ticket names with it and the watchers filter every event with it. Names compare without
- * case, because discovery's fixed names (`map.md`, `wayfinder-map.md`, `tickets`) also match
- * other spellings on Windows and macOS; on Linux the extra match costs a scan, nothing else.
- * The containers overlap (`.plan/maps/map.md` is the map of the `.plan` effort `maps`), so a
- * file match in any container wins over a folder match in another.
+ * Discovery and watchers compare fixed names without case for Windows/macOS.
+ * Containers overlap, so a file match takes precedence over a folder match.
  */
 export function wayfinderPathKind(relativePath: string): "file" | "folder" | null {
   const segments = relativePath
@@ -338,13 +333,13 @@ const rootLayer = (workspaceRoot: string) =>
         const selectedEntries = perMapEntries.slice(0, remainingNodeCapacity);
         const totalNodeCapReached = perMapEntries.length > selectedEntries.length;
         const truncated = listing.truncated || ticketEntries.length > selectedEntries.length;
-        const tickets = (yield* Effect.all(
-          selectedEntries.map((entry) =>
+        const tickets = (yield* Effect.forEach(
+          selectedEntries,
+          (entry) =>
             files.readBounded(
               path.join(candidate.ticketsRelativePath, entry),
               WAYFINDER_MAPS_MAX_TICKET_BYTES,
             ),
-          ),
           { concurrency: 16 },
         )).filter((ticket): ticket is WayfinderMarkdownFile => ticket !== null);
         return { tickets, truncated, totalNodeCapReached };
@@ -523,13 +518,13 @@ const rootLayer = (workspaceRoot: string) =>
             }),
           );
         }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning("Wayfinder watcher stopped; re-arming", {
-                  cause,
-                  relativePath: spec.relativePath,
-                }),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterrupts(cause),
+            (cause) =>
+              Effect.logWarning("Wayfinder watcher stopped; re-arming", {
+                cause,
+                relativePath: spec.relativePath,
+              }),
           ),
         );
         return Effect.forever(
@@ -547,10 +542,9 @@ const rootLayer = (workspaceRoot: string) =>
           Effect.andThen(Effect.sleep(tuning.watchDebounce)),
           Effect.andThen(Queue.clear(changed)),
           Effect.andThen(requestScan),
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning("Wayfinder change scan failed", { cause }),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterrupts(cause),
+            (cause) => Effect.logWarning("Wayfinder change scan failed", { cause }),
           ),
         ),
       );
@@ -632,11 +626,7 @@ export const make = Effect.gen(function* () {
     function* (cwd) {
       const root = shared.roots.get(yield* rootKey(cwd));
       if (root) {
-        yield* root.refresh.pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause) ? Effect.void : Effect.failCause(cause),
-          ),
-        );
+        yield* root.refresh.pipe(Effect.catchCauseIf(Cause.hasInterruptsOnly, () => Effect.void));
       }
     },
   );

@@ -89,12 +89,14 @@ export const initializeIsolatedAttachments = Effect.fn("initializeIsolatedAttach
       )
         yield* saveReport();
     });
-    const record = (file: string, reason: string) =>
-      Effect.gen(function* () {
-        skipped.push({ file, reason });
-        yield* Effect.logWarning("V2 attachment seed skipped", { file, reason, reportPath });
-        yield* checkpointReport();
-      });
+    const record = Effect.fn("attachmentIsolation.record")(function* (
+      file: string,
+      reason: string,
+    ) {
+      skipped.push({ file, reason });
+      yield* Effect.logWarning("V2 attachment seed skipped", { file, reason, reportPath });
+      yield* checkpointReport();
+    });
     const source = path.join(input.stateDir, "attachments");
     const seed = Effect.gen(function* () {
       if (yield* fs.exists(source)) {

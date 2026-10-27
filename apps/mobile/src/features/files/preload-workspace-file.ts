@@ -12,9 +12,9 @@ import { projectEnvironment } from "../../state/projects";
 import { isVideoPreviewFile } from "./filePath";
 import { prepareSourceFileDocument } from "./source-file-document";
 import { sourceHighlightAtom } from "./sourceHighlightingState";
-import type { ReviewDiffTheme } from "../review/shikiReviewHighlighter";
 import { workspaceFileCacheKey, workspaceFileReadInput } from "../../lib/workspaceFiles";
 import { workspaceFileBindingAtom } from "../../state/workspace-file-bindings";
+import type { HighlightScheme } from "../../lib/highlights";
 
 const inFlightPreloads = new Map<string, Promise<void>>();
 const MAX_HIGHLIGHT_PRELOAD_CHARACTERS = 256 * 1024;
@@ -24,7 +24,7 @@ export function preloadWorkspaceFileContents(input: {
   readonly environmentId: EnvironmentId;
   readonly scope?: WorkspaceScope | null;
   readonly relativePath: string;
-  readonly theme: ReviewDiffTheme;
+  readonly theme: HighlightScheme;
 }): void {
   if (
     !readEnvironmentScope(input.environmentId, AuthFilesystemReadScope) ||

@@ -1,13 +1,9 @@
-import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
 import {
   type CommandId,
-  pullRequestHostOf,
   type GitRunStackedActionResult,
   type RepositoryIdentity,
-  type SourceControlProviderKind,
   type ThreadId,
 } from "@t3tools/contracts";
-import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { isSamePath } from "@t3tools/shared/workspaceFolders";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -16,6 +12,7 @@ import * as Option from "effect/Option";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
 export interface CreatedPullRequestKey {
   readonly host: string;
@@ -24,13 +21,8 @@ export interface CreatedPullRequestKey {
   readonly url: string;
 }
 
-/**
- * The identity a stacked action's pull request should be linked under, or
- * null when the action did not leave one behind. Reading the host and
- * repository from the URL keeps the link host-level even when the checkout's
- * remote differs from where the PR was opened (a fork, say); the checkout's
- * repository is only consulted when the URL is one this cannot read.
- */
+// Prefer the PR URL's host and repository: a fork checkout can open a PR elsewhere.
+// Use checkout identity only when the URL cannot be read; absent PRs have no identity.
 export function createdPullRequestKey(
   result: Pick<GitRunStackedActionResult, "pr">,
   checkout: { readonly repositoryIdentity?: RepositoryIdentity | null | undefined } | undefined,
@@ -39,14 +31,16 @@ export function createdPullRequestKey(
   if ((status !== "created" && status !== "opened_existing") || number === undefined || !url) {
     return null;
   }
-  const parsed = parseChangeRequestUrl(url);
-  if (parsed !== null) return { ...parsed, url };
+  const parsed = sourceControlDefinitions.parseChangeRequestUrl(url)?.link;
+  if (parsed !== undefined) {
+    return { host: parsed.host, repository: parsed.repository, number: parsed.number, url };
+  }
   const identity = checkout?.repositoryIdentity;
-  const kind = identity?.provider as SourceControlProviderKind | undefined;
-  const repository = sourceControlRepositorySelector(identity);
+  const kind = identity?.provider;
+  const repository = sourceControlDefinitions.repositorySelector(identity);
   if (!identity || kind === undefined || repository === null) return null;
   return {
-    host: pullRequestHostOf(identity, kind),
+    host: sourceControlDefinitions.changeRequestHost(identity, kind),
     repository: repository.toLowerCase(),
     number,
     url,

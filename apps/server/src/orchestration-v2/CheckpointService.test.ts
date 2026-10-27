@@ -417,7 +417,7 @@ it.effect(
           hasCheckpointRef: () => Effect.succeed(true),
           listAuthoredPaths: ({ cwd }) =>
             Effect.succeed(new Set([cwd === "/repo" ? "app/written.ts" : "written.ts"])),
-          diffCheckpoints: () => Effect.succeed("1\t0\twritten.ts\0" + "2\t0\timported.ts\0"),
+          diffCheckpoints: () => Effect.succeed("1\t0\twritten.ts\x002\t0\timported.ts\0"),
         }),
       ),
     ),

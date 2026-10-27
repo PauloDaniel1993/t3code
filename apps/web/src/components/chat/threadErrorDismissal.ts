@@ -11,40 +11,9 @@ import {
 
 import { dismissThreadErrorBannerForSession, getThreadErrorBannerKey } from "./ThreadErrorBanner";
 
-/*
- * Dismissing a thread's error banner, and deciding when it comes back.
- *
- * Rule: a dismissed error on a thread stays hidden until a run fails that
- * comes after the latest run the thread had at dismissal, in V2's run order
- * (`ordinal`), or a run fails that had not finished then; or until the
- * thread's error text is one never dismissed on it.
- *
- * The text half is upstream's mask in `ThreadErrorBanner`: the chat view
- * passes its result in as `maskedError`, and a dismissal adds the texts on
- * screen to it. This module adds the run half, a watermark by order rather
- * than by membership: the client may hold only a window of the thread's runs,
- * and a fuller history can bring older failed runs it never saw. Those are
- * below the watermark, so they never bring the banner back.
- *
- * The run that was executing at dismissal is not new when it later fails with
- * a text dismissed then: a provider publishes a failure on the session first
- * and finalises the run afterwards, and that is one failure. It is the only
- * exception; any other run that fails after the dismissal shows. A new failed run
- * is shown with its own message and class, even while the session still holds
- * older text, which V2's `threadErrorSummary` would otherwise prefer.
- *
- * Client-local errors always show; the dismiss handler clears them. Dismissing
- * one records nothing here and masks no text, so a saved failure with the same
- * text still shows.
- *
- * State is renderer memory, one entry per environment-scoped thread key, and
- * is lost on reload, as upstream's mask is. A dismissal replaces the thread's
- * entry; an entry holds one or two texts, an ordinal and the ids of runs
- * still unfinished at dismissal.
- *
- * Known limit: two session-only failures with the same text and no run
- * between them are one banner.
- */
+// Run ordinals keep older failures from reappearing as history loads.
+// The run executing at dismissal may publish its failure before it finishes.
+// Session-only failures with identical text and no intervening run remain one banner.
 
 type FailureClass = OrchestrationV2ProviderFailureClass | null;
 type Projection = Pick<ThreadStructure, "runs" | "turnItems">;

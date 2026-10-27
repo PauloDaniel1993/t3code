@@ -17,6 +17,7 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   createEnvironmentRpcCommand,
+  provideCommandPermissionGuard,
   createEnvironmentCommand,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
@@ -25,13 +26,7 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as Persistence from "../platform/persistence.ts";
-import {
-  request,
-  subscribe,
-  runStreamGuarded,
-  RpcPermissionGuard,
-  type EnvironmentRpcInput,
-} from "../rpc/client.ts";
+import { request, subscribe, runStreamGuarded, type EnvironmentRpcInput } from "../rpc/client.ts";
 import { createCommandPermissions } from "./commandPermissions.ts";
 import { consumeWorkspaceActionProgress, type RunWorkspaceActionInput } from "./workspaceVcs.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
@@ -325,10 +320,7 @@ export function createVcsEnvironmentAtoms<R, E>(
                 ),
               ),
             ),
-            Effect.provideService(RpcPermissionGuard, {
-              authorize: (id, method, payload) =>
-                createCommandPermissions(runtime, method).authorize(registry, id, payload),
-            }),
+            provideCommandPermissionGuard(runtime, registry),
             Effect.ensuring(
               invalidateCachedVcsRefs(registry, { environmentId, cwd: cwds[0] ?? "" }),
             ),
@@ -445,3 +437,4 @@ export * from "./vcsAction.ts";
 export * from "./vcsRef.ts";
 export * from "./workspaceVcs.ts";
 export * from "./workspaceVcsActions.ts";
+export * from "./vcsStatusRevalidation.ts";

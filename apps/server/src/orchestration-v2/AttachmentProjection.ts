@@ -16,15 +16,20 @@ export const layer = Layer.effect(
     const outbox = yield* EffectOutboxV2;
     return ProjectionStoreV2.of({
       ...base,
-      apply: (event) =>
-        applyWithAttachmentPruning({ sequence: 0, commandId: null, event }, base.apply(event)).pipe(
+      // Keep the base store's span as the tracing boundary for these per-event wrappers.
+      apply: Effect.fnUntraced(function* (event) {
+        return yield* applyWithAttachmentPruning(
+          { sequence: 0, commandId: null, event },
+          base.apply(event),
+        ).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.provideService(EffectOutboxV2, outbox),
           Effect.asVoid,
           Effect.mapError(
             (cause) => new ProjectionStoreApplyEventError({ eventType: event.type, cause }),
           ),
-        ),
+        );
+      }),
     });
   }),
 );
@@ -49,21 +54,28 @@ export const sinkLayer = Layer.effect(
         : Effect.void;
     return EventSinkV2.of({
       ...base,
-      write: (input) => base.write(input).pipe(Effect.tap(() => notify(input.events))),
-      writeWithEffects: (input) =>
-        base.writeWithEffects(input).pipe(Effect.tap(() => notify(input.events))),
-      writeIfRunCurrent: (input) =>
-        base
+      // The base sink already traces each write; these wrappers only wake cleanup.
+      write: Effect.fnUntraced(function* (input) {
+        return yield* base.write(input).pipe(Effect.tap(() => notify(input.events)));
+      }),
+      writeWithEffects: Effect.fnUntraced(function* (input) {
+        return yield* base.writeWithEffects(input).pipe(Effect.tap(() => notify(input.events)));
+      }),
+      writeIfRunCurrent: Effect.fnUntraced(function* (input) {
+        return yield* base
           .writeIfRunCurrent(input)
-          .pipe(Effect.tap((result) => (result.committed ? notify(input.events) : Effect.void))),
-      writeIfProviderThreadOwner: (input) =>
-        base
+          .pipe(Effect.tap((result) => (result.committed ? notify(input.events) : Effect.void)));
+      }),
+      writeIfProviderThreadOwner: Effect.fnUntraced(function* (input) {
+        return yield* base
           .writeIfProviderThreadOwner(input)
-          .pipe(Effect.tap((result) => (result.committed ? notify(input.events) : Effect.void))),
-      commitCommand: (input) =>
-        base
+          .pipe(Effect.tap((result) => (result.committed ? notify(input.events) : Effect.void)));
+      }),
+      commitCommand: Effect.fnUntraced(function* (input) {
+        return yield* base
           .commitCommand(input)
-          .pipe(Effect.tap((result) => (result.committed ? notify(input.events) : Effect.void))),
+          .pipe(Effect.tap((result) => (result.committed ? notify(input.events) : Effect.void)));
+      }),
     });
   }),
 );

@@ -38,13 +38,7 @@ export interface StarMapAdjacency {
   readonly undermines: ReadonlyArray<StarMapGraphEdge>;
 }
 
-/**
- * Render-side view of one wayfinder map. Status, frontier/undermined flags,
- * Kahn rank, and cycle flags arrive authoritative from the server and are
- * consumed as-is; this module only reorders and indexes them. Everything here
- * is sorted or keyed so downstream modules see identical structures no matter
- * how the snapshot arrays were ordered.
- */
+// Server ranks and flags are authoritative; sort and index without recomputing them.
 export interface StarMapGraph {
   /** Nodes sorted by (ordinal, id), duplicate ids dropped. */
   readonly nodes: ReadonlyArray<StarMapGraphNode>;
@@ -64,13 +58,7 @@ export interface StarMapGraph {
   /** Node ids per status, in the same (ordinal, id) order as `nodes`. */
   readonly byStatus: Readonly<Record<StarMapNodeStatus, ReadonlyArray<string>>>;
   readonly maxRank: number;
-  /**
-   * Stable content revision covering exactly the layout solver inputs: node
-   * ids, ordinals (the per-ticket seed), ranks, cycle flags, and the edge set.
-   * Status, labels, and frontier flags change how a star looks, never where it
-   * sits, so they stay out of the revision — a ticket resolving must not
-   * re-run the solver. Key a `useMemo` on this string.
-   */
+  // Only solver inputs affect the revision. Status and label changes must not move nodes.
   readonly revision: string;
 }
 
@@ -84,13 +72,7 @@ function compareNodes(left: StarMapGraphNode, right: StarMapGraphNode): number {
   return left.ordinal - right.ordinal || compareStrings(left.id, right.id);
 }
 
-/**
- * Produces the unique transitive reduction for the acyclic part of the blocks
- * graph. Kahn's pass deliberately treats a cycle and everything downstream of
- * it as unsafe to reduce: preserving those edges is more honest than guessing
- * which relationship represents the cycle. Maps are capped at 200 nodes, so
- * Set-based reachability stays small while avoiding a per-edge graph search.
- */
+// Keep cycles and their downstream edges intact: reachability there cannot be safely reduced.
 function buildBackboneEdges(
   nodes: ReadonlyArray<StarMapGraphNode>,
   edges: ReadonlyArray<StarMapGraphEdge>,

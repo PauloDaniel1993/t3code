@@ -37,17 +37,18 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
   let ended = false;
   let stoppedByProvider = false;
   let failure: Cause.Cause<ProviderAdapterEventStreamError> | undefined;
-  const seal = (cause?: Cause.Cause<ProviderAdapterEventStreamError>) =>
-    Effect.gen(function* () {
-      ended = true;
-      failure = cause;
-      // Keep the sealed stages alive until each consumer drains and unregisters.
-      yield* Effect.forEach(
-        stages,
-        (stage) => (cause === undefined ? stage.end : stage.fail(cause)),
-        { discard: true },
-      );
-    });
+  const seal = Effect.fn("ProviderEventFlowRuntime.seal")(function* (
+    cause?: Cause.Cause<ProviderAdapterEventStreamError>,
+  ) {
+    ended = true;
+    failure = cause;
+    // Keep the sealed stages alive until each consumer drains and unregisters.
+    yield* Effect.forEach(
+      stages,
+      (stage) => (cause === undefined ? stage.end : stage.fail(cause)),
+      { discard: true },
+    );
+  });
   const close = Effect.gen(function* () {
     ended = true;
     yield* Effect.forEach(stages, (stage) => stage.interrupt, { discard: true });

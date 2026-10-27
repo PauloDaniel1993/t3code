@@ -55,11 +55,12 @@ export class WorktreeRecreateError extends Schema.TaggedError<WorktreeRecreateEr
   {
     threadId: ThreadId,
     path: Schema.String,
+    reason: Schema.optional(Schema.Literal("no-current-branch")),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Could not recreate the worktree at ${this.path}.`;
+    return `Could not recreate the worktree at ${this.path}.${this.reason === "no-current-branch" ? " The repository has no current branch to start from." : ""}`;
   }
 }
 
@@ -344,7 +345,11 @@ export const makeRecreateMissingWorktrees = ({
   readonly fileSystem: FileSystem.FileSystem;
   readonly git: Pick<
     GitWorkflow.GitWorkflowService["Service"],
-    "pruneWorktrees" | "createWorktree"
+    | "pruneWorktrees"
+    | "createWorktree"
+    | "listLocalBranchNames"
+    | "invalidateLocalStatus"
+    | "localStatus"
   >;
   readonly getProjectRoot: (projectId: ProjectId) => Effect.Effect<string | undefined>;
 }) =>
@@ -354,24 +359,55 @@ export const makeRecreateMissingWorktrees = ({
         Effect.map((exists) => !exists),
         Effect.orElseSucceed(() => false),
       );
-    const recreate = (member: OrchestrationV2ThreadWorktree) =>
-      Effect.logWarning("recreating missing worktree", {
-        threadId: thread.id,
-        worktreePath: member.path,
-        branch: member.branch,
-      }).pipe(
-        Effect.andThen(git.pruneWorktrees({ cwd: member.repositoryRoot })),
-        Effect.andThen(
-          git.createWorktree({
+    const recreate = Effect.fn("WorktreeSetService.recreateMember")(
+      function* (member: OrchestrationV2ThreadWorktree) {
+        yield* Effect.logWarning("recreating missing worktree", {
+          threadId: thread.id,
+          worktreePath: member.path,
+          branch: member.branch,
+        });
+        yield* git.pruneWorktrees({ cwd: member.repositoryRoot });
+        const branches = yield* git.listLocalBranchNames(member.repositoryRoot);
+        if (branches.includes(member.branch)) {
+          yield* git.createWorktree({
             cwd: member.repositoryRoot,
             refName: member.branch,
             path: member.path,
-          }),
+          });
+          return;
+        }
+        yield* git.invalidateLocalStatus(member.repositoryRoot);
+        const { refName } = yield* git.localStatus({ cwd: member.repositoryRoot });
+        if (refName === null) {
+          return yield* new WorktreeRecreateError({
+            threadId: thread.id,
+            path: member.path,
+            reason: "no-current-branch",
+            cause: new GitCommandError({
+              operation: "WorktreeSetService.recreateMember",
+              command: "git",
+              cwd: member.repositoryRoot,
+              detail: `Could not recreate branch '${member.branch}': its repository has no current branch to start from.`,
+            }),
+          });
+        }
+        yield* git.createWorktree({
+          cwd: member.repositoryRoot,
+          refName: `refs/heads/${refName}`,
+          newRefName: member.branch,
+          baseRefName: `refs/heads/${refName}`,
+          path: member.path,
+        });
+      },
+      (effect, member) =>
+        effect.pipe(
+          Effect.mapError((cause) =>
+            cause._tag === "WorktreeRecreateError"
+              ? cause
+              : new WorktreeRecreateError({ threadId: thread.id, path: member.path, cause }),
+          ),
         ),
-        Effect.mapError(
-          (cause) => new WorktreeRecreateError({ threadId: thread.id, path: member.path, cause }),
-        ),
-      );
+    );
     if (thread.worktrees === undefined) {
       // A plain thread's worktree comes from its project's checkout, and a
       // snapshot thread's from its own primary folder, which a relink of the

@@ -722,7 +722,7 @@ it.effect("filters Git imports before rendering labelled checkpoint parts", () =
           calls.push(input);
           return Effect.succeed(
             input.format === "numstat"
-              ? "1\t1\t\0app/old.ts\0app/new.ts\0" + "1\t0\tapp/imported.ts\0"
+              ? "1\t1\t\0app/old.ts\0app/new.ts\x001\t0\tapp/imported.ts\0"
               : "labelled authored patch",
           );
         },

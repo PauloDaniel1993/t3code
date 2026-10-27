@@ -89,28 +89,28 @@ export class WorkspaceActionMissingResultError extends Schema.TaggedError<Worksp
 }
 
 /** A member failure is an outcome; only the workspace terminal event finishes the batch. */
-export function consumeWorkspaceActionProgress<E, R>(
+export const consumeWorkspaceActionProgress = Effect.fn(
+  "WorkspaceVcs.consumeWorkspaceActionProgress",
+)(function* <E, R>(
   stream: Stream.Stream<VcsWorkspaceActionProgressEvent, E, R>,
   actionId: string,
   onProgress?: (event: VcsWorkspaceActionProgressEvent) => void,
 ) {
-  return Effect.gen(function* () {
-    let result: VcsRunWorkspaceActionResult | undefined;
-    yield* Stream.runForEach(stream, (event) =>
-      Effect.sync(() => {
-        if (event.actionId !== actionId) return;
-        if (event.kind === "workspace_action_finished") result = { results: event.results };
-        try {
-          onProgress?.(event);
-        } catch {
-          /* Presentation cannot fail a Git operation. */
-        }
-      }),
-    );
-    if (result === undefined) return yield* new WorkspaceActionMissingResultError({ actionId });
-    return result;
-  });
-}
+  let result: VcsRunWorkspaceActionResult | undefined;
+  yield* Stream.runForEach(stream, (event) =>
+    Effect.sync(() => {
+      if (event.actionId !== actionId) return;
+      if (event.kind === "workspace_action_finished") result = { results: event.results };
+      try {
+        onProgress?.(event);
+      } catch {
+        /* Presentation cannot fail a Git operation. */
+      }
+    }),
+  );
+  if (result === undefined) return yield* new WorkspaceActionMissingResultError({ actionId });
+  return result;
+});
 
 /** Unknown branches never count as agreement or drift. Current checkouts can be mixed. */
 export function workspaceBranchState(
