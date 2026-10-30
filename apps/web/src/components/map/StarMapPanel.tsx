@@ -196,7 +196,7 @@ function TicketList(props: {
     (left, right) => left.rank - right.rank || left.ordinal - right.ordinal,
   );
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Scroll the selected ticket into the accessible list's viewport.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Scroll the selected ticket into the accessible list's viewport.
   useEffect(() => {
     if (props.selectedTicketId === null) return;
     listRef.current
@@ -309,7 +309,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const [showAllLinks, setShowAllLinks] = useState(false);
   const view = viewOverride ?? defaultStarMapView({ containerWidthPx, prefersReducedMotion });
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Observe the panel width to select its responsive default view.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Observe the panel width to select its responsive default view.
   useLayoutEffect(() => {
     const root = panelRootRef.current;
     if (root === null) return;
@@ -452,7 +452,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<StarMapRenderer | null>(null);
   const layoutRef = useRef(layout);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Native pointer handlers read the committed layout without re-registering.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Native pointer handlers read the committed layout without re-registering.
   useLayoutEffect(() => {
     layoutRef.current = layout;
   }, [layout]);
@@ -469,7 +469,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   }));
 
   // Status updates must preserve the renderer's camera and gesture state.
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the canvas renderer and native gesture listeners for this map and view.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the canvas renderer and native gesture listeners for this map and view.
   useEffect(() => {
     const host = canvasHostRef.current;
     if (view !== "map" || selectedMapId === null || host === null) return;
@@ -595,19 +595,19 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     };
   }, [view, selectedMapId, readRendererOptions]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Update the existing canvas without rebuilding its camera or gesture state.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Update the existing canvas without rebuilding its camera or gesture state.
   useEffect(() => {
     rendererRef.current?.setGraph(graph, layout, selectedMapComplete);
   }, [graph, layout, selectedMapComplete]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the canvas highlight with list or ticket selection.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Synchronize the canvas highlight with list or ticket selection.
   useEffect(() => {
     rendererRef.current?.setSelection(canvasSelection);
   }, [canvasSelection]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the canvas dependency-link display.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Synchronize the canvas dependency-link display.
   useEffect(() => {
     rendererRef.current?.setShowAllLinks(showAllLinks);
   }, [showAllLinks]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Stop the canvas frame loop while its panel is inactive.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Stop the canvas frame loop while its panel is inactive.
   useEffect(() => {
     rendererRef.current?.setSurfaceActive(mapSurfaceActive);
   }, [mapSurfaceActive]);
@@ -615,7 +615,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   // 8.9: eased camera move to the selected/focused star. Reduced motion jumps
   // straight there — the engine renders a single static frame either way.
   const easeRafRef = useRef<number | null>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Animate the imperative camera toward selection and cancel its pending frame on cleanup.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Animate the imperative camera toward selection and cancel its pending frame on cleanup.
   useEffect(() => {
     if (easeRafRef.current !== null) {
       cancelAnimationFrame(easeRafRef.current);

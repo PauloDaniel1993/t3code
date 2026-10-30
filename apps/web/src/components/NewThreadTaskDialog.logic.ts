@@ -15,7 +15,7 @@ import { getComposerPromptLengthValidationMessage } from "./chat/composerSubmiss
 
 // The parent must repeat this text in tool arguments. Leave room in its output for the wrapper.
 export const TASK_PROMPT_MAX_LENGTH = 12_000;
-export const TASK_CONTEXT_SUMMARY_MAX_LENGTH = 4_000;
+const TASK_CONTEXT_SUMMARY_MAX_LENGTH = 4_000;
 export { TASK_TITLE_MAX_LENGTH };
 
 export interface NewThreadTaskDraft {

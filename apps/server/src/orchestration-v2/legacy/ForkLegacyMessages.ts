@@ -57,7 +57,7 @@ export const makeForkLegacyMessageEvents = Effect.fn("makeForkLegacyMessageEvent
 });
 
 /** Wrap upstream's conversation mapping without copying or refactoring it. */
-export const forkLegacyMessageEvents = Effect.fn("forkLegacyMessageEvents")(function* <
+const forkLegacyMessageEvents = Effect.fn("forkLegacyMessageEvents")(function* <
   Row extends MessageRow,
 >(
   row: Row,

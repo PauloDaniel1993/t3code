@@ -27,7 +27,7 @@ function ignoreClosedLauncherPipe(error: NodeJS.ErrnoException): void {
   if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") throw error;
 }
 
-export const runServerCommand = Effect.fn("server.runServerCommand")(function* (
+const runServerCommand = Effect.fn("server.runServerCommand")(function* (
   flags: CliServerFlags,
   options?: {
     readonly startupPresentation?: ServerConfig.StartupPresentation;

@@ -44,7 +44,7 @@ export const ROLLBACK_FAILED_MESSAGE =
   "The provider could not roll back this conversation. Try again; if it keeps failing, check the provider and server logs.";
 
 /** The message for a rewind whose conversation was rolled back but whose files weren't all restored. */
-export function filesNotRestoredMessage(input: {
+function filesNotRestoredMessage(input: {
   readonly restoredFolders: ReadonlyArray<string>;
   readonly unrestoredFolders: ReadonlyArray<string>;
 }): string {

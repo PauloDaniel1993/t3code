@@ -37,7 +37,7 @@ export interface KimiAcpRuntimeInput extends Omit<
   readonly processEnvironment?: NodeJS.ProcessEnv;
 }
 
-export function buildKimiAcpSpawnInput(
+function buildKimiAcpSpawnInput(
   settings: Pick<KimiSettings, "binaryPath">,
   cwd: string,
   environment: NodeJS.ProcessEnv,
@@ -114,7 +114,7 @@ const PLAN_MODES = ["plan", "architect"];
 const SUPERVISED_MODES = ["default", "code", "agent", "chat", "implement", "ask"];
 
 /** Runtime policy owns mode; even full access keeps permission callbacks visible to T3. */
-export const setKimiSupervisedMode = Effect.fn("setKimiSupervisedMode")(function* (
+const setKimiSupervisedMode = Effect.fn("setKimiSupervisedMode")(function* (
   runtime: Pick<AcpSessionRuntime.AcpSessionRuntime["Service"], "getModeState" | "setMode">,
   requested: string,
 ) {

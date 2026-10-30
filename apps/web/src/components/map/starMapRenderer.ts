@@ -68,7 +68,7 @@ export const STAR_MAP_AMBIENT_FRAME_MS = 1000 / 30;
 export const STAR_MAP_IDLE_TICK_MS = 250;
 export const STAR_MAP_IDLE_AFTER_MS = 10_000;
 /** Full-rate rendering continues briefly after the last interaction signal. */
-export const STAR_MAP_INTERACTION_TAIL_MS = 120;
+const STAR_MAP_INTERACTION_TAIL_MS = 120;
 /** One frame never advances ambient motion by more than this, however long the gap. */
 export const STAR_MAP_MAX_FRAME_DT_MS = 500;
 
@@ -149,8 +149,8 @@ export function isSatisfiedBlockerStatus(status: StarMapNodeStatus | undefined):
   return status === "resolved" || status === "out_of_scope";
 }
 
-export const STAR_MAP_EDGE_CURVE_TENSION = 0.78;
-export const STAR_MAP_EDGE_CURVE_MAX_HANDLE = 220;
+const STAR_MAP_EDGE_CURVE_TENSION = 0.78;
+const STAR_MAP_EDGE_CURVE_MAX_HANDLE = 220;
 
 export interface StarMapEdgeCurveControls {
   readonly fromControl: StarMapPoint;
@@ -266,7 +266,7 @@ export function particleAlpha(t: number): number {
 
 /** Flow speed along a satisfied edge, in world units per second. */
 export const STAR_MAP_FLOW_SPEED = 45;
-export const STAR_MAP_FLOW_PARTICLES_PER_EDGE = 2;
+const STAR_MAP_FLOW_PARTICLES_PER_EDGE = 2;
 
 export interface StarMapFlowParticle {
   /** Index into the engine's satisfied-edge list. */

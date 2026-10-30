@@ -34,9 +34,7 @@ function summaryPreview(summary: string, maxChars: number) {
     : summary;
 }
 
-export function forkTaskStatus(
-  status: OrchestratorMcpDelegateTaskResult["status"],
-): ForkTaskStatus {
+function forkTaskStatus(status: OrchestratorMcpDelegateTaskResult["status"]): ForkTaskStatus {
   switch (status) {
     case "completed":
       return "finished";

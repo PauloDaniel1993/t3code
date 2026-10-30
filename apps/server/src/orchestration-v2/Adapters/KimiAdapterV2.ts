@@ -33,14 +33,14 @@ export interface KimiAdapterV2Options extends Omit<
   readonly onSessionEvent?: AcpAdapterV2Flavor["onSessionEvent"];
 }
 
-export function kimiPromptFailure(cause: unknown) {
+function kimiPromptFailure(cause: unknown) {
   if (isRequestError(cause) && isLoggedFailure(cause.data)) {
     return makeProviderFailure({ ...cause.data.kimiFailure, class: "provider_error" });
   }
   return makeProviderFailure({ cause, class: "provider_error" });
 }
 
-export function makeKimiAcpAdapterFlavor(options: KimiAdapterV2Options): AcpAdapterV2Flavor {
+function makeKimiAcpAdapterFlavor(options: KimiAdapterV2Options): AcpAdapterV2Flavor {
   let interactionMode = "default";
   return {
     driver: KIMI,

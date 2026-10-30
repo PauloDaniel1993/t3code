@@ -191,7 +191,7 @@ function currentSidebarTaskRecord(thread: Thread, task?: OrchestrationV2Subagent
     : task;
 }
 
-export function sidebarTaskIsLive(thread: Thread): boolean {
+function sidebarTaskIsLive(thread: Thread): boolean {
   const status = thread.runtime?.status ?? thread.latestRun?.status;
   return (
     thread.runtime?.activeRunId != null ||

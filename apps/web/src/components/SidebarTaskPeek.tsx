@@ -40,7 +40,7 @@ export function closeSidebarTaskPeek() {
   closing?.();
   usePeek.setState({ entry: null });
 }
-export function keepSidebarTaskPeekOpen() {
+function keepSidebarTaskPeekOpen() {
   closing?.();
 }
 export function leaveSidebarTaskPeek() {
@@ -57,7 +57,7 @@ export function openSidebarTaskPeek(entry: Peek) {
 
 function usePeekClock(anchor: HTMLElement) {
   const [now, setNow] = useState(Date.now);
-  // oxlint-disable-next-line t3code/react-effect-budget -- The peek clock follows the lifetime of its external anchor.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The peek clock follows the lifetime of its external anchor.
   useEffect(() => {
     let cancel: (() => void) | undefined;
     const tick = () => {
@@ -76,7 +76,7 @@ function usePeekClock(anchor: HTMLElement) {
 /** Chrome switches immediately; a fleeting hover never hydrates a transcript. */
 function usePeekDetailDwell(key: string) {
   const [readyKey, setReadyKey] = useState<string | null>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Delay the external detail subscription until the hover settles.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Delay the external detail subscription until the hover settles.
   useEffect(() => sidebarTaskLeaseClock.after(150, () => setReadyKey(key)), [key]);
   return readyKey === key;
 }
@@ -87,7 +87,7 @@ export function SidebarTaskPeek({
   onOpenThread: (ref: ScopedThreadRef) => void;
 }) {
   const entry = usePeek((state) => state.entry);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Closing the external peek store cancels its outstanding timers.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Closing the external peek store cancels its outstanding timers.
   useEffect(() => closeSidebarTaskPeek, []);
   return entry === null ? null : entry.nativeAgent === undefined ? (
     <TaskPeek
@@ -126,7 +126,7 @@ function NativePeek({
   );
   const frame = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: 0, top: 0 });
-  // oxlint-disable-next-line t3code/react-effect-budget -- The portal follows anchor geometry before paint.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The portal follows anchor geometry before paint.
   useLayoutEffect(() => {
     const place = () => {
       if (!entry.anchor.isConnected) {
@@ -152,7 +152,7 @@ function NativePeek({
       releaseResize?.();
     };
   }, [entry.anchor]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Global dismissal listeners belong to the open portal.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Global dismissal listeners belong to the open portal.
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeSidebarTaskPeek();
@@ -237,7 +237,7 @@ function TaskPeek({
     ready ? ref.threadId : null,
   );
   const deleted = detailState.status === "deleted";
-  // oxlint-disable-next-line t3code/react-effect-budget -- Confirmed server deletion retires the externally stored peek.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Confirmed server deletion retires the externally stored peek.
   useEffect(() => {
     if (deleted) closeSidebarTaskPeek();
   }, [deleted]);
@@ -259,7 +259,7 @@ function TaskPeek({
   const send = useAtomCommand(threadEnvironment.startTurn);
   const interrupt = useAtomCommand(threadEnvironment.interruptTurn);
   const cancelQueued = useAtomCommand(threadEnvironment.cancelQueuedRun);
-  // oxlint-disable-next-line t3code/react-effect-budget -- The portal follows anchor geometry before paint.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The portal follows anchor geometry before paint.
   useLayoutEffect(() => {
     const place = () => {
       if (!entry.anchor.isConnected) {
@@ -285,7 +285,7 @@ function TaskPeek({
       releaseResize?.();
     };
   }, [entry.anchor]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Global dismissal listeners belong to the open portal.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Global dismissal listeners belong to the open portal.
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeSidebarTaskPeek();

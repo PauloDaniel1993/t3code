@@ -22,9 +22,9 @@ import ForkMigration0010 from "./ForkMigrations/010_AttachmentReferenceIndex.ts"
 import ForkMigration0011 from "./ForkMigrations/011_TaskDeliveryIndex.ts";
 import ForkMigration0012 from "./ForkMigrations/012_ProjectionProjectsWorkspaceFile.ts";
 
-export const FORK_MIGRATIONS_TABLE = "fork_sql_migrations";
+const FORK_MIGRATIONS_TABLE = "fork_sql_migrations";
 
-export const forkMigrationEntries = [
+const forkMigrationEntries = [
   [1, "AttachmentCleanupQueue", ForkMigration0001],
   [2, "ProjectionThreadSessionRecovery", ForkMigration0002],
   [3, "DatabaseCompactionJournal", ForkMigration0003],
@@ -39,7 +39,7 @@ export const forkMigrationEntries = [
   [12, "ProjectionProjectsWorkspaceFile", ForkMigration0012],
 ] as const;
 
-export const makeForkMigrationLoader = (throughId?: number) =>
+const makeForkMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
     Object.fromEntries(
       forkMigrationEntries

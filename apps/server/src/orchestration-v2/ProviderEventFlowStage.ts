@@ -14,8 +14,8 @@ import type {
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import { sanitizeProviderEvent } from "./ProviderEventPayload.ts";
 
-export const PROVIDER_EVENT_BACKLOG_MAX_ITEMS = 1_000;
-export const PROVIDER_EVENT_BACKLOG_MAX_BYTES = 8 * 1024 * 1024;
+const PROVIDER_EVENT_BACKLOG_MAX_ITEMS = 1_000;
+const PROVIDER_EVENT_BACKLOG_MAX_BYTES = 8 * 1024 * 1024;
 
 function replacementKey(event: ProviderAdapterV2Event): string | undefined {
   switch (event.type) {

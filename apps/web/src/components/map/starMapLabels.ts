@@ -7,7 +7,7 @@ export const STAR_MAP_NARROW_LABEL_THRESHOLD = 300;
 export const STAR_MAP_LABEL_OFFSET_X = 10;
 /** Estimated width per character at the label font size. */
 export const STAR_MAP_LABEL_CHAR_WIDTH = 7;
-export const STAR_MAP_LABEL_HEIGHT = 16;
+const STAR_MAP_LABEL_HEIGHT = 16;
 /** Extra gap treated as part of each label box when testing collisions. */
 const COLLISION_GAP = 2;
 
@@ -45,7 +45,7 @@ interface LabelBox {
 }
 
 /** The drawn box of a placement, in screen pixels. Shared by layout and hit-testing. */
-export function labelBox(placement: StarMapLabelPlacement): LabelBox {
+function labelBox(placement: StarMapLabelPlacement): LabelBox {
   return {
     minX: placement.x,
     minY: placement.y - STAR_MAP_LABEL_HEIGHT / 2,

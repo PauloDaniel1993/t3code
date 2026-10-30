@@ -88,7 +88,7 @@ export function parseKimiAcpFailureLine(line: string): KimiAcpFailure | undefine
   };
 }
 
-export function parseLatestKimiAcpFailure(text: string): KimiAcpFailure | undefined {
+function parseLatestKimiAcpFailure(text: string): KimiAcpFailure | undefined {
   const lines = text.split(/\r?\n/);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];

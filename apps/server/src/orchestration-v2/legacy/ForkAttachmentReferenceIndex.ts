@@ -14,8 +14,8 @@ import * as Schedule from "effect/Schedule";
 import * as SqlClient from "effect/sql/SqlClient";
 import { EffectOutboxV2 } from "../EffectOutbox.ts";
 
-export const ATTACHMENT_REFERENCE_TABLE = "fork_v2_attachment_references";
-export const ATTACHMENT_REFERENCE_VERSION = 4;
+const ATTACHMENT_REFERENCE_TABLE = "fork_v2_attachment_references";
+const ATTACHMENT_REFERENCE_VERSION = 4;
 export const ATTACHMENT_REFERENCE_REBUILD_BATCH_SIZE = 64;
 export const ATTACHMENT_REFERENCE_REBUILD_BUDGET_MS = 25;
 const stateTable = "fork_v2_attachment_reference_state";

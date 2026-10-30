@@ -366,7 +366,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
 }) {
   const { thread, task } = props;
   const committed = useRef(false);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Starting a rename closes the externally stored hover peek.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Starting a rename closes the externally stored hover peek.
   useEffect(() => {
     if (props.isRenaming) {
       committed.current = false;

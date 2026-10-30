@@ -88,7 +88,7 @@ export function NewThreadTaskHost() {
   const routeTarget = useParams({ strict: false, select: resolveThreadRouteTarget });
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const composerHandle = useComposerHandleContext();
-  // oxlint-disable-next-line t3code/react-effect-budget -- Subscribe to task requests from entry points outside this component.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Subscribe to task requests from entry points outside this component.
   useEffect(
     () =>
       onOpenNewThreadTaskDialog((next) => {
@@ -110,7 +110,7 @@ export function NewThreadTaskHost() {
     [],
   );
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Register the global task shortcut and remove it on unmount.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Register the global task shortcut and remove it on unmount.
   useEffect(() => {
     const taskShortcuts = keybindings
       .filter((binding) => binding.command === "thread.newTask")

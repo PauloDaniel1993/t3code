@@ -36,16 +36,16 @@ export const WAYFINDER_MAPS_MAX_MAP_BYTES = 256 * 1024;
 export const WAYFINDER_MAPS_MAX_TITLE_CHARACTERS = 200;
 // Enumeration budgets: the caps above bound what a snapshot holds, these bound what a scan
 // looks at to build it. Reaching one marks the snapshot truncated.
-export const WAYFINDER_MAPS_MAX_DISCOVERY_ENTRIES = 256;
+const WAYFINDER_MAPS_MAX_DISCOVERY_ENTRIES = 256;
 export const WAYFINDER_MAPS_MAX_CANDIDATES = 128;
 export const WAYFINDER_MAPS_MAX_TICKET_DIRECTORY_ENTRIES = 512;
-export const WAYFINDER_MAPS_MAX_CONCURRENT_SCANS = 2;
+const WAYFINDER_MAPS_MAX_CONCURRENT_SCANS = 2;
 // Admission: a root lives only while a subscription holds it, so this bounds what one
 // connection keeps watched and scanned.
 export const WAYFINDER_MAPS_MAX_SUBSCRIPTIONS_PER_CONNECTION = 16;
 // Scan starts remembered across a root's close and reopen; see `recordScanStart`.
-export const WAYFINDER_MAPS_MAX_RECENT_SCAN_STARTS = 256;
-export const WAYFINDER_MAPS_BOOTSTRAP_PROBE_INTERVAL = Duration.seconds(1);
+const WAYFINDER_MAPS_MAX_RECENT_SCAN_STARTS = 256;
+const WAYFINDER_MAPS_BOOTSTRAP_PROBE_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_MIN_SCAN_INTERVAL = Duration.seconds(1);
 export const WAYFINDER_MAPS_DEFAULT_WATCH_DEBOUNCE = Duration.millis(100);
 
@@ -589,7 +589,7 @@ const rootLayer = (workspaceRoot: string) =>
   );
 
 // `WayfinderShared` is not among the dependencies: `make` needs the same instance.
-export class WayfinderMapsMap extends LayerMap.Service<WayfinderMapsMap>()(
+class WayfinderMapsMap extends LayerMap.Service<WayfinderMapsMap>()(
   "t3/wayfinder/WayfinderMapsMap",
   {
     lookup: rootLayer,
@@ -605,7 +605,7 @@ export class WayfinderMaps extends Context.Service<
   }
 >()("t3/wayfinder/WayfinderMaps") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const maps = yield* WayfinderMapsMap;
   const shared = yield* WayfinderShared;

@@ -4,7 +4,7 @@ import type { StarMapGraph, StarMapGraphNode } from "./starMapGraph";
 
 export const STAR_MAP_MIN_SEPARATION = 48;
 export const STAR_MAP_LAYER_SPACING = 84;
-export const STAR_MAP_MAX_NODE_SPACING = 440;
+const STAR_MAP_MAX_NODE_SPACING = 440;
 export const STAR_MAP_MAX_LAYER_SPAN = 12_000;
 export const STAR_MAP_ORDERING_SWEEPS = 6;
 

@@ -25,7 +25,7 @@ export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupErro
   },
 ) {}
 
-export const ATTACHMENT_CLEANUP_BATCH_SIZE = 128;
+const ATTACHMENT_CLEANUP_BATCH_SIZE = 128;
 export interface AttachmentCleanupContinuation {
   readonly attachmentIds: ReadonlyArray<string>;
   readonly relativePaths?: ReadonlyArray<string>;

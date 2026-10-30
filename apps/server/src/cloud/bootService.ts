@@ -301,7 +301,7 @@ const isLaunchdBootoutAbsent = (result: ProcessRunner.ProcessRunOutput): boolean
   );
 };
 
-export function launchdManager(input: {
+function launchdManager(input: {
   readonly path: Path.Path;
   readonly homeDir: string;
   readonly uid: number;

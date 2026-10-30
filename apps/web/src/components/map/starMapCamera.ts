@@ -52,7 +52,7 @@ export function boundsFromPoints(points: ReadonlyArray<StarMapPoint>, padding = 
   };
 }
 
-export function boundsCenter(bounds: StarMapBounds): StarMapPoint {
+function boundsCenter(bounds: StarMapBounds): StarMapPoint {
   return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
 }
 
