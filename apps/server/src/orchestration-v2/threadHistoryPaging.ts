@@ -349,7 +349,9 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
   // turn still pages at the hard item/byte limit instead of defeating it.
   const selectedStart = end - selected.length;
   const firstCompleteTurn = selected.findIndex((_, offset) => turnStarts[selectedStart + offset]);
-  if (turnLimit !== undefined && firstCompleteTurn > 0) selected.splice(0, firstCompleteTurn);
+  if (turnLimit !== undefined && selectedStart > 0 && firstCompleteTurn > 0) {
+    selected.splice(0, firstCompleteTurn);
+  }
 
   const oldest = selected[0];
   const oldestIndex = end - selected.length;

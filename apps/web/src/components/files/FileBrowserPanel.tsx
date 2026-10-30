@@ -82,7 +82,7 @@ function RefreshFilesButton(props: { isPending: boolean; onRefresh: () => void }
       >
         <RefreshIcon refreshing={props.isPending} />
       </TooltipTrigger>
-      <TooltipPopup>{props.isPending ? "RefreshingÃ¢â‚¬Â¦" : "Refresh files"}</TooltipPopup>
+      <TooltipPopup>{props.isPending ? "Refreshing…" : "Refresh files"}</TooltipPopup>
     </Tooltip>
   );
 }
@@ -340,7 +340,7 @@ export default function FileBrowserPanel({
       row.kind === "directory" &&
       row.isExpanded &&
       loadingDirectoriesRef.current.has(item.path.replace(/\/$/, ""))
-        ? { icon: "t3-tree-icon-loading", title: "LoadingÃ¢â‚¬Â¦" }
+        ? { icon: "t3-tree-icon-loading", title: "Loading…" }
         : null,
     search: false,
     onSearchChange: (value) => setQuery(value ?? ""),
@@ -617,7 +617,7 @@ export default function FileBrowserPanel({
               : "px-3 py-1 text-xs text-muted-foreground"
           }
         >
-          Loading filesÃ¢â‚¬Â¦
+          Loading files…
         </div>
       )}
       {hasNoSearchMatches ? (

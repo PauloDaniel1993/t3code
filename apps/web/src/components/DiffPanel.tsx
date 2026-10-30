@@ -468,7 +468,7 @@ export default function DiffPanel({
     selectedCommitSha !== null
       ? (selectedCommitSubject ?? `Commit ${selectedCommitSha.slice(0, 7)}`)
       : selectedGitScope === "unstaged"
-        ? `Uncommitted${folderTarget ? ` Â· ${folderTarget.row.label}` : ""}`
+        ? `Uncommitted${folderTarget ? ` · ${folderTarget.row.label}` : ""}`
         : "Changes";
   const selectedScopeLabel = toolCallSelection
     ? "Tool call"
@@ -1055,7 +1055,7 @@ export default function DiffPanel({
                 <ArrowRightIcon className="size-3.5 shrink-0 opacity-70" />
               </TooltipTrigger>
               <TooltipPopup side="top">
-                {`${selectedGitSource.headRef ?? "HEAD"} â†’ ${selectedGitSource.baseRef}`}
+                {`${selectedGitSource.headRef ?? "HEAD"} → ${selectedGitSource.baseRef}`}
               </TooltipPopup>
             </Tooltip>
             <Tooltip>
@@ -1065,7 +1065,7 @@ export default function DiffPanel({
                 vs
               </TooltipTrigger>
               <TooltipPopup side="top">
-                {`${selectedGitSource.headRef ?? "HEAD"} â†’ ${selectedGitSource.baseRef}`}
+                {`${selectedGitSource.headRef ?? "HEAD"} → ${selectedGitSource.baseRef}`}
               </TooltipPopup>
             </Tooltip>
             <Combobox
@@ -1198,7 +1198,7 @@ export default function DiffPanel({
               <RefreshIcon size="sm" refreshing={isRefreshingDiff} />
             </TooltipTrigger>
             <TooltipPopup side="top">
-              {isRefreshingDiff ? "Refreshing diffâ€¦" : "Refresh diff"}
+              {isRefreshingDiff ? "Refreshing diff…" : "Refresh diff"}
             </TooltipPopup>
           </Tooltip>
         )}
