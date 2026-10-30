@@ -2050,11 +2050,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         const snapshot = yield* projectionStore
           .getThreadSnapshotWindow(threadId, { rowLimit: 75 })
           .pipe(Effect.withTracer(tracer));
-        const nodeStatement = statements.find(
-          (statement) =>
-            statement.includes("payload_json") &&
-            statement.includes("orchestration_v2_projection_nodes") &&
-            !statement.includes("WITH RECURSIVE"),
+        const nodeStatement = statements.find((statement) =>
+          statement.includes("SELECT node.payload_json, retained.key AS position"),
         );
         assert.isDefined(nodeStatement);
         const nodePlan = yield* (yield* SqlClient.SqlClient).unsafe<{ readonly detail: string }>(

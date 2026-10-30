@@ -1129,6 +1129,7 @@ describe("VcsStatusBroadcaster", () => {
               localStatusCalls += 1;
               return locals.get(cwd) ?? onBranch("main");
             }),
+          currentBranch: (cwd) => Effect.sync(() => locals.get(cwd)?.refName ?? "main"),
           remoteStatus: () =>
             Effect.sync(() => {
               remoteStatusCalls += 1;

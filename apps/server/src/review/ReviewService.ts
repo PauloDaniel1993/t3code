@@ -89,7 +89,7 @@ export const make = Effect.gen(function* () {
     return yield* new VcsRepositoryDetectionError({
       operation,
       cwd,
-      detail: `Review ${WORKSPACE_BOUND_SUBJECTS[operation]} cwd must stay within the registered project folder or worktree.`,
+      detail: `Review ${WORKSPACE_BOUND_SUBJECTS[operation]} cwd must stay within a registered project folder or worktree.`,
     });
   });
 

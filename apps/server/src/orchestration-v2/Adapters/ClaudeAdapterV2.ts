@@ -9960,12 +9960,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             return yield* new ClaudeBackgroundWorkBlocksQueryReplacementError();
           }
 
-          // fork(claude-executable): the SDK cannot spawn Windows npm launcher shims.
-          const executablePath = yield* resolveClaudeTurnExecutablePath(
-            adapterOptions.settings.binaryPath,
-            adapterOptions.environment,
-          );
-
           // Replacing a sibling native thread kills its CLI, so clear its Waiting/wake state immediately.
           // For the same thread, keep the non-authoritative roster until reopen completes; validate the prompt file before closing.
           const appendSystemPromptFileText = yield* readClaudeAppendSystemPromptFile({
@@ -9980,6 +9974,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             fileSystem,
             path,
           });
+          // fork(claude-executable): the SDK cannot spawn Windows npm launcher shims.
+          const executablePath = yield* resolveClaudeTurnExecutablePath(
+            adapterOptions.settings.binaryPath,
+            adapterOptions.environment,
+          );
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           if (existing !== null) {
             yield* existing.query.close.pipe(Effect.ignore);

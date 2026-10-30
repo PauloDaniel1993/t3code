@@ -283,10 +283,10 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     });
     assert.deepEqual(options.additionalDirectories, [
       "/workspace",
-      "/attachments",
       "../apps",
       "../lib",
       "/shared",
+      "/attachments",
     ]);
     assert.isUndefined(options.extraArgs?.["add-dir"]);
   });
