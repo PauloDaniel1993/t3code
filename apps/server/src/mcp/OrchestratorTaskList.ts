@@ -11,6 +11,7 @@ import {
   type OrchestratorMcpTaskListResult,
   type ThreadId,
 } from "@t3tools/contracts";
+import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -87,6 +88,8 @@ export function summarizeForkTask(
 ): ForkTaskSummary {
   return {
     threadId: status.childThreadId,
+    ...(status.remoteChild === undefined ? {} : { remoteChild: status.remoteChild }),
+    ...(status.remoteChild === undefined || status.link === undefined ? {} : { link: status.link }),
     taskId: status.taskId,
     title: (task.title ?? task.prompt).slice(0, TASK_TITLE_MAX_LENGTH),
     status: forkTaskStatus(status.status),
@@ -140,7 +143,9 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
   const owned = parent.subagents
     .filter(
       (task) =>
-        task.origin === "app_owned" && task.threadId === threadId && task.childThreadId !== null,
+        task.origin === "app_owned" &&
+        task.threadId === threadId &&
+        (task.childThreadId !== null || task.remoteChild !== undefined),
     )
     .map((task) => ({
       task,
@@ -204,7 +209,10 @@ export const listOwnedTasks = Effect.fn("OrchestratorTaskList.listOwnedTasks")(f
     let item: OrchestratorMcpTaskListResult["tasks"][number] | undefined;
     if (status._tag === "Failure") {
       item = {
-        threadId: task.childThreadId!,
+        threadId: task.childThreadId,
+        ...(task.remoteChild === undefined
+          ? {}
+          : { remoteChild: task.remoteChild, link: formatThreadLink(task.remoteChild) }),
         taskId: task.id,
         title: (task.title ?? task.prompt).slice(0, TASK_TITLE_MAX_LENGTH),
         status: "unreadable",

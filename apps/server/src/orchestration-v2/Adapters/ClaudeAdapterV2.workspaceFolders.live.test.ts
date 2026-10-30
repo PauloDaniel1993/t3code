@@ -1,3 +1,4 @@
+import * as PortScanner from "../../preview/PortScanner.ts";
 import * as Crypto from "effect/Crypto";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 
@@ -21,6 +22,7 @@ import {
 } from "./ClaudeWorkspaceFolders.testkit.ts";
 
 const platformLayer = Layer.mergeAll(
+  PortScanner.layerTest,
   McpProviderSessions.layer,
   NodeServices.layer,
   IdAllocator.layer,

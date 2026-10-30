@@ -32,7 +32,7 @@ function setup() {
   useUiStateStore.setState({
     sidebarTaskGroupsExpandedById: { "local:parent": false },
     threadLastVisitedAtById: {},
-    sidebarProjectScopeKey: "local:/workspace/shown",
+    sidebarProjectScopeKeys: ["local:/workspace/shown"],
   });
   useThreadSelectionStore.getState().clearSelection();
 }

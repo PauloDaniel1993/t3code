@@ -55,9 +55,6 @@ export interface ProjectEnrichmentServiceOptions {
   readonly cacheCapacity?: number;
   readonly maxPending?: number;
   readonly concurrency?: number;
-  readonly successTtl?: Duration.Input;
-  readonly faviconTtl?: Duration.Input;
-  readonly failureTtl?: Duration.Input;
 }
 
 export class ProjectEnrichmentService extends Context.Service<
@@ -66,6 +63,9 @@ export class ProjectEnrichmentService extends Context.Service<
     readonly peek: (workspaceRoot: string) => Effect.Effect<ProjectEnrichment>;
     readonly request: (workspaceRoot: string) => Effect.Effect<void>;
     readonly getAvailable: (workspaceRoot: string) => Effect.Effect<ProjectEnrichment>;
+    readonly readRepositoryIdentity: (
+      workspaceRoot: string,
+    ) => Effect.Effect<RepositoryIdentity | null>;
     /**
      * Probe workspace folders now, at most 4 at a time: availability, and the
      * git checkout of each available one. Admission reads this, never the
@@ -143,10 +143,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   const cacheCapacity = Math.max(1, options.cacheCapacity ?? DEFAULT_CACHE_CAPACITY);
   const maxPending = Math.max(1, options.maxPending ?? DEFAULT_MAX_PENDING);
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
-  const successTtl = options.successTtl ?? DEFAULT_SUCCESS_TTL;
-  const failureTtl = options.failureTtl ?? DEFAULT_FAILURE_TTL;
   const repositoryIdentityRefreshes = new Set<string>();
-  const faviconTtl = options.faviconTtl ?? DEFAULT_FAVICON_TTL;
 
   const repositoryIdentityCache = yield* Cache.makeWith(
     (workspaceRoot: string) =>
@@ -160,8 +157,8 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     {
       capacity: cacheCapacity,
       timeToLive: Exit.match({
-        onFailure: () => failureTtl,
-        onSuccess: (result) => (Exit.isSuccess(result) ? successTtl : failureTtl),
+        onFailure: () => DEFAULT_FAILURE_TTL,
+        onSuccess: (result) => (Exit.isSuccess(result) ? DEFAULT_SUCCESS_TTL : DEFAULT_FAILURE_TTL),
       }),
     },
   );
@@ -170,15 +167,15 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     {
       capacity: cacheCapacity,
       timeToLive: Exit.match({
-        onFailure: () => failureTtl,
-        onSuccess: (result) => (Exit.isSuccess(result) ? faviconTtl : failureTtl),
+        onFailure: () => DEFAULT_FAILURE_TTL,
+        onSuccess: (result) => (Exit.isSuccess(result) ? DEFAULT_FAVICON_TTL : DEFAULT_FAILURE_TTL),
       }),
     },
   );
   // Display facts for workspace folders, keyed by folder path. A probe never fails.
   const folderCache = yield* Cache.makeWith(
     (path: string) => folderResolver.probe(path, { vcs: true }),
-    { capacity: cacheCapacity, timeToLive: () => successTtl },
+    { capacity: cacheCapacity, timeToLive: () => DEFAULT_SUCCESS_TTL },
   );
   const makeWorkLane = Effect.gen(function* () {
     const pendingRoots = yield* Ref.make<ReadonlySet<string>>(new Set());
@@ -507,6 +504,14 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     };
   });
 
+  const readRepositoryIdentity: ProjectEnrichmentService["Service"]["readRepositoryIdentity"] =
+    Effect.fn("ProjectEnrichmentService.readRepositoryIdentity")(function* (workspaceRoot) {
+      let resolved = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
+      while (repositoryIdentityRefreshes.has(workspaceRoot))
+        resolved = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
+      return Exit.isSuccess(resolved) ? resolved.value : null;
+    });
+
   const invalidate: ProjectEnrichmentService["Service"]["invalidate"] = Effect.fn(
     "ProjectEnrichmentService.invalidate",
   )(function* (workspaceRoots) {
@@ -553,6 +558,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     enrichShell,
     getWorkspaceFileStatus,
     setWorkspaceFileStatus,
+    readRepositoryIdentity,
     invalidate,
     subscribeChanges: PubSub.subscribe(changes),
   });

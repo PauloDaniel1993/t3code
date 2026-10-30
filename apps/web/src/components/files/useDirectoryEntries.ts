@@ -142,6 +142,7 @@ export function useDirectoryEntries(
     setLoadingDirectories(new Set([""]));
   }
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the root directory read on mount and marks the hook inactive so late reads are ignored
   useEffect(() => {
     generation.current++;
     active.current = true;

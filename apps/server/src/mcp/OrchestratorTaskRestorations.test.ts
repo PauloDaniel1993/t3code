@@ -1,3 +1,7 @@
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -222,6 +226,10 @@ function makeLayer(
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         ServerSettings.layerTest(),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(PeerForwarding.PeerForwarding)({}),
+        Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+        Layer.mock(PeerLinks.PeerLinks)({}),
         Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
@@ -318,6 +326,37 @@ function listFixture(
 }
 
 describe("task restorations on orchestration v2", () => {
+  it.effect("lists remote tasks with the same reference and result as task_status", () => {
+    const remoteChild = {
+      environmentId: EnvironmentId.make("environment:remote"),
+      threadId: ThreadId.make("thread:remote-child"),
+      label: "Remote",
+    };
+    const remote = task("remote", {
+      childThreadId: null,
+      remoteChild,
+      completionDelivery: { state: "disposed", observedByRunId: null },
+    });
+    const reads: ThreadId[] = [];
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcp.OrchestratorMcpService;
+      const status = yield* service.taskStatus(scope, remote.id);
+      const listed = yield* service.listTasks(scope, {});
+      expect(listed.tasks).toMatchObject([
+        {
+          taskId: remote.id,
+          threadId: null,
+          remoteChild: status.remoteChild,
+          link: status.link,
+          status: "finished",
+          result: { summary: remote.result },
+        },
+      ]);
+      yield* decodeListedTasks(listed);
+      expect(reads).not.toContain(remoteChild.threadId);
+    }).pipe(Effect.provide(makeLayer(recordsFor([remote]), { reads })));
+  });
+
   it.effect.each(
     (["completed", "cancelled", "failed"] as const).flatMap((status) =>
       [null, "Imported task result."].map((result) => ({

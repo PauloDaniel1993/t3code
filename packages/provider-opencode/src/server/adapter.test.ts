@@ -1,3 +1,8 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Exercise HTTP authentication with the real SDK.
+import * as NodeHttp from "node:http";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
 import { buildWorkspaceFolderInventory } from "@t3tools/provider-core/server/workspaceFolderInventory";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -51,6 +56,7 @@ import {
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const decodeOpenCodeSettings = Schema.decodeEffect(OpenCodeSettings);
 const OPEN_CODE_TEST_SETTINGS = Schema.decodeSync(OpenCodeSettings)({
   serverUrl: "http://test.invalid",
 });
@@ -186,9 +192,8 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   const now = yield* DateTime.now;
   const startTurn = (
     text = "hello",
-    policyOrThread:
-      | ProviderAdapter.ProviderAdapterV2RuntimePolicy
-      | OrchestrationV2ProviderThread = policy,
+    startProviderThread: OrchestrationV2ProviderThread = providerThread,
+    turnPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = policy,
   ) =>
     runtime.startTurn({
       appThread: {
@@ -220,7 +225,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
       providerTurnOrdinal: 1,
       attemptId: RunAttemptId.make(`attempt-opencode-${suffix}`),
       rootNodeId: NodeId.make(`node-opencode-${suffix}`),
-      providerThread: "runtimeMode" in policyOrThread ? providerThread : policyOrThread,
+      providerThread: startProviderThread,
       message: {
         createdBy: "user",
         creationSource: "web",
@@ -229,7 +234,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
         attachments: [],
       },
       modelSelection,
-      runtimePolicy: "runtimeMode" in policyOrThread ? policyOrThread : policy,
+      runtimePolicy: turnPolicy,
     });
   return {
     nativeSessionId,
@@ -244,6 +249,213 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
+  it.effect("classifies APIError 429 as a usage limit", () =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      const harness = yield* makeOpenCodeRuntimeHarness("usage-limit", "root", {
+        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        session: {
+          create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+          promptAsync: async () => ({ data: true }),
+          abort: async () => ({ data: true }),
+          children: async () => ({ data: [] }),
+        },
+      });
+      yield* harness.startTurn();
+      const received = yield* harness.runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() =>
+        nativeEvents.push({
+          type: "session.error",
+          properties: {
+            sessionID: "root",
+            error: {
+              name: "APIError",
+              data: {
+                message: "Provider rejected request",
+                statusCode: 429,
+                isRetryable: true,
+              },
+            },
+          },
+        }),
+      );
+      const terminal = (yield* Fiber.join(received)).find(
+        (event) => event.type === "turn.terminal",
+      );
+      assert.equal(terminal?.status, "failed");
+      assert.equal(terminal?.failure?.class, "usage_limit");
+    }).pipe(
+      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.scoped,
+    ),
+  );
+
+  it.effect("applies a changed runtime policy to the session on resume and turn start", () =>
+    Effect.gen(function* () {
+      const updates: Array<{ sessionID: string; permission: unknown }> = [];
+      const fullAccess = runtimePolicy("full-access", { cwd: "/workspace" });
+      const supervised = runtimePolicy("approval-required", { cwd: "/workspace" });
+      const harness = yield* makeOpenCodeRuntimeHarness("policy-change", "root", {
+        event: { subscribe: async () => ({ stream: asyncEventStream().stream }) },
+        session: {
+          create: async (input: { permission: unknown }) => ({
+            data: {
+              id: "root",
+              permission: input.permission,
+              time: { created: 1, updated: 1 },
+            },
+          }),
+          get: async () => ({
+            data: {
+              id: "root",
+              permission: openCodePermissionRules(fullAccess),
+              time: { created: 1, updated: 1 },
+            },
+          }),
+          update: async (input: { sessionID: string; permission: unknown }) => {
+            updates.push(input);
+            return { data: { id: input.sessionID, time: { created: 1, updated: 2 } } };
+          },
+          promptAsync: async () => ({ data: true }),
+          abort: async () => ({ data: true }),
+          children: async () => ({ data: [] }),
+        },
+      });
+
+      yield* harness.runtime.resumeThread({
+        providerThread: harness.providerThread,
+        runtimePolicy: fullAccess,
+      });
+      assert.deepStrictEqual(updates, []);
+
+      yield* harness.runtime.resumeThread({
+        providerThread: harness.providerThread,
+        runtimePolicy: supervised,
+      });
+      assert.deepStrictEqual(updates, [
+        { sessionID: "root", permission: openCodePermissionRules(supervised) },
+      ]);
+
+      yield* harness.startTurn("hello", harness.providerThread, fullAccess);
+      assert.deepStrictEqual(updates.slice(1), [
+        { sessionID: "root", permission: openCodePermissionRules(fullAccess) },
+      ]);
+    }).pipe(
+      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.scoped,
+    ),
+  );
+
+  it.effect("applies a changed runtime policy to existing subagent sessions", () =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      const push = (event: unknown) => Effect.promise(() => nativeEvents.push(event));
+      const updates: Array<{
+        sessionID: string;
+        permission: ReturnType<typeof openCodePermissionRules>;
+      }> = [];
+      const fullAccess = runtimePolicy("full-access", { cwd: "/workspace" });
+      const supervised = runtimePolicy("approval-required", { cwd: "/workspace" });
+      const root = "ses_root";
+      const child = "ses_child";
+      const taskDeny = { permission: "task", pattern: "*", action: "deny" as const };
+      const nativePermissions = new Map<string, (typeof updates)[number]["permission"]>([
+        [root, openCodePermissionRules(fullAccess)],
+        [child, [taskDeny]],
+      ]);
+      let failNextChildUpdate = false;
+      const harness = yield* makeOpenCodeRuntimeHarness("child-policy-change", root, {
+        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        session: {
+          create: async () => ({ data: { id: root, time: { created: 1, updated: 1 } } }),
+          get: async ({ sessionID }: { sessionID: string }) => ({
+            data: {
+              id: sessionID,
+              ...(sessionID === child ? { parentID: root } : {}),
+              permission: nativePermissions.get(sessionID),
+              time: { created: 1, updated: 1 },
+            },
+          }),
+          update: async (input: (typeof updates)[number]) => {
+            if (input.sessionID === child && failNextChildUpdate) {
+              failNextChildUpdate = false;
+              throw new Error("child update failed");
+            }
+            updates.push(input);
+            nativePermissions.set(input.sessionID, input.permission);
+            return { data: { id: input.sessionID, time: { created: 1, updated: 2 } } };
+          },
+          promptAsync: async () => ({ data: true }),
+          abort: async () => ({ data: true }),
+          children: async () => ({ data: [] }),
+        },
+      });
+
+      yield* harness.startTurn("hello", harness.providerThread, fullAccess);
+      yield* push({
+        type: "message.part.updated",
+        properties: {
+          sessionID: root,
+          part: {
+            id: "prt_task",
+            sessionID: root,
+            messageID: "msg_root_assistant",
+            type: "tool",
+            tool: "task",
+            callID: "call_task",
+            state: {
+              status: "running",
+              input: { description: "Explore", prompt: "look around", subagent_type: "general" },
+              title: "Explore",
+              metadata: { parentSessionId: root, sessionId: child },
+              time: { start: 3 },
+            },
+          },
+        },
+      });
+      const childUpdates = () => updates.filter((update) => update.sessionID === child);
+      assert.equal(permissionAction(childUpdates().at(-1)!.permission, "bash"), "allow");
+
+      yield* harness.runtime.resumeThread({
+        providerThread: harness.providerThread,
+        runtimePolicy: supervised,
+      });
+      const childRules = childUpdates().at(-1)!.permission;
+      assert.equal(childUpdates().length, 2);
+      assert.equal(permissionAction(childRules, "bash"), "ask");
+      assert.equal(permissionAction(childRules, "task"), "deny");
+      assert.deepStrictEqual(childRules, openCodeChildPermissionRules(supervised, [taskDeny]));
+
+      yield* harness.runtime.resumeThread({
+        providerThread: harness.providerThread,
+        runtimePolicy: fullAccess,
+      });
+      assert.equal(permissionAction(nativePermissions.get(child)!, "bash"), "allow");
+
+      failNextChildUpdate = true;
+      const failed = yield* Effect.exit(
+        harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          runtimePolicy: supervised,
+        }),
+      );
+      assert.isTrue(Exit.isFailure(failed));
+      yield* harness.runtime.resumeThread({
+        providerThread: harness.providerThread,
+        runtimePolicy: supervised,
+      });
+      assert.equal(permissionAction(nativePermissions.get(child)!, "bash"), "ask");
+      assert.equal(permissionAction(nativePermissions.get(child)!, "task"), "deny");
+    }).pipe(
+      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.scoped,
+    ),
+  );
+
   it.each(["approval-required", "auto-accept-edits", "full-access"] as const)(
     "workspace folders preserve the primary edit policy in %s",
     (mode) => {
@@ -391,7 +603,7 @@ describe("OpenCodeAdapterV2", () => {
         cwd: "/workspace",
         additionalDirectories: ["/turn"],
       });
-      yield* harness.startTurn("hello", turnPolicy);
+      yield* harness.startTurn("hello", harness.providerThread, turnPolicy);
       assert.deepEqual(permissions.at(-1), {
         sessionID: "root",
         permission: openCodePermissionRules(turnPolicy),
@@ -495,7 +707,7 @@ describe("OpenCodeAdapterV2", () => {
         cwd: "/workspace",
         additionalDirectories: [],
       });
-      yield* harness.startTurn("clear", cleared);
+      yield* harness.startTurn("clear", harness.providerThread, cleared);
       assert.deepEqual(permissions.at(-1), {
         sessionID: "root",
         permission: openCodePermissionRules(cleared),
@@ -606,7 +818,7 @@ describe("OpenCodeAdapterV2", () => {
                     runtimePolicy: next,
                   })
                   .pipe(Effect.asVoid)
-              : harness.startTurn("next scope", next);
+              : harness.startTurn("next scope", harness.providerThread, next);
         const waiting = yield* change.pipe(Effect.forkScoped({ startImmediately: true }));
         assert.isUndefined(waiting.pollUnsafe());
         assert.deepEqual(calls, ["create"]);
@@ -2737,9 +2949,7 @@ describe("OpenCodeAdapterV2", () => {
         runOpenCodeCommand: unused("runOpenCodeCommand"),
         createOpenCodeSdkClient: () => fakeClient,
         loadOpenCodeInventory: unused("loadOpenCodeInventory"),
-        loadInventoryFromCli: unused("loadInventoryFromCli"),
         loadOpenCodeSkills: unused("loadOpenCodeSkills"),
-        loadSkillsFromCli: unused("loadSkillsFromCli"),
       };
       const instanceId = ProviderInstanceId.make("opencode");
       const threadId = ThreadId.make("thread-opencode-adopt");
@@ -2896,6 +3106,17 @@ describe("OpenCodeAdapterV2", () => {
     ]);
     assert.equal(permissionAction(childApprovalRules, "bash"), "ask");
     assert.equal(permissionAction(childApprovalRules, "task"), "deny");
+
+    const fullAccessChildRules = openCodeChildPermissionRules(runtimePolicy("full-access"), [
+      { permission: "task", pattern: "*", action: "deny" },
+    ]);
+    const reappliedRules = openCodeChildPermissionRules(
+      approvalRequiredPolicy,
+      fullAccessChildRules,
+      openCodePermissionRules(runtimePolicy("full-access")),
+    );
+    assert.equal(permissionAction(reappliedRules, "bash"), "ask");
+    assert.equal(permissionAction(reappliedRules, "task"), "deny");
   });
 
   it("uses the next native user message as the exclusive fork and revert boundary", () => {
@@ -2976,4 +3197,134 @@ it.effect.each([false, true])(
       Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
       Effect.scoped,
     ),
+);
+
+it.live.each([true, false])("opens an authenticated OpenCode session (external=%s)", (external) =>
+  Effect.gen(function* () {
+    const password = external ? "settings-password" : "environment-password";
+    const requests: string[] = [];
+    let eventConnected!: () => void;
+    const eventRequest = new Promise<void>((resolve) => {
+      eventConnected = resolve;
+    });
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(
+        () =>
+          new Promise<ReturnType<typeof NodeHttp.createServer>>((resolve) => {
+            const server = NodeHttp.createServer((request, response) => {
+              if (
+                request.headers.authorization !==
+                `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`
+              ) {
+                response.writeHead(401).end("Unauthorized");
+                return;
+              }
+              const url = new URL(request.url!, "http://localhost");
+              requests.push(url.pathname);
+              if (url.pathname === "/event") {
+                response.writeHead(200, { "Content-Type": "text/event-stream" });
+                response.write(": connected\n\n");
+                eventConnected();
+                return;
+              }
+              response.writeHead(200, { "Content-Type": "application/json" });
+              response.end(
+                JSON.stringify(
+                  url.pathname.endsWith("/children")
+                    ? []
+                    : url.pathname === "/session"
+                      ? { id: "native-auth", time: { created: 1, updated: 1 } }
+                      : { healthy: true, version: "1.14.19" },
+                ),
+              );
+            });
+            server.listen(0, "127.0.0.1", () => resolve(server));
+          }),
+      ),
+      (server) =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              server.closeAllConnections();
+              server.close(() => resolve());
+            }),
+        ),
+    );
+    const address = server.address();
+    assert.isNotNull(address);
+    if (!address || typeof address === "string") return;
+    const url = `http://127.0.0.1:${address.port}`;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    let managedStarts = 0;
+    const runtimeLayer = OpenCodeRuntime.layer.pipe(
+      Layer.provide(
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            assert.isTrue(ChildProcess.isStandardCommand(command));
+            if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
+            assert.include(command.args, "serve");
+            assert.equal(command.options.env?.OPENCODE_SERVER_PASSWORD, password);
+            managedStarts += 1;
+            return spawner.spawn(
+              ChildProcess.make(
+                process.execPath,
+                [
+                  "-e",
+                  `console.log("server listening on " + process.argv[1]); setInterval(() => {}, 1000)`,
+                  url,
+                ],
+                command.options,
+              ),
+            );
+          }),
+        ),
+      ),
+      Layer.provide(OpenCodeServerLedger.layerTest),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const instanceId = ProviderInstanceId.make("opencode-auth");
+    const adapter = yield* makeOpenCodeAdapterV2({
+      instanceId,
+      settings: yield* decodeOpenCodeSettings({
+        serverUrl: external ? url : "",
+        ...(external ? { serverPassword: password } : {}),
+      }),
+      environment: { OPENCODE_SERVER_PASSWORD: "environment-password" },
+    }).pipe(Effect.provide(runtimeLayer));
+    const session = yield* adapter.openSession({
+      threadId: ThreadId.make("thread-opencode-auth"),
+      providerSessionId: ProviderSessionId.make("session-opencode-auth"),
+      modelSelection: { instanceId, model: "anthropic/claude-sonnet", options: [] },
+      runtimePolicy: {
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: null,
+        additionalDirectories: [],
+      },
+    });
+    yield* session.ensureThread({
+      threadId: ThreadId.make("thread-opencode-auth"),
+      modelSelection: { instanceId, model: "anthropic/claude-sonnet", options: [] },
+      runtimePolicy: {
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: null,
+        additionalDirectories: [],
+      },
+    });
+    assert.include(requests, "/session");
+    yield* Effect.promise(() => eventRequest);
+    assert.include(requests, "/event");
+    assert.include(requests, "/global/health");
+    assert.equal(managedStarts, external ? 0 : 1);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide([
+      NodeServices.layer,
+      TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+      IdAllocator.layer,
+      McpProviderSessions.layer,
+    ]),
+  ),
 );

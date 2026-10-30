@@ -18,7 +18,7 @@ import {
   markPromotedDraftThreadByRef,
   finalizePromotedDraftThreadByRef,
 } from "../../composerDraftStore";
-import { threadContextRecord } from "../../lib/composerContextRecords";
+import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 import { type FailedSendDraft } from "./failedSendRecovery";
 import * as ChatViewLogic from "../ChatView.logic";
 import { createSendHarness, deferred } from "./ChatView.send.testSupport";

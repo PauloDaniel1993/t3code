@@ -477,6 +477,7 @@ function ThreadToastVisibleAutoDismiss({
   toastId: ToastId;
   dismissAfterVisibleMs: number | undefined;
 }) {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- dismiss timer that pauses on visibilitychange, focus and blur so it only counts visible time
   useEffect(() => {
     if (!dismissAfterVisibleMs || dismissAfterVisibleMs <= 0) return;
     if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -566,7 +567,7 @@ function Toasts({ position }: { position: ToastPosition }) {
   );
   const visibleToastLayout = buildVisibleToastLayout(visibleToasts);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Report committed viewport visibility to the external toast lifecycle observer.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Report committed viewport visibility to the external toast lifecycle observer.
   useEffect(() => {
     for (const toast of toasts) {
       const visible = shouldRenderThreadScopedToast(toast.data, activeThreadRef);
@@ -581,6 +582,7 @@ function Toasts({ position }: { position: ToastPosition }) {
     }
   }, [activeThreadRef, toasts]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- prunes the module-level remaining-time map of toasts the manager has dropped
   useEffect(() => {
     const activeToastIds = new Set(toasts.map((toast) => toast.id));
     for (const toastId of threadToastVisibleTimeoutRemainingMs.keys()) {
@@ -733,7 +735,7 @@ function AnchoredToasts() {
   const { toasts } = Toast.useToastManager<ThreadToastData>();
   const activeThreadRef = useActiveThreadRefFromRoute();
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Report committed anchored visibility to the external toast lifecycle observer.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Report committed anchored visibility to the external toast lifecycle observer.
   useEffect(() => {
     for (const toast of toasts) {
       const visible = shouldRenderThreadScopedToast(toast.data, activeThreadRef);

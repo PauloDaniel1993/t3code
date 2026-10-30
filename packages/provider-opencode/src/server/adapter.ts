@@ -269,9 +269,7 @@ interface ActiveOpenCodeTurn {
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly providerThreadId: OrchestrationV2ProviderTurn["providerThreadId"];
-  readonly providerTurnOrdinal: number;
   readonly runOrdinal: number;
-  readonly runAttemptId: OrchestrationV2ProviderTurn["runAttemptId"];
   readonly startedAt: DateTime.Utc;
   readonly itemOrdinals: Map<string, number>;
   readonly parts: Map<string, Exclude<OpenCodePart, ToolPart>>;
@@ -383,6 +381,9 @@ interface OpenCodeThreadState {
   parentSubagent: OpenCodeSubagentContext | null;
   nextChildTurnOrdinal: number;
   nextAdmissionGeneration: number;
+  permission: PermissionRuleset;
+  /** Parent rules last written into this child's `permission`; empty for root sessions. */
+  inheritedPermission: PermissionRuleset;
 }
 
 interface OpenCodeRequestOwner {
@@ -711,16 +712,23 @@ function permissionRuleEquals(
   );
 }
 
-/** Children inherit only deny/external-directory rules; restore parent policy while retaining agent restrictions. */
+/**
+ * Children inherit only deny/external-directory rules; restore parent policy while retaining agent restrictions.
+ * `previousParentRules` are the parent rules already written into `childRules`.
+ */
 export function openCodeChildPermissionRules(
   runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
-  nativeChildRules: PermissionRuleset,
+  childRules: PermissionRuleset,
+  previousParentRules: PermissionRuleset = [],
 ): PermissionRuleset {
   const parentRules = openCodePermissionRules(runtimePolicy);
-  const inheritedRules = parentRules.filter(
-    (rule) => rule.permission === "external_directory" || rule.action === "deny",
-  );
-  const childSpecificRules = nativeChildRules.filter(
+  const inheritedRules = [
+    ...parentRules.filter(
+      (rule) => rule.permission === "external_directory" || rule.action === "deny",
+    ),
+    ...previousParentRules,
+  ];
+  const childSpecificRules = childRules.filter(
     (childRule) =>
       // session.update appends rules. Native tasks inherit the whole external
       // directory history, including grants superseded by a later scope.
@@ -951,19 +959,25 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           binaryPath: options.settings.binaryPath,
           directory: cwd,
           serverUrl: options.settings.serverUrl,
+          ...(options.settings.serverPassword
+            ? { serverPassword: options.settings.serverPassword }
+            : {}),
           environment: options.environment,
         });
         const client = runtime.createOpenCodeSdkClient({
           baseUrl: connection.url,
           directory: cwd,
-          ...(connection.external && options.settings.serverPassword
-            ? { serverPassword: options.settings.serverPassword }
+          ...(connection.serverPassword !== undefined
+            ? { serverPassword: connection.serverPassword }
             : {}),
         });
 
         const mcpSession = yield* mcpSessions.read(input.threadId);
         const hasT3Mcp = mcpSession !== undefined && !connection.external;
-        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(hasT3Mcp);
+        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(
+          hasT3Mcp,
+          mcpSession?.capabilities?.has("device") === true,
+        );
         if (hasT3Mcp) {
           yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", () =>
             client.mcp.add({
@@ -1432,6 +1446,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               parentSubagent: context,
               nextChildTurnOrdinal: 1,
               nextAdmissionGeneration: 1,
+              permission: childPermission,
+              inheritedPermission: openCodePermissionRules(turn.runtimePolicy),
             });
             yield* emitProviderEvent({
               type: "app_thread.created",
@@ -2248,9 +2264,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             runtimePolicy: state.parentSubagent.parentTurn.runtimePolicy,
             providerTurnId,
             providerThreadId: providerTurn.providerThreadId,
-            providerTurnOrdinal: providerTurn.ordinal,
             runOrdinal: state.parentSubagent.parentTurn.runOrdinal,
-            runAttemptId: null,
             startedAt,
             itemOrdinals: new Map(),
             usage: makeOpenCodeTurnTokenUsageAccumulator(),
@@ -2669,6 +2683,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                       (state): state is OpenCodeThreadState => state !== undefined,
                     );
               const message = openCodeErrorMessage(event);
+              const error = event.properties.error;
+              const usageLimit = error?.name === "APIError" && error.data.statusCode === 429;
               if (
                 !isMessageAbortedError(event) &&
                 (event.properties.sessionID === undefined ||
@@ -2685,8 +2701,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                     {
                       failure: makeProviderFailure({
                         message,
-                        code: event.properties.error?.name ?? null,
-                        class: "provider_error",
+                        code: error?.name ?? null,
+                        class: usageLimit ? "usage_limit" : "provider_error",
                       }),
                       threadDisposition:
                         event.properties.sessionID === undefined ? "broken" : "reusable",
@@ -2814,8 +2830,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             existing.providerThread = providerThread;
             existing.runtimePolicy = runtimePolicy;
             if (appThread !== null) existing.appThread = appThread;
+            if (nativeSession.permission !== undefined)
+              existing.permission = nativeSession.permission;
             return existing;
           }
+          const parentSubagent = subagentsByChildSessionId.get(nativeSession.id) ?? null;
           const state: OpenCodeThreadState = {
             nativeSessionId: nativeSession.id,
             runtimePolicy,
@@ -2826,9 +2845,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             runtimeRequests: new Map(),
             messageRoles: new Map(),
             userMessageIds: [],
-            parentSubagent: subagentsByChildSessionId.get(nativeSession.id) ?? null,
+            parentSubagent,
             nextChildTurnOrdinal: 1,
             nextAdmissionGeneration: 1,
+            permission: nativeSession.permission ?? [],
+            inheritedPermission: parentSubagent?.parentState.permission ?? [],
           };
           threads.set(nativeSession.id, state);
           return state;
@@ -2838,22 +2859,15 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           previous: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
           next: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
         ) {
-          const previousRules = openCodePermissionRules(previous);
-          const nextRules = openCodePermissionRules(next);
-          const sameRules =
-            previousRules.length === nextRules.length &&
-            previousRules.every((rule, index) => permissionRuleEquals(rule, nextRules[index]!));
           const sameScope =
             previous.cwd === next.cwd &&
             previous.additionalDirectories.length === next.additionalDirectories.length &&
             previous.additionalDirectories.every(
               (directory, index) => directory === next.additionalDirectories[index],
             );
-          if (!sameScope || !sameRules) {
+          if (!sameScope) {
             while (hasPendingWork()) {
-              // Native idle events and terminal turns release this receipt. A
-              // policy change must not fail resume into a fresh-session fallback
-              // or stop background work to reach the next safe boundary.
+              // Folder changes wait for native idle; permission-only updates can apply to live children.
               workDrained ??= Deferred.makeUnsafe<void>();
               yield* Deferred.await(workDrained);
             }
@@ -2861,27 +2875,6 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           if (nativeStreamFailure !== null) {
             return yield* protocolError("OpenCode event stream ended before scope installation.");
           }
-          return !sameRules;
-        });
-
-        const installPermissionRules = Effect.fnUntraced(function* (
-          sessionId: string,
-          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
-          nativeSession?: OpenCodeSession,
-        ) {
-          const payload = {
-            sessionID: sessionId,
-            permission:
-              nativeSession?.parentID === undefined
-                ? openCodePermissionRules(runtimePolicy)
-                : openCodeChildPermissionRules(
-                    runtimePolicy,
-                    // A resumed child already has the earlier complete policy.
-                    // Keep its denials without reinstalling historical grants.
-                    (nativeSession.permission ?? []).filter((rule) => rule.action === "deny"),
-                  ),
-          };
-          yield* sdkCall("session.update", payload, () => client.session.update(payload));
         });
 
         const recordInstalledScope = Effect.fnUntraced(function* (
@@ -2916,6 +2909,45 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           ]
             .filter(Boolean)
             .join("\n\n");
+
+        // OpenCode copies parent rules into a child only at creation, so children are updated here too.
+        const applyPermissionRules = Effect.fnUntraced(function* (
+          state: OpenCodeThreadState,
+          policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+          nativeSession?: OpenCodeSession,
+        ) {
+          const parentRules = openCodePermissionRules(policy);
+          const pending = [state];
+          for (let target = pending.pop(); target !== undefined; target = pending.pop()) {
+            const previous = target.permission;
+            const permission =
+              target.parentSubagent === null &&
+              !(target === state && nativeSession?.parentID !== undefined)
+                ? parentRules
+                : openCodeChildPermissionRules(
+                    policy,
+                    target === state && nativeSession?.parentID !== undefined
+                      ? previous.filter((rule) => rule.action === "deny")
+                      : previous,
+                    target.inheritedPermission,
+                  );
+            if (
+              permission.length !== previous.length ||
+              !permission.every((rule, index) => permissionRuleEquals(rule, previous[index]!))
+            ) {
+              const sessionID = target.nativeSessionId;
+              yield* sdkCall("session.update", { sessionID, permission }, () =>
+                client.session.update({ sessionID, permission }),
+              );
+              target.permission = permission;
+            }
+            target.runtimePolicy = policy;
+            if (target.parentSubagent !== null) target.inheritedPermission = parentRules;
+            for (const child of threads.values()) {
+              if (child.parentSubagent?.parentState === target) pending.push(child);
+            }
+          }
+        });
 
         const resolvePromptParts = Effect.fnUntraced(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -3117,15 +3149,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               for (const state of threads.values()) {
                 yield* waitForPolicyChange(state.runtimePolicy, threadInput.runtimePolicy);
               }
-              // No title: OpenCode generates one from the first prompt only when
-              // session.create leaves it unset (SessionPrompt.ensureTitle).
-              const response = yield* sdkCall(
-                "session.create",
-                { permission: openCodePermissionRules(threadInput.runtimePolicy) },
-                () =>
-                  client.session.create({
-                    permission: openCodePermissionRules(threadInput.runtimePolicy),
-                  }),
+              const permission = openCodePermissionRules(threadInput.runtimePolicy);
+              // OpenCode generates a title only when session.create leaves it unset.
+              const response = yield* sdkCall("session.create", { permission }, () =>
+                client.session.create({ permission }),
               );
               const nativeSession = unwrapData("session.create", response);
               const createdAt = yield* DateTime.now;
@@ -3149,7 +3176,12 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                       status: created.status,
                       updatedAt: created.updatedAt,
                     };
-              registerThread(nativeSession, providerThread, null, threadInput.runtimePolicy);
+              registerThread(
+                nativeSession,
+                providerThread,
+                null,
+                threadInput.runtimePolicy,
+              ).permission = permission;
               yield* recordInstalledScope(threadInput.runtimePolicy);
               return providerThread;
             },
@@ -3168,7 +3200,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           resumeThread: Effect.fn("OpencodeAdapter.resumeThread")(
             function* (threadInput) {
               const sessionId = nativeThreadId(threadInput.providerThread);
-              const runtimePolicy = threadInput.runtimePolicy ?? input.runtimePolicy;
+              const runtimePolicy =
+                threadInput.runtimePolicy ??
+                threads.get(sessionId)?.runtimePolicy ??
+                input.runtimePolicy;
               yield* waitForPolicyChange(
                 threads.get(sessionId)?.runtimePolicy ?? input.runtimePolicy,
                 runtimePolicy,
@@ -3177,7 +3212,6 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 client.session.get({ sessionID: sessionId }),
               );
               const nativeSession = unwrapData("session.get", response);
-              yield* installPermissionRules(sessionId, runtimePolicy, nativeSession);
               const resumedAt = yield* DateTime.now;
               const providerThread = {
                 ...threadInput.providerThread,
@@ -3185,7 +3219,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 status: "idle" as const,
                 updatedAt: dateTimeFromEpoch(nativeSession.time.updated, resumedAt),
               };
-              registerThread(nativeSession, providerThread, null, runtimePolicy);
+              const state = registerThread(nativeSession, providerThread, null, runtimePolicy);
+              yield* applyPermissionRules(state, runtimePolicy, nativeSession);
               yield* recordInstalledScope(runtimePolicy);
               return providerThread;
             },
@@ -3234,13 +3269,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   `OpenCode model '${turnInput.modelSelection.model}' must use provider/model format`,
                 );
               }
-              const permissionsChanged = yield* waitForPolicyChange(
-                state.runtimePolicy,
-                turnInput.runtimePolicy,
-              );
-              if (permissionsChanged) {
-                yield* installPermissionRules(sessionId, turnInput.runtimePolicy);
-              }
+              yield* waitForPolicyChange(state.runtimePolicy, turnInput.runtimePolicy);
+              yield* applyPermissionRules(state, turnInput.runtimePolicy);
               state.runtimePolicy = turnInput.runtimePolicy;
               yield* recordInstalledScope(turnInput.runtimePolicy);
               const isCompaction =
@@ -3288,9 +3318,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 runtimePolicy: turnInput.runtimePolicy,
                 providerTurnId,
                 providerThreadId: turnInput.providerThread.id,
-                providerTurnOrdinal: turnInput.providerTurnOrdinal,
                 runOrdinal: turnInput.runOrdinal,
-                runAttemptId: turnInput.attemptId,
                 startedAt,
                 itemOrdinals: new Map(),
                 usage: makeOpenCodeTurnTokenUsageAccumulator(),
@@ -3707,12 +3735,17 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                     "OpenCode did not preserve the requested rewind boundary.",
                   );
                 const runtimePolicy = state?.runtimePolicy ?? input.runtimePolicy;
-                yield* installPermissionRules(fork.id, runtimePolicy);
                 retainedThread = {
                   ...rollbackInput.providerThread,
                   nativeThreadRef: providerRef(fork.id),
                 };
-                registerThread(fork, retainedThread, state?.appThread ?? null, runtimePolicy);
+                const forkState = registerThread(
+                  fork,
+                  retainedThread,
+                  state?.appThread ?? null,
+                  runtimePolicy,
+                );
+                yield* applyPermissionRules(forkState, runtimePolicy, fork);
               }
               const snapshot = yield* readSnapshot(retainedThread);
               return {
@@ -3778,7 +3811,6 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   }),
               );
               const nativeSession = unwrapData("session.fork", response);
-              yield* installPermissionRules(nativeSession.id, runtimePolicy);
               const forkedAt = yield* DateTime.now;
               const providerThread = makeProviderThread({
                 idAllocator,
@@ -3797,7 +3829,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 },
                 now: forkedAt,
               });
-              registerThread(nativeSession, providerThread, null, runtimePolicy);
+              const state = registerThread(nativeSession, providerThread, null, runtimePolicy);
+              yield* applyPermissionRules(state, runtimePolicy, nativeSession);
               yield* recordInstalledScope(runtimePolicy);
               return providerThread;
             },

@@ -1,15 +1,29 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { selectThreadDiffPanelSelection } from "./diffPanelStore";
+import { EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { useDiffPanelSessionStore, useDiffPanelStore } from "./diffPanelStore";
+import {
+  resolveToolCallDiffTarget,
+  selectThreadDiffPanelSelection,
+  useDiffPanelSessionStore,
+  useDiffPanelStore,
+} from "./diffPanelStore";
 
 const THREAD_REF = scopeThreadRef(EnvironmentId.make("environment-1"), ThreadId.make("thread-1"));
 
 describe("diffPanelStore", () => {
-  it("clears a folder pin when returning to ordinary changes", () => {
-    useDiffPanelStore.getState().selectWorkspaceFolder(THREAD_REF, "/api", "api");
+  it("preserves a folder pin for one explicit panel open and clears it for ordinary changes", () => {
+    useDiffPanelStore.getState().selectWorkspaceFolder(THREAD_REF, "/api", "api", true);
+    expect(
+      useDiffPanelStore
+        .getState()
+        .consumeKeepSelectionOnOpen(
+          scopeThreadRef(THREAD_REF.environmentId, ThreadId.make("another-thread")),
+        ),
+    ).toBe(false);
+    expect(useDiffPanelStore.getState().consumeKeepSelectionOnOpen(THREAD_REF)).toBe(true);
+    expect(useDiffPanelStore.getState().consumeKeepSelectionOnOpen(THREAD_REF)).toBe(false);
     expect(
       selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
     ).toEqual({ kind: "unstaged", folderPath: "/api", folderLabel: "api" });
@@ -17,13 +31,83 @@ describe("diffPanelStore", () => {
     expect(
       selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
     ).toEqual({ kind: "unstaged" });
+    useDiffPanelStore.getState().selectWorkspaceFolder(THREAD_REF, "/web", "web");
+    expect(useDiffPanelStore.getState().consumeKeepSelectionOnOpen(THREAD_REF)).toBe(false);
   });
   beforeEach(() => {
     useDiffPanelStore.setState({
       byThreadKey: {},
       branchBaseRefByThreadKey: {},
+      keepSelectionOnOpenThreadKey: null,
     });
     useDiffPanelSessionStore.setState({ collapsedFileKeysByScopeKey: {} });
+  });
+
+  it("keeps a tool call selection independent of checkpoints and allows returning to Git changes", () => {
+    const ref = { environmentId: EnvironmentId.make("env"), threadId: ThreadId.make("thread") };
+    const target = {
+      threadId: ThreadId.make("child"),
+      itemId: TurnItemId.make("edit"),
+      revision: "1",
+    };
+    const store = useDiffPanelStore.getState();
+    store.selectToolCall(ref, target);
+    store.reconcileTurnSelection(ref, []);
+    expect(useDiffPanelStore.getState().byThreadKey[scopedThreadKey(ref)]).toEqual({
+      kind: "tool-call",
+      ...target,
+    });
+    store.selectGitScope(ref, "branch");
+    expect(useDiffPanelStore.getState().byThreadKey[scopedThreadKey(ref)]).toEqual({
+      kind: "branch",
+      baseRef: null,
+    });
+  });
+
+  it("refreshes a live tool-call target when its source item completes", () => {
+    const target = {
+      threadId: ThreadId.make("child"),
+      itemId: TurnItemId.make("edit"),
+      revision: "live",
+    };
+    const now = DateTime.makeUnsafe("2026-10-28T00:00:00Z");
+    const row = {
+      position: 0,
+      visibility: "local" as const,
+      sourceThreadId: target.threadId,
+      sourceItemId: target.itemId,
+      item: {
+        id: target.itemId,
+        threadId: target.threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "running" as const,
+        title: null,
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "file_change" as const,
+        fileName: "a.ts",
+      },
+    };
+    expect(resolveToolCallDiffTarget(target, [row])).toBe(target);
+    const completed = {
+      ...row,
+      item: { ...row.item, status: "completed" as const, completedAt: now },
+    };
+    expect(resolveToolCallDiffTarget(target, [completed])).toEqual({
+      ...target,
+      revision: DateTime.formatIso(now),
+    });
+    expect(
+      resolveToolCallDiffTarget(target, [{ ...completed, sourceThreadId: ThreadId.make("other") }]),
+    ).toBe(target);
+    expect(resolveToolCallDiffTarget(target, [])).toBe(target);
   });
 
   it("retains fold choices when a panel consumer returns with fresh defaults", () => {

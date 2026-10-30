@@ -174,7 +174,7 @@ export function useFileSaveSession(
   onPendingChange: FilePendingListener,
 ): void {
   const scope = useWorkspaceFileScope(inputScope);
-  // oxlint-disable-next-line t3code/react-effect-budget -- the lease is a mount-scoped external resource; React runs every unmount cleanup before mount setups, so a surface switch flushes before the next surface recovers.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the lease is a mount-scoped external resource; React runs every unmount cleanup before mount setups, so a surface switch flushes before the next surface recovers.
   useEffect(
     () => fileSaveSessions.acquire({ environmentId, cwd, scope, relativePath }, onPendingChange),
     [environmentId, cwd, scope, relativePath, onPendingChange],

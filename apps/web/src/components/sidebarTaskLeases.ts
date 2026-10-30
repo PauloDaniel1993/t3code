@@ -1,4 +1,5 @@
-import { getSidebarThreadIdsToPrewarm } from "./Sidebar.logic";
+// Each task lease retains live thread details; cap subscriptions across visible task groups.
+const SIDEBAR_TASK_LEASE_LIMIT = 3;
 
 export interface SidebarTaskLeaseClock {
   after: (ms: number, callback: () => void) => () => void;
@@ -10,7 +11,7 @@ export const sidebarTaskLeaseClock: SidebarTaskLeaseClock = {
   },
 };
 
-/** Reuse upstream's prewarm shortlist/cap (3). Visible groups outrank release grace. */
+/** Visible groups outrank release grace. */
 export function createSidebarTaskLeases(clock = sidebarTaskLeaseClock) {
   const entries = new Map<
     string,
@@ -30,7 +31,7 @@ export function createSidebarTaskLeases(clock = sidebarTaskLeaseClock) {
         ([, left], [, right]) =>
           Number(right.visible) - Number(left.visible) || left.top - right.top,
       );
-    const allowed = new Set(getSidebarThreadIdsToPrewarm(candidates.map(([key]) => key)));
+    const allowed = new Set(candidates.slice(0, SIDEBAR_TASK_LEASE_LIMIT).map(([key]) => key));
     // Release first, so replacing a lease never briefly exceeds the cap.
     for (const [key, entry] of entries) {
       if (entry.leased && !allowed.has(key)) {

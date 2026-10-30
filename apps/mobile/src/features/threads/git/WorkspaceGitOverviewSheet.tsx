@@ -22,7 +22,6 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { useVcsActionState } from "../../../state/use-vcs-action-state";
 import { vcsActionManager, vcsEnvironment, workspaceVcs } from "../../../state/vcs";
 import { appAtomRegistry } from "../../../state/atom-registry";
-import { resolveGitOverviewReviewNavigationAction } from "./git-overview-navigation";
 import { workspaceGitSummary } from "./workspace-git-model";
 import { ListRow } from "../../../components/ui/ListRow";
 import { ListSection } from "../../../components/ui/ListSection";
@@ -266,7 +265,7 @@ function PrimaryRepositoryTools(props: {
           disabled={props.busy || !props.status?.isRepo}
           onPress={() =>
             navigation.dispatch(
-              resolveGitOverviewReviewNavigationAction(props.presentation) === "replace"
+              props.presentation === "sheet"
                 ? StackActions.replace("ThreadReview", props.target)
                 : CommonActions.navigate("ThreadReview", props.target),
             )
@@ -489,7 +488,7 @@ export function WorkspaceGitOverviewSheet(props: {
           }
           onPress={() =>
             navigation.dispatch(
-              resolveGitOverviewReviewNavigationAction(props.presentation ?? "sheet") === "replace"
+              (props.presentation ?? "sheet") === "sheet"
                 ? StackActions.replace("WorkspaceChanges", props.target)
                 : CommonActions.navigate("WorkspaceChanges", props.target),
             )

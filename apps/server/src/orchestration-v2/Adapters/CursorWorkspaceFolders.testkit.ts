@@ -1,4 +1,3 @@
-import { CursorSettings } from "@t3tools/provider-cursor/settings";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -14,15 +13,12 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeCursorAdapterV2 } from "@t3tools/provider-cursor/testing";
 import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
-
-const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 export const makeCursorWorkspaceFixture = Effect.fnUntraced(function* (
   runner: CursorAgentSdk.CursorAgentSdkRunner["Service"],
@@ -54,7 +50,6 @@ export const makeCursorWorkspaceFixture = Effect.fnUntraced(function* (
   );
   const adapter = yield* makeCursorAdapterV2({
     instanceId,
-    settings: yield* decodeCursorSettings({}),
     environment: process.env,
   }).pipe(
     Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, runner),

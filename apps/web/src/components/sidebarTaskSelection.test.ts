@@ -2,7 +2,6 @@ import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   archiveSelectedThreadEntries,
-  buildMultiSelectThreadContextMenuItems,
   deleteSelectedThreadEntries,
   selectRenderedSidebarThreads,
 } from "./Sidebar.logic";
@@ -19,12 +18,7 @@ describe("rendered-only bulk actions", () => {
       ];
       const rendered = new Map([["local:visible", { title: "Visible" }]]);
       const entries = selectRenderedSidebarThreads(selected, rendered);
-      expect(
-        buildMultiSelectThreadContextMenuItems({
-          count: entries.length,
-          hasRunningThread: false,
-        }).find((item) => item.id === "delete")?.label,
-      ).toBe("Delete (1)");
+      expect(entries).toEqual([{ threadKey: "local:visible", thread: { title: "Visible" } }]);
       const archive = vi.fn(async () => ({ _tag: "Success" as const }));
       const remove = vi.fn(async () => AsyncResult.success(undefined));
       expect((await archiveSelectedThreadEntries({ entries, archive })).archivedThreadKeys).toEqual(

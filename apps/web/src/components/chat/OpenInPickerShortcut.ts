@@ -1,13 +1,18 @@
 import type { EditorWorkspace } from "@t3tools/client-runtime/editor-target";
 import { useEditorTarget } from "./useEditorTarget";
-import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@t3tools/contracts";
+import {
+  buildRemoteOpenUrl,
+  type EditorId,
+  type EnvironmentId,
+  type ResolvedKeybindingsConfig,
+} from "@t3tools/contracts";
 import { useEffect } from "react";
 
 import { usePreferredEditor } from "../../editorPreferences";
 import { editorLabelForPlatform } from "../../editorLabels";
 import { isOpenFavoriteEditorShortcut } from "../../keybindings";
 import { announce } from "../../lib/announce";
-import { useRemoteOpenState } from "../../remoteOpen";
+import { openRemoteEditorUrl, useRemoteCapableEditors, useRemoteOpenState } from "../../remoteOpen";
 import { registerCommands } from "../../shortcuts/dispatcher";
 import { shellEnvironment } from "../../state/shell";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -53,20 +58,41 @@ export function useOpenFavoriteEditorShortcut({
   editorWorkspace?: EditorWorkspace | undefined;
 }) {
   const openInEditorMutation = useAtomCommand(shellEnvironment.openInEditor, "open in editor");
-  const [preferredEditor] = usePreferredEditor(availableEditors);
   const remote = useRemoteOpenState(environmentId);
   const resolveTarget = useEditorTarget(environmentId, editorWorkspace);
+  const remoteCapableEditors = useRemoteCapableEditors();
+  // Matches the picker: remote editors run on the viewing machine.
+  const [preferredEditor] = usePreferredEditor(
+    remote.mode === "local-exec" ? availableEditors : remoteCapableEditors,
+  );
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes a window keydown listener for the open-in-editor shortcut while enabled
   useEffect(() => {
-    if (!enabled || remote.mode !== "local-exec") return;
+    if (!enabled || remote.mode === "remote-unavailable") return;
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || !isOpenFavoriteEditorShortcut(event, keybindings)) return;
+      if (
+        event.repeat ||
+        event.defaultPrevented ||
+        !isOpenFavoriteEditorShortcut(event, keybindings)
+      )
+        return;
       if (!openInCwd || !preferredEditor) return;
 
       event.preventDefault();
       const label = editorLabelForPlatform(preferredEditor, navigator.platform);
       void resolveTarget(openInCwd, preferredEditor).then((target) => {
         if (target === null) return;
+        if (remote.mode === "remote-links") {
+          const url = buildRemoteOpenUrl({
+            editor: preferredEditor,
+            ...remote.host,
+            absolutePath: target,
+          });
+          if (url === undefined) return;
+          return openRemoteEditorUrl(url).then((opened) => {
+            if (opened) announce(`Opened in ${label}`);
+          });
+        }
         return openInEditorMutation({
           environmentId,
           input: { cwd: target, editor: preferredEditor },
@@ -84,7 +110,7 @@ export function useOpenFavoriteEditorShortcut({
     openInCwd,
     openInEditorMutation,
     preferredEditor,
-    remote.mode,
+    remote,
     resolveTarget,
   ]);
 }

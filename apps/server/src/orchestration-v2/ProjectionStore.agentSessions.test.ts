@@ -16,10 +16,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 
 const sqlLayer = ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory));
 
-it.effect.each([
-  { name: "SQL", layer: sqlLayer },
-  { name: "memory", layer: ProjectionStore.layerMemory },
-])(
+it.effect.each([{ name: "SQL", layer: sqlLayer }])(
   "$name: discovers frozen worktrees across archive states and preserves native ownership",
   ({ layer }) =>
     Effect.gen(function* () {

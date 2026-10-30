@@ -227,13 +227,11 @@ describe("attachment reference index", () => {
             request: { type: "attachment.cleanup", attachmentIds: ["absent"] },
           },
         ]);
-        expect(
-          Option.isNone(yield* outbox.claimNext({ workerId: "worker", leaseDurationMs: 1000 })),
-        ).toBe(true);
+        expect(Option.isNone(yield* outbox.claimNext({ workerId: "worker" }))).toBe(true);
         yield* startAttachmentReferenceIndex();
         yield* outbox.awaitAvailable;
         yield* awaitAttachmentReferenceIndex();
-        const claimed = yield* outbox.claimNext({ workerId: "worker", leaseDurationMs: 1000 });
+        const claimed = yield* outbox.claimNext({ workerId: "worker" });
         expect(Option.isSome(claimed)).toBe(true);
         if (Option.isSome(claimed)) expect(claimed.value.id).toBe("parked-before-restart");
       }).pipe(Effect.provide(testLayer)),

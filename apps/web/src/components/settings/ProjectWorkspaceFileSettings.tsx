@@ -5,7 +5,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { useState } from "react";
 import { workspaceFileErrorMessage } from "../../hooks/useImportWorkspaceFile";
-import { ensureBrowseDirectoryPath } from "../../lib/projectPaths";
+import { ensureBrowseDirectoryPath } from "@t3tools/client-runtime/state/projects";
 import { withAsyncCleanup } from "../../lib/withAsyncCleanup";
 import { readLocalApi } from "../../localApi";
 import type { SidebarProjectGroupMember } from "../../sidebarProjectGrouping";

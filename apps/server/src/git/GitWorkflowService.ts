@@ -69,6 +69,7 @@ export class GitWorkflowService extends Context.Service<
     readonly localStatus: (
       input: VcsStatusInput,
     ) => Effect.Effect<VcsStatusLocalResult, GitManagerServiceError>;
+    readonly currentBranch: (cwd: string) => Effect.Effect<string | null, GitManagerServiceError>;
     readonly remoteStatus: (
       input: VcsStatusInput,
       options?: GitManager.GitRemoteStatusOptions,
@@ -249,13 +250,6 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    if (handle.kind !== "git") {
-      return yield* new GitManagerError({
-        operation,
-        cwd,
-        detail: `The ${operation} workflow currently supports Git repositories only; detected ${handle.kind}. (${cwd})`,
-      });
-    }
     return handle;
   });
 
@@ -275,14 +269,6 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
-    if (handle.kind !== "git") {
-      return yield* new GitCommandError({
-        operation,
-        command: "vcs-route",
-        cwd,
-        detail: `The ${operation} command currently supports Git repositories only; detected ${handle.kind}.`,
-      });
-    }
     return handle;
   });
 
@@ -301,13 +287,6 @@ export const make = Effect.gen(function* () {
       );
       if (!handle) {
         return false;
-      }
-      if (handle.kind !== "git") {
-        return yield* new GitManagerError({
-          operation,
-          cwd,
-          detail: `The ${operation} workflow currently supports Git repositories only; detected ${handle.kind}. (${cwd})`,
-        });
       }
       return true;
     },
@@ -331,14 +310,6 @@ export const make = Effect.gen(function* () {
     if (!handle) {
       return false;
     }
-    if (handle.kind !== "git") {
-      return yield* new GitCommandError({
-        operation,
-        command: "vcs-route",
-        cwd,
-        detail: `The ${operation} command currently supports Git repositories only; detected ${handle.kind}.`,
-      });
-    }
     return true;
   });
 
@@ -350,17 +321,15 @@ export const make = Effect.gen(function* () {
     (input: Input) =>
       ensureGit(operation, input.cwd).pipe(Effect.andThen(run(input)));
 
-  const runStackedAction: GitWorkflowService["Service"]["runStackedAction"] = (input, options) =>
-    ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
+  const runStackedAction: GitWorkflowService["Service"]["runStackedAction"] = Effect.fn(
+    "GitWorkflowService.runStackedAction",
+  )(function (input, options) {
+    return ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
       Effect.flatMap((handle) =>
-        input.featureBranch
-          ? withCheckoutLease(
-              handle.repository.rootPath,
-              gitManager.runStackedAction(input, options),
-            )
-          : gitManager.runStackedAction(input, options),
+        withCheckoutLease(handle.repository.rootPath, gitManager.runStackedAction(input, options)),
       ),
     );
+  });
 
   // The branch checked out at `cwd`, or null when its HEAD is detached.
   const currentBranch = (cwd: string) =>
@@ -368,13 +337,13 @@ export const make = Effect.gen(function* () {
       .execute({
         operation: "GitWorkflowService.currentBranch",
         cwd,
-        args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        args: ["symbolic-ref", "--quiet", "HEAD"],
         allowNonZeroExit: true,
       })
       .pipe(
         Effect.flatMap((result) =>
           result.exitCode === 0
-            ? Effect.succeed(result.stdout.trim())
+            ? Effect.succeed(result.stdout.trim().replace(/^refs\/heads\//, "") || null)
             : result.exitCode === 1
               ? Effect.succeed(null)
               : Effect.fail(
@@ -431,7 +400,7 @@ export const make = Effect.gen(function* () {
                 } as const;
               }
             }
-            const run = runStackedAction(
+            const run = gitManager.runStackedAction(
               {
                 actionId: input.actionId,
                 cwd,
@@ -589,6 +558,32 @@ export const make = Effect.gen(function* () {
             : Effect.succeed(nonRepositoryLocalStatus()),
         ),
       );
+    }),
+    currentBranch: Effect.fn("GitWorkflowService.currentBranch")(function* (cwd) {
+      if (!(yield* detectGitRepositoryForStatus("GitWorkflowService.currentBranch", cwd))) {
+        return null;
+      }
+      const result = yield* git.execute({
+        operation: "GitWorkflowService.currentBranch",
+        cwd,
+        args: ["symbolic-ref", "--quiet", "HEAD"],
+        allowNonZeroExit: true,
+        timeoutMs: 5_000,
+      });
+      if (result.exitCode === 0) {
+        return result.stdout.trim().replace(/^refs\/heads\//, "") || null;
+      }
+      if (result.exitCode === 1) return null;
+      return yield* new GitCommandError({
+        operation: "GitWorkflowService.currentBranch",
+        command: "git symbolic-ref",
+        cwd,
+        argumentCount: 3,
+        ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+        stdoutLength: result.stdout.length,
+        stderrLength: result.stderr.length,
+        detail: "Failed to read the checked-out branch.",
+      });
     }),
     remoteStatus: Effect.fn("GitWorkflowService.remoteStatus")(function (input, options) {
       return detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(

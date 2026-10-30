@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { findProjectByPath, findProjectByWorkspaceFile } from "./projectPaths";
-import { appendBrowsePathSegment } from "@t3tools/client-runtime/state/projects";
+import {
+  appendBrowsePathSegment,
+  findProjectByPath,
+  findProjectByWorkspaceFile,
+} from "@t3tools/client-runtime/state/projects";
 
 describe("projectPaths", () => {
   it("keeps workspace-file selections free of trailing separators", () => {

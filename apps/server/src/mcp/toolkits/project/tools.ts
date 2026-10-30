@@ -5,6 +5,7 @@ import {
   TrimmedNonEmptyString,
   ThreadId,
   RunId,
+  OrchestrationV2DelegatedFrom,
   OrchestrationV2RunStatus,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   RuntimeMode,
@@ -15,6 +16,8 @@ import {
   ProjectWorkspaceFolder,
   ProjectUpdatePayload,
   ProjectId,
+  OrchestratorMcpClientRequestId,
+  OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -22,6 +25,7 @@ import {
 import * as FileSystem from "effect/FileSystem";
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ServerConfig from "../../../config.ts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as Crypto from "effect/Crypto";
@@ -56,6 +60,7 @@ const ProjectListTool = Tool.make("t3_project_list", {
   description:
     "List registered projects in this environment, one row per project, including the linked workspaceFile (null for plain projects) and ordered folders with available folder facts. workspaceRoot is the primary folder. Pages use the current project snapshot and may shift between calls.",
   parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
     cursor: Schema.optional(NonNegativeInt),
     limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
   }),
@@ -70,7 +75,10 @@ const ProjectReadTool = Tool.make("t3_project_read", {
   ...shared,
   description:
     "Read a registered project in this environment, including its saved scripts, linked workspaceFile (null for plain projects), ordered folders with availability and repository facts when known, and workspaceFileStatus when available. workspaceRoot is the primary folder. Reading also works when folders are unavailable.",
-  parameters: Schema.Struct({ projectId: ProjectId }),
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    projectId: ProjectId,
+  }),
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
@@ -79,6 +87,7 @@ const ProjectCreateTool = Tool.make("t3_project_create", {
   description:
     "Import a VS Code .code-workspace file using workspaceFilePath, a path on this environment's server. File mode accepts only workspaceFilePath and optional title (defaults to the filename), and never creates directories or repositories. Otherwise register workspaceRoot with a required title; set createWorkspaceRootIfMissing to create the directory. Omit both paths to start a new project from just its required title: the app makes a Git repository in its own projects folder, with a README, an icon, and a first commit (commitError says why a commit failed; the project exists either way). Results include workspaceFile and ordered folders; workspaceRoot is the primary folder. Each call creates a new request; an existing registered file or plain directory is rejected with conflictingProjectId. Clone separately with t3_project_clone when needed.",
   parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
     ...ProjectCreatePayload.fields,
     title: ProjectImportWorkspaceFilePayload.fields.title,
     workspaceRoot: Schema.optional(ProjectCreatePayload.fields.workspaceRoot),
@@ -91,18 +100,29 @@ const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
   description:
     "Update a registered project's settings. Omitted fields are preserved. Send workspaceFilePath on its own to link a plain project (the file's first folder must match workspaceRoot), relink to a different file, or unlink with null. Sending the project's current workspaceFile path is Refresh: reread the file, reprobe folders, and restart its watch. Refresh succeeds for a broken or missing file, preserving saved folders and returning diagnostics in workspaceFileStatus. Unlink keeps the stored primary folder, history and thread bindings, and may conflict with a plain project at that folder. A linked project's workspaceRoot cannot be edited directly. Results include workspaceFile and ordered folders; workspaceRoot follows the file's primary folder. Uses the same project service as the app.",
-  parameters: Schema.Struct({ projectId: ProjectId, ...ProjectUpdatePayload.fields }),
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    projectId: ProjectId,
+    ...ProjectUpdatePayload.fields,
+  }),
 }).annotate(Tool.Destructive, true);
 const ProjectDeleteTool = Tool.make("t3_project_delete", {
   ...shared,
   description: "Delete one project. Nonempty needs `force: true`. Folder on disk stays.",
-  parameters: Schema.Struct({ projectId: ProjectId, force: Schema.optionalKey(Schema.Boolean) }),
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    projectId: ProjectId,
+    force: Schema.optionalKey(Schema.Boolean),
+  }),
 }).annotate(Tool.Destructive, true);
 const ProjectCloneTool = Tool.make("t3_project_clone", {
   ...shared,
   description:
-    "Clone a repository (`destinationPath` new or empty). Register after with `t3_project_create`.",
-  parameters: SourceControlCloneRepositoryInput,
+    "Clone a repository (`destinationPath` new or empty). Register after with `t3_project_create`, with the same `environmentId`.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...SourceControlCloneRepositoryInput.fields,
+  }),
   success: SourceControlCloneRepositoryResult,
   dependencies: [
     ...shared.dependencies,
@@ -114,8 +134,9 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    'Create an ordinary TOP-LEVEL thread with an explicit workspace binding before its agent starts. Use this when the user requests independent work, a new thread, or a PR stack in its own worktree; use delegate_task for child subagents. Set workspaceStrategy to {type:"worktree",baseRef:"parent-branch",branch:"new-branch",startFromOrigin:false} for a new worktree based on local commits, or {type:"existing_worktree",worktreePath:"/absolute/path",branch:"existing-branch"} to use an existing checkout. To fetch and start from the base branch\'s remote, set startFromOrigin:true. Omitted workspaceStrategy means every available project folder with the primary as cwd, NOT the caller\'s worktree. Omit projectId/modelSelection/modes to inherit those settings from the calling thread; a caller outside a T3 thread must pass projectId and gets the project\'s default model. Set scratch:true instead of projectId for a thread without a project: it runs in a fresh folder of its own, outside any repository. Put the task in message. Do not ask the agent to create its own worktree via shell: that does not update the thread binding. Each call creates a new launch with no retry key; retain threadId and use t3_thread_read/t3_thread_wait to follow preparation. To link a thread for the user, write `[title](t3-thread://v1/<threadId>)` with the threadId exactly as returned, not URL-encoded; T3 Code shows the thread\'s current title. After errors or lost responses, inspect t3_thread_list before retrying. Attachments must be pending uploads. The new thread may not run with broader runtime or interaction modes than the caller: the calling T3 thread\'s own modes, or the permission mode an outside agent was approved with.',
+    'Create an ordinary TOP-LEVEL thread with an explicit workspace binding before its agent starts. Use this when the user requests independent work, a new thread, or a PR stack in its own worktree; use delegate_task for child subagents. Set workspaceStrategy to {type:"worktree",baseRef:"parent-branch",branch:"new-branch",startFromOrigin:false} for a new worktree based on local commits, or {type:"existing_worktree",worktreePath:"/absolute/path",branch:"existing-branch"} to use an existing checkout. To fetch and start from the base branch\'s remote, set startFromOrigin:true. Omitted workspaceStrategy means every available project folder with the primary as cwd, NOT the caller\'s worktree. Omit projectId/modelSelection/modes to inherit those settings from the calling thread; a caller outside a T3 thread must pass projectId and gets the project\'s default model. Set scratch:true instead of projectId for a thread without a project: it runs in a fresh folder of its own, outside any repository. Put the task in message. Do not ask the agent to create its own worktree via shell: that does not update the thread binding. Retry after an error or lost response with the same clientRequestId; retain threadId and use t3_thread_read/t3_thread_wait to follow preparation. Mention the thread with its returned link verbatim; if unavailable, write `[title](t3-thread://v1/<threadId>)` with the threadId exactly as returned, not URL-encoded. After a lost response without a clientRequestId, inspect t3_thread_list before retrying. Attachments must be pending uploads. The new thread may not run with broader runtime or interaction modes than the caller: the calling T3 thread\'s own modes, or the permission mode an outside agent was approved with.',
   parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
     projectId: Schema.optional(ProjectId),
     scratch: Schema.optional(
       Schema.Boolean.annotate({
@@ -139,6 +160,9 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
       }),
     ),
     attachments: Schema.optional(Schema.Array(McpAttachmentInput).check(Schema.isMaxLength(8))),
+    clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+    /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
+    delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   }),
   success: Schema.Struct({
     threadId: ThreadId,
@@ -156,6 +180,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     FileSystem.FileSystem,
     ServerConfig.ServerConfig,
     ServerSettings.ServerSettingsService,
+    ProviderRegistry.ProviderRegistry,
     DocumentText.DocumentText,
   ],
 })

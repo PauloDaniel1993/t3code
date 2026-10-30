@@ -31,13 +31,13 @@ it("repairs simultaneous window writes and adopts newer per-thread preferences",
   vi.resetModules();
   const second = await import("./uiStateStore");
   first.useUiStateStore.setState({
-    sidebarProjectScopeKey: "first-scope",
+    sidebarProjectScopeKeys: ["first-scope", "shared-scope"],
     projectOrder: ["first-project"],
     defaultAdvertisedEndpointKey: "first-endpoint",
     pullRequestMergeMethod: "squash",
   });
   second.useUiStateStore.setState({
-    sidebarProjectScopeKey: "second-scope",
+    sidebarProjectScopeKeys: ["second-scope"],
     projectOrder: ["second-project"],
     defaultAdvertisedEndpointKey: "second-endpoint",
     pullRequestMergeMethod: "rebase",
@@ -58,13 +58,13 @@ it("repairs simultaneous window writes and adopts newer per-thread preferences",
   storageListeners[1]!({ key: first.PERSISTED_STATE_KEY, newValue: saved! });
 
   expect(first.useUiStateStore.getState()).toMatchObject({
-    sidebarProjectScopeKey: "first-scope",
+    sidebarProjectScopeKeys: ["first-scope", "shared-scope"],
     projectOrder: ["first-project"],
     defaultAdvertisedEndpointKey: "first-endpoint",
     pullRequestMergeMethod: "squash",
   });
   expect(second.useUiStateStore.getState()).toMatchObject({
-    sidebarProjectScopeKey: "second-scope",
+    sidebarProjectScopeKeys: ["second-scope"],
     projectOrder: ["second-project"],
     defaultAdvertisedEndpointKey: "second-endpoint",
     pullRequestMergeMethod: "rebase",
@@ -82,7 +82,7 @@ it("repairs simultaneous window writes and adopts newer per-thread preferences",
     false,
   );
   // A pending preference save must include task records received in the meantime.
-  second.useUiStateStore.setState({ sidebarProjectScopeKey: "pending-scope" });
+  second.useUiStateStore.setState({ sidebarProjectScopeKeys: ["pending-scope", "shared-scope"] });
   first.useUiStateStore.getState().markThreadVisited("local:new-task", "2026-09-29T01:11:00Z");
   unloadListeners[0]!();
   storageListeners[1]!({ key: first.PERSISTED_STATE_KEY, newValue: saved! });
@@ -90,5 +90,8 @@ it("repairs simultaneous window writes and adopts newer per-thread preferences",
   expect(
     second.parsePersistedState(JSON.parse(saved!)).threadLastVisitedAtById["local:new-task"],
   ).toBe("2026-09-29T01:11:00Z");
-  expect(second.useUiStateStore.getState().sidebarProjectScopeKey).toBe("pending-scope");
+  expect(second.useUiStateStore.getState().sidebarProjectScopeKeys).toEqual([
+    "pending-scope",
+    "shared-scope",
+  ]);
 });

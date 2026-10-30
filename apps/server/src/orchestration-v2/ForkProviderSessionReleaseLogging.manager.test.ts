@@ -1,3 +1,4 @@
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as NetAddress from "effect/net/NetAddress";
@@ -287,6 +288,11 @@ function scenario<E>(input: {
     );
     const layer = Layer.mergeAll(StoresLayer, sinkLayer, idAllocatorLayer, managerLayer).pipe(
       Layer.provide(NodeServices.layer),
+      Layer.provide(
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: () => Effect.undefined,
+        }),
+      ),
     );
     yield* Effect.gen(function* () {
       const eventSink = yield* EventSinkV2;

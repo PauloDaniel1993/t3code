@@ -103,7 +103,9 @@ export const ForkTaskResult = Schema.Struct({
 });
 
 export const ForkTaskSummary = Schema.Struct({
-  threadId: ThreadId,
+  threadId: OrchestratorMcpDelegateTaskResult.fields.childThreadId,
+  remoteChild: OrchestratorMcpDelegateTaskResult.fields.remoteChild,
+  link: OrchestratorMcpDelegateTaskResult.fields.link,
   taskId: NodeId,
   title: Schema.String,
   status: ForkTaskStatus,

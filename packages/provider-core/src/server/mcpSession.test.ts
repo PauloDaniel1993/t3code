@@ -36,7 +36,7 @@ describe("device CLI environment", () => {
 
 describe("MCP-enabled provider instructions", () => {
   it("routes task requests through the aliases while preserving isolation and model choices", () => {
-    const prompt = t3OrchestrationSystemPrompt(true)!;
+    const prompt = t3OrchestrationSystemPrompt(true, false)!;
     expect(prompt).toContain("prefer T3 tasks over native provider agents");
     expect(prompt).toContain("Use native agents when the user explicitly asks");
     expect(prompt).toContain("Call `task_models` before `task_create`");
@@ -50,14 +50,14 @@ describe("MCP-enabled provider instructions", () => {
     expect(prompt).toContain("Async completion wakes the parent with task IDs, not results");
     expect(prompt).toContain("pending request tools answer questions only");
     expect(prompt).toContain("later completions from that turn no longer wake it");
-    expect(t3OrchestrationSystemPrompt(false)).toBeUndefined();
+    expect(t3OrchestrationSystemPrompt(false, false)).toBeUndefined();
     for (const section of T3_CODE_ORCHESTRATION_SECTIONS) {
       expect(Buffer.byteLength(section, "utf8")).toBeLessThan(4_000);
     }
   });
 
   it("delivers task routing to ACP sessions without rewriting native slash commands", () => {
-    const state = { interactionMode: "default", hasT3Mcp: true } as const;
+    const state = { interactionMode: "default", hasT3Mcp: true, hasDeviceTools: false } as const;
     expect(t3AcpPromptWithInstructions({ prompt: "Delegate this task.", state })).toContain(
       "Call `task_models` before `task_create`",
     );

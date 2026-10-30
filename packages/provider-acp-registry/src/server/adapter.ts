@@ -213,6 +213,15 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
     driver: ACP_REGISTRY_PROVIDER,
     capabilities: {
       ...AcpProviderCapabilitiesV2,
+      // Cancelling a Copilot prompt also kills the background agents it started.
+      ...(isCopilot
+        ? {
+            turns: {
+              ...AcpProviderCapabilitiesV2.turns,
+              supportsSteeringByInterruptRestart: false,
+            },
+          }
+        : {}),
       runtimePolicy: {
         ...AcpProviderCapabilitiesV2.runtimePolicy,
         workspaceFolderAccess: WORKSPACE_FOLDER_ACCESS.acpRegistry,

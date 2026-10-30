@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import {
   gitHubApiHostForRemote,
+  parseGitHubRepositorySelector,
   selectGitHubBaseRepository,
   selectGitHubPullRequestRepositories,
   mergeGitHubPullRequestsByUrl,
@@ -129,5 +130,24 @@ describe("fork pull request repository scope", () => {
     const local = { number: 28, url: "https://github.com/fork/project/pull/28" };
     const upstream = { number: 28, url: "https://github.com/upstream/project/pull/28" };
     assert.deepEqual(mergeGitHubPullRequestsByUrl([[local], [upstream, local]]), [local, upstream]);
+  });
+});
+
+describe("parseGitHubRepositorySelector", () => {
+  it("reads host/owner/name only when the host is a plain hostname", () => {
+    assert.deepStrictEqual(parseGitHubRepositorySelector("GHE.corp:8443/acme/web", "github.com"), {
+      host: "ghe.corp:8443",
+      owner: "acme",
+      name: "web",
+    });
+    for (const selector of [
+      "evil.com#.ghe.com/acme/web",
+      "evil.com?.ghe.com/acme/web",
+      "token@evil.com/acme/web",
+      "evil.com\\.ghe.com/acme/web",
+      "-evil.com/acme/web",
+    ]) {
+      assert.strictEqual(parseGitHubRepositorySelector(selector, "github.com"), null, selector);
+    }
   });
 });

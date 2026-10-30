@@ -24,6 +24,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
@@ -139,6 +140,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
   const layer = layerOrchestratorService.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
           resolveScope: () =>
             Effect.succeed({
@@ -190,6 +192,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
             }),
         }),
         Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -233,6 +236,7 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
   const layer = layerOrchestratorService.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
           resolveScope: () =>
             Effect.succeed({
@@ -384,6 +388,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
   const layer = layerOrchestratorService.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
           resolveScope: () =>
             Effect.succeed({
@@ -426,6 +431,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
             }),
         }),
         Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -512,6 +518,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
   const layer = layerOrchestratorService.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({
           resolveScope: () =>
             Effect.succeed({
@@ -581,6 +588,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
             }),
         }),
         Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () =>
             Effect.succeed({

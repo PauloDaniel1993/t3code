@@ -1,3 +1,4 @@
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import {
   EventId,
@@ -40,6 +41,11 @@ const sink = eventSinkLayer.pipe(
 const services = Layer.mergeAll(stores, sink, idAllocatorLayer);
 const testLayer = Layer.merge(services, ingestorLayer.pipe(Layer.provide(services))).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
+  Layer.provide(
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getInstance: () => Effect.undefined,
+    }),
+  ),
   Layer.provide(Layer.mock(GitVcsDriver)({ resolveBranchName: () => Effect.succeed(null) })),
 );
 

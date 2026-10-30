@@ -253,6 +253,7 @@ const layerProjectCliRuntime = RuntimeLayer.layerProjectService.pipe(
 );
 
 const PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT = Duration.seconds(1);
+const PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT = Duration.seconds(10);
 const withProjectCliSessionToken = <A, E, R>(
   environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"],
   run: (token: string) => Effect.Effect<A, E, R>,
@@ -265,9 +266,6 @@ const withProjectCliSessionToken = <A, E, R>(
     (issued) => run(issued.token),
     (issued) => environmentAuth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
   );
-
-const withProjectCliLiveServerProbeTimeout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.timeout(PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT));
 
 const makeLiveServerClient = (origin: string) =>
   HttpApiClient.make(EnvironmentHttpApi, {
@@ -378,21 +376,17 @@ const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (
 });
 
 const fetchLiveOrchestrationSnapshot = Effect.fn("project.fetchLiveOrchestrationSnapshot")(
-  function* (origin: string, bearerToken: string) {
+  function* (origin: string, bearerToken: string, _timeout?: Duration.Duration) {
     const client = yield* makeLiveServerClient(origin);
     return yield* client.projects.snapshot({
       headers: { authorization: `Bearer ${bearerToken}` },
     });
   },
-  (effect, _origin, _bearerToken) =>
-    effect.pipe(
-      withProjectCliLiveServerProbeTimeout,
-      Effect.mapError(projectCommandErrorFromLiveServerRequest),
-    ),
+  (effect, _origin, _bearerToken, timeout = PROJECT_CLI_LIVE_SERVER_REQUEST_TIMEOUT) =>
+    effect.pipe(Effect.timeout(timeout), Effect.mapError(projectCommandErrorFromLiveServerRequest)),
 );
 
-// Folder probes are bounded by the service and can outlive discovery's short
-// deadline. Await the mutation response so live and offline results agree.
+// Folder probes can outlive discovery's short deadline; await the mutation response.
 const dispatchLiveOrchestrationCommand = Effect.fn("project.dispatchLiveOrchestrationCommand")(
   function* (origin: string, bearerToken: string, command: ProjectCliDispatchCommand) {
     const client = yield* makeLiveServerClient(origin);
@@ -421,7 +415,11 @@ const tryResolveLiveProjectExecutionMode = Effect.fn("tryResolveLiveProjectExecu
     }
 
     const attempt = withProjectCliSessionToken(environmentAuth, (token) =>
-      fetchLiveOrchestrationSnapshot(runtimeState.value.origin, token).pipe(
+      fetchLiveOrchestrationSnapshot(
+        runtimeState.value.origin,
+        token,
+        PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT,
+      ).pipe(
         Effect.as({
           origin: runtimeState.value.origin,
         }),

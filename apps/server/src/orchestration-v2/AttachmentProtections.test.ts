@@ -998,10 +998,10 @@ describe("attachment pruning through the effect outbox", () => {
           attachmentIds: [attachment.id],
           relativePaths: [`${attachment.id}.png`],
         });
-        const claimed = yield* outbox.claimNext({ workerId: "test", leaseDurationMs: 10000 });
+        const claimed = yield* outbox.claimNext({ workerId: "test" });
         expect(Option.isSome(claimed)).toBe(true);
         expect(yield* outbox.reconcileAfterProcessLoss).toEqual({ requeued: 1, cancelled: 0 });
-        const reclaimed = yield* outbox.claimNext({ workerId: "restart", leaseDurationMs: 10000 });
+        const reclaimed = yield* outbox.claimNext({ workerId: "restart" });
         expect(Option.isSome(reclaimed)).toBe(true);
         const cleanup = yield* ResourceCleanup.ResourceCleanupService;
         yield* cleanup.cleanupAttachments([attachment.id], [`${attachment.id}.png`]);

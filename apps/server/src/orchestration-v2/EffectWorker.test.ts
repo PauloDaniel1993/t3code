@@ -82,7 +82,6 @@ function restartEffect(
     attemptCount: 1,
     availableAt: timestamp,
     leaseOwner: "test-worker",
-    leaseExpiresAt: timestamp,
     createdAt: timestamp,
     updatedAt: timestamp,
     completedAt: null,
@@ -132,6 +131,8 @@ function layerExecutorFor(input: {
         closeInstance: () => Effect.void,
         release: () => record("release"),
         detach: () => record("detach"),
+        otherWorkingThreads: () => Effect.succeed([]),
+        releaseUnlessBusy: () => Effect.succeed(true),
       }),
     ),
     Layer.succeed(
@@ -188,7 +189,18 @@ function layerExecutorFor(input: {
   );
 }
 
-it.effect("settles a stopped run when its adapter has already lost the native turn", () =>
+it.effect.each([
+  {
+    name: "settles a stopped run when its adapter has already lost the native turn",
+    unresponsive: false,
+    dispatched: ["thread.background-work.settle"],
+  },
+  {
+    name: "leaves the run running and flags the Stop when the provider never confirms it",
+    unresponsive: true,
+    dispatched: ["thread.interrupt.unresponsive"],
+  },
+])("$name", ({ unresponsive, dispatched }) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
     const events = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -199,7 +211,8 @@ it.effect("settles a stopped run when its adapter has already lost the native tu
           threadId,
           operation: "interrupt",
           providerTurnId,
-          cause: "Provider turn is not active.",
+          ...(unresponsive ? { unresponsive } : {}),
+          cause: unresponsive ? "Timed out." : "Provider turn is not active.",
         }),
       threads: {
         dispatch: (command) =>
@@ -220,7 +233,7 @@ it.effect("settles a stopped run when its adapter has already lost the native tu
         },
       });
     }).pipe(Effect.provide(layer));
-    assert.deepEqual(yield* Ref.get(events), ["thread.background-work.settle"]);
+    assert.deepEqual(yield* Ref.get(events), dispatched);
   }),
 );
 
@@ -354,7 +367,6 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
       attemptCount: 1,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -426,7 +438,6 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
       attemptCount: 1,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -494,7 +505,6 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
       attemptCount: 1,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -560,7 +570,6 @@ it.effect("requeues a replay-safe claim when success settlement fails", () =>
       attemptCount: 1,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -621,7 +630,6 @@ it.effect("keeps a process-bound executor failure retryable when retry settlemen
       attemptCount: 1,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -693,7 +701,6 @@ it.effect("keeps a max-attempt replay-safe failure terminal when fail settlement
       attemptCount: 5,
       availableAt: now,
       leaseOwner: workerId,
-      leaseExpiresAt: now,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -983,7 +990,6 @@ it.effect("settles a delegated child once its restart continuation fails for goo
       attemptCount: 1,
       availableAt: timestamp,
       leaseOwner: "test-worker",
-      leaseExpiresAt: timestamp,
       createdAt: timestamp,
       updatedAt: timestamp,
       completedAt: null,

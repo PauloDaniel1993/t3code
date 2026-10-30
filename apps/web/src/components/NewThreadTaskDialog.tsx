@@ -14,12 +14,7 @@ import { useId, useRef, useState } from "react";
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { withAsyncCleanup } from "../lib/withAsyncCleanup";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../modelSelection";
-import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
-  isProviderInstancePickerReady,
-  sortProviderInstanceEntries,
-} from "../providerInstances";
+import { isProviderInstancePickerReady, providerInstanceEntriesFor } from "../providerInstances";
 import {
   useNewThreadTaskAvailability,
   useNewThreadTaskParent,
@@ -69,13 +64,7 @@ export function NewThreadTaskDialog(props: {
   const [failure, setFailure] = useState<string | null>(null);
   const submittingRef = useRef(false);
   const formId = useId();
-  const entries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(
-      deriveProviderInstanceEntries(providers),
-      settings,
-      parent?.projectId ?? null,
-    ),
-  );
+  const entries = providerInstanceEntriesFor(providers, settings, parent?.projectId ?? null);
   const modelOptionsByInstance = new Map(
     entries.map((entry) => [
       entry.instanceId,

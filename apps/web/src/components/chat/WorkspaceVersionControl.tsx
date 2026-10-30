@@ -54,8 +54,20 @@ export function WorkspaceVersionControl(props: {
   onShowChanges?: ((folder: WorkspaceFolderRow) => void) | undefined;
   draftBranchControl?: ReactNode;
   draftId?: DraftId;
+  showBranch?: boolean;
+  showActions?: boolean;
+  showChanges?: boolean;
+  compact?: boolean;
 }) {
-  const { environmentId, threadId, rows } = props;
+  const {
+    environmentId,
+    threadId,
+    rows,
+    showBranch = true,
+    showActions = true,
+    showChanges = true,
+    compact = true,
+  } = props;
   const threadRef = { environmentId, threadId };
   const thread = props.thread ?? {
     worktreePath: null,
@@ -213,7 +225,7 @@ export function WorkspaceVersionControl(props: {
   };
   return (
     <>
-      {props.thread === null && props.draftBranchControl ? (
+      {!showBranch ? null : props.thread === null && props.draftBranchControl ? (
         props.draftBranchControl
       ) : (
         <ThreadDetailsControl
@@ -230,27 +242,29 @@ export function WorkspaceVersionControl(props: {
           <ChevronDownIcon className="size-3" />
         </ThreadDetailsControl>
       )}
-      <ThreadDetailsControl
-        onClick={() => setChangesOpen(!changesOpen)}
-        aria-expanded={changesOpen}
-      >
-        <FileDiffIcon className="size-3.5" />
-        <span className="flex-1 text-left">
-          {changed.length} files changed across {changedRepos}{" "}
-          {changedRepos === 1 ? "repo" : "repos"}
-        </span>
-        <span className="font-mono text-2xs">
-          <span className="text-success">+{totals.insertions}</span>{" "}
-          <span className="text-destructive">−{totals.deletions}</span>
-        </span>
-      </ThreadDetailsControl>
-      {outsideChanges > 0 ? (
+      {showChanges ? (
+        <ThreadDetailsControl
+          onClick={() => setChangesOpen(!changesOpen)}
+          aria-expanded={changesOpen}
+        >
+          <FileDiffIcon className="size-3.5" />
+          <span className="flex-1 text-left">
+            {changed.length} files changed across {changedRepos}{" "}
+            {changedRepos === 1 ? "repo" : "repos"}
+          </span>
+          <span className="font-mono text-2xs">
+            <span className="text-success">+{totals.insertions}</span>{" "}
+            <span className="text-destructive">−{totals.deletions}</span>
+          </span>
+        </ThreadDetailsControl>
+      ) : null}
+      {showChanges && outsideChanges > 0 ? (
         <p className="px-2 py-1 text-2xs text-muted-foreground">
           +{outsideChanges} changed {outsideChanges === 1 ? "file" : "files"} outside available
           workspace folders. Commit all includes these files.
         </p>
       ) : null}
-      {changesOpen ? (
+      {showChanges && changesOpen ? (
         <div className="px-3 py-2 text-2xs">
           {changed.length === 0 ? (
             <p className="text-muted-foreground">
@@ -273,7 +287,7 @@ export function WorkspaceVersionControl(props: {
           )}
         </div>
       ) : null}
-      {checkouts.length > 0 ? (
+      {showActions && checkouts.length > 0 ? (
         <div className="flex flex-wrap gap-1 px-1 py-2">
           <Button
             variant="outline"
@@ -302,16 +316,17 @@ export function WorkspaceVersionControl(props: {
             Create PRs ({available.filter(Boolean).length})
           </Button>
         </div>
-      ) : rows[0]?.effectivePath ? (
+      ) : checkouts.length === 0 && (showActions || showChanges) && rows[0]?.effectivePath ? (
         <GitActionsControl
           gitCwd={rows[0].effectivePath}
           activeThreadRef={threadRef}
-          displayMode="panel"
-          compact
+          compact={compact}
+          showActions={showActions}
+          showChanges={showChanges}
           {...(props.draftId ? { draftId: props.draftId } : {})}
         />
       ) : null}
-      {stateMessage ? (
+      {showActions && stateMessage ? (
         <p
           className={cn(
             "px-2 py-1 text-2xs",
@@ -383,26 +398,35 @@ export function WorkspaceVersionControl(props: {
                 className="ml-3 border-l border-border/60 pl-2 py-1"
               >
                 <div className="px-1 text-xs font-medium">{row?.folder.name ?? checkout.label}</div>
-                <p
-                  className={cn(
-                    "px-1 text-2xs",
-                    drifted ? "text-warning" : "text-muted-foreground",
-                  )}
-                >
-                  {!available[index]
-                    ? "Unavailable · excluded from actions"
-                    : status
-                      ? `${status.refName ?? "Detached HEAD"} · ${status.workingTree.files.length} files changed${drifted ? " · Drifted" : ""}`
-                      : statuses[index]?.error
-                        ? "Status unavailable"
-                        : "Loading status…"}
-                </p>
-                {available[index] && props.thread ? (
+                {showBranch || showChanges ? (
+                  <p
+                    className={cn(
+                      "px-1 text-2xs",
+                      showBranch && drifted ? "text-warning" : "text-muted-foreground",
+                    )}
+                  >
+                    {!available[index]
+                      ? "Unavailable · excluded from actions"
+                      : status
+                        ? [
+                            ...(showBranch ? [status.refName ?? "Detached HEAD"] : []),
+                            ...(showChanges
+                              ? [`${status.workingTree.files.length} files changed`]
+                              : []),
+                            ...(showBranch && drifted ? ["Drifted"] : []),
+                          ].join(" · ")
+                        : statuses[index]?.error
+                          ? "Status unavailable"
+                          : "Loading status…"}
+                  </p>
+                ) : null}
+                {(showActions || showChanges) && available[index] && props.thread ? (
                   <GitActionsControl
                     gitCwd={statusCwds[index] ?? checkout.cwd}
                     activeThreadRef={threadRef}
-                    displayMode="panel"
-                    compact
+                    compact={compact}
+                    showActions={showActions}
+                    showChanges={showChanges}
                     disabled={busy}
                     syncThreadBranch={row?.isPrimary === true}
                     {...(row && props.onShowChanges
@@ -410,7 +434,7 @@ export function WorkspaceVersionControl(props: {
                       : {})}
                   />
                 ) : null}
-                {drifted && checkout.expectedBranch ? (
+                {showBranch && drifted && checkout.expectedBranch ? (
                   <div className="px-1 py-1">
                     <Button
                       variant="outline"
@@ -446,7 +470,7 @@ export function WorkspaceVersionControl(props: {
           </p>
         ))}
       <Dialog
-        open={pendingAction !== null}
+        open={showActions && pendingAction !== null}
         onOpenChange={(open) => {
           if (!busy && !open) setPendingAction(null);
         }}
@@ -495,7 +519,7 @@ export function WorkspaceVersionControl(props: {
         </DialogPopup>
       </Dialog>
       <Dialog
-        open={branchOpen}
+        open={showBranch && branchOpen}
         onOpenChange={(open) => {
           if (!busy) setBranchOpen(open);
         }}

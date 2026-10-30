@@ -8,7 +8,9 @@ import {
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
   ProviderInstanceId,
+  SecretProviderId,
   ThreadId,
   AuthOrchestrationOperateScope,
   ORCHESTRATION_V2_WS_METHODS,
@@ -50,15 +52,6 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverReportClientActivity)).toBe(
       AuthOrchestrationReadScope,
     );
-    expect(requiredScopeForRpcMethod(WS_METHODS.serverReportHostPowerState)).toBe(
-      AuthEnvironmentMaintainScope,
-    );
-    expect(requiredScopeForRpcMethod(WS_METHODS.serverGetBackgroundPolicy)).toBe(
-      AuthOrchestrationReadScope,
-    );
-    expect(requiredScopeForRpcMethod(WS_METHODS.subscribeBackgroundPolicy)).toBe(
-      AuthOrchestrationReadScope,
-    );
   });
 
   it("allows refreshing wayfinder maps with workspace read access", () => {
@@ -89,6 +82,12 @@ describe("RPC authorization scopes", () => {
 
   it("requires permission to operate on a thread before uploading feedback", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.providerUploadFeedback)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
+  it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverPrepareTriage)).toBe(
       AuthOrchestrationOperateScope,
     );
   });
@@ -180,9 +179,7 @@ describe("RPC authorization scopes", () => {
   it("separates preview control from observation", () => {
     for (const method of [
       WS_METHODS.previewOpen,
-      WS_METHODS.previewNavigate,
       WS_METHODS.previewResize,
-      WS_METHODS.previewRefresh,
       WS_METHODS.previewClose,
       WS_METHODS.previewReportStatus,
       WS_METHODS.previewAdjust,
@@ -201,11 +198,7 @@ describe("RPC authorization scopes", () => {
   });
 
   it("separates passive terminal observation from operations that can change a shell", () => {
-    for (const method of [
-      WS_METHODS.terminalObserve,
-      WS_METHODS.subscribeTerminalEvents,
-      WS_METHODS.subscribeTerminalMetadata,
-    ]) {
+    for (const method of [WS_METHODS.terminalObserve, WS_METHODS.subscribeTerminalMetadata]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalReadScope);
     }
     for (const method of [
@@ -214,8 +207,8 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.terminalWrite,
       WS_METHODS.terminalResize,
       WS_METHODS.terminalClear,
-      WS_METHODS.terminalRestart,
       WS_METHODS.terminalClose,
+      WS_METHODS.previewStopLocalServer,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalOperateScope);
     }
@@ -318,17 +311,38 @@ describe("settings mutation authorization", () => {
       );
       yield* client[WS_METHODS.serverUpdateSettings]({ patch: {}, providerInstanceMutation });
       expect(handled).toBe(1);
+      yield* client[WS_METHODS.serverUpdateSettings]({
+        patch: {},
+        providerInstanceMutation: {
+          operation: "upsert",
+          instanceId: ProviderInstanceId.make("codex_work"),
+          instance: {
+            driver: ProviderDriverKind.make("codex"),
+            environment: [
+              {
+                name: "OPENAI_API_KEY",
+                sensitive: true,
+                value: {
+                  provider: SecretProviderId.make("personal"),
+                  reference: "op://Private/OpenAI/credential",
+                },
+              },
+            ],
+          },
+        },
+      });
+      expect(handled).toBe(2);
       expect(
         yield* client[WS_METHODS.serverUpdateSettings]({
           patch: { defaultRuntimeMode: "full-access" },
           providerInstanceMutation,
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
-      expect(handled).toBe(1);
+      expect(handled).toBe(2);
     }).pipe(Effect.scoped),
   );
 
-  it.effect("does not let a settings grant create or remove providers", () =>
+  it.effect("does not let a settings grant create or remove providers or secret providers", () =>
     Effect.gen(function* () {
       let handled = false;
       const client = yield* RpcTest.makeClient(group).pipe(
@@ -348,6 +362,11 @@ describe("settings mutation authorization", () => {
         yield* client[WS_METHODS.serverUpdateSettings]({
           patch: {},
           providerInstanceMutation,
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+      expect(
+        yield* client[WS_METHODS.serverUpdateSettings]({
+          patch: { secretProviders: { [SecretProviderId.make("personal")]: null } },
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
       expect(handled).toBe(false);

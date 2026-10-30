@@ -1,6 +1,6 @@
 import { EnvironmentId, ProjectId, ThreadId, type VcsStatusResult } from "@t3tools/contracts";
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
-import { createElement, type ReactNode } from "react";
+import { createElement, type ComponentProps, type ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { act, render, type Screen } from "../../../test/render";
 import { workspaceFolderRows, type WorkspaceFoldersProject } from "../workspaceFolders.logic";
@@ -45,7 +45,12 @@ vi.mock("../../state/use-atom-command", () => ({
 vi.mock("../../browser/useOpenLink", () => ({ useOpenLink: () => fixtures.openLink }));
 vi.mock("../../state/queries", () => ({ usePaginatedBranches: () => ({ refs: [], data: null }) }));
 vi.mock("../GitActionsControl", () => ({
-  default: () => <div>Individual repository actions</div>,
+  default: ({ showActions = true, showChanges = true }) => (
+    <div>
+      {showActions ? <span>Individual repository actions</span> : null}
+      {showChanges ? <span>Individual repository changes</span> : null}
+    </div>
+  ),
 }));
 vi.mock("../ui/button", () => ({ Button: (props: object) => createElement("button", props) }));
 vi.mock("../ui/input", () => ({ Input: (props: object) => createElement("input", props) }));
@@ -123,6 +128,10 @@ const button = (screen: Screen, label: string | RegExp) => {
 const renderWorkspace = (
   scope: WorkspaceThread = thread,
   workspace: WorkspaceFoldersProject = project,
+  visibility: Pick<
+    ComponentProps<typeof WorkspaceVersionControl>,
+    "showBranch" | "showActions" | "showChanges"
+  > = {},
 ) =>
   render(
     <WorkspaceVersionControl
@@ -131,6 +140,7 @@ const renderWorkspace = (
       project={workspace}
       thread={scope}
       rows={workspaceFolderRows(workspace, scope)}
+      {...visibility}
     />,
   );
 
@@ -163,6 +173,24 @@ function setup() {
   });
   fixtures.switchBranch.mockResolvedValue({ _tag: "Success", value: undefined });
 }
+
+it.each([
+  { showBranch: true, showActions: false, showChanges: false },
+  { showBranch: false, showActions: true, showChanges: false },
+  { showBranch: false, showActions: false, showChanges: true },
+])("respects independent workspace visibility: %o", async (visibility) => {
+  setup();
+  await using screen = await renderWorkspace(thread, project, visibility);
+  expect(screen.container.textContent?.includes("feature · 2 repos")).toBe(visibility.showBranch);
+  expect(screen.container.textContent?.includes("2 files changed across 2 repos")).toBe(
+    visibility.showChanges,
+  );
+  expect(screen.container.textContent?.includes("Commit all")).toBe(visibility.showActions);
+  await act(() => button(screen, /^Per-repo breakdown/).click());
+  expect(text(screen).includes("Individual repository actions")).toBe(visibility.showActions);
+  expect(text(screen).includes("Individual repository changes")).toBe(visibility.showChanges);
+  expect(text(screen).includes("feature-web")).toBe(visibility.showBranch);
+});
 
 it("asks for one message and shows independent repository failures after Commit all", async () => {
   setup();

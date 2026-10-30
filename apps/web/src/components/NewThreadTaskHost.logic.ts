@@ -1,4 +1,4 @@
-import type { StartThreadTurnInput } from "@t3tools/client-runtime/state/threads";
+import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import { OrchestrationV2DispatchCommandError } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { buildDelegationTurnInput } from "./NewThreadTaskDialog.logic";

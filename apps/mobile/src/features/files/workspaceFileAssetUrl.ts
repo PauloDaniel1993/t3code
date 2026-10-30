@@ -20,13 +20,10 @@ export function useWorkspaceFileAssetUrlState(props: {
   /** A draft's workspace root, used only when there is no thread to resolve one from. */
   readonly draftCwd?: string | null;
 }) {
-  const absolutePath = useMemo(
-    () =>
-      props.cwd !== null && props.relativePath !== null
-        ? resolveWorkspaceFilePath(props.cwd, props.relativePath)
-        : null,
-    [props.cwd, props.relativePath],
-  );
+  const absolutePath =
+    props.cwd !== null && props.relativePath !== null
+      ? resolveWorkspaceFilePath(props.cwd, props.relativePath)
+      : null;
 
   const relativePath = props.relativePath;
   const draftCwd = props.draftCwd ?? null;

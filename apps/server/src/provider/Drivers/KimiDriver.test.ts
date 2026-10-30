@@ -1,3 +1,4 @@
+import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -238,6 +239,7 @@ it.layer(driverTestLayer, { excludeTestServices: true })("Kimi driver lifecycle"
                     Layer.mock(ProjectService.ProjectService)({}),
                     Layer.mock(SecretRequests.SecretRequests)({}),
                     Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
+                    Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                     Layer.mock(ProviderRegistry)({
                       getProviders: restarted.snapshot.getSnapshot.pipe(
                         Effect.map((snapshot) => [snapshot]),

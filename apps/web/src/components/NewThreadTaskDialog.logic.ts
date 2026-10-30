@@ -1,4 +1,4 @@
-import type { StartThreadTurnInput } from "@t3tools/client-runtime/state/threads";
+import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import {
   isProviderNativeSubagentThread,

@@ -3,7 +3,6 @@ import {
   getFilesystemBrowsePath,
 } from "@t3tools/client-runtime/state/filesystem";
 import { resolveAddProjectPath } from "@t3tools/client-runtime/operations/projects";
-import { getBrowseParentPath, isWindowsPlatform } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { FileIcon, FolderIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -13,8 +12,10 @@ import { withAsyncCleanup } from "../lib/withAsyncCleanup";
 import {
   appendBrowsePathSegment,
   ensureBrowseDirectoryPath,
+  getBrowseParentPath,
   hasTrailingPathSeparator,
-} from "../lib/projectPaths";
+  isWindowsPlatform,
+} from "@t3tools/client-runtime/state/projects";
 import { useEnvironments } from "../state/environments";
 import { filesystemEnvironment } from "../state/filesystem";
 import { useEnvironmentQuery } from "../state/query";

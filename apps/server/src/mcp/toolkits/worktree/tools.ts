@@ -1,5 +1,6 @@
 import {
   WorktreeMcpFailure,
+  OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
   WorktreeMcpListInput,
   WorktreeMcpListResult,
@@ -58,7 +59,10 @@ const WorktreeStatusTool = Tool.make("t3_worktree_status", {
 const WorktreeListTool = Tool.make("t3_worktree_list", {
   description:
     "List branch refs and their associated checkout paths for one folder in a thread's frozen binding (omit threadId for the calling thread; outside clients must pass it). folderPath selects an original folder path from the thread's folders table; omission selects the primary. Results include the selected folderPath, effective cwd, and repositoryRoot. Folders in the same checkout share refs; available non-git folders return isRepo:false, and unknown or unavailable folders fail. Detached worktrees without a branch are not included. Use t3_worktree_status for the thread binding and t3_worktree_handoff to create a new worktree.",
-  parameters: WorktreeMcpListInput,
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...WorktreeMcpListInput.fields,
+  }),
   success: WorktreeMcpListResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",

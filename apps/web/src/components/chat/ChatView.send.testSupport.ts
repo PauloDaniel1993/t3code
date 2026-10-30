@@ -145,6 +145,7 @@ export function createSendHarness(
     setKeepFullHistory: vi.fn(),
     setSetupQueueSendThreadKey: vi.fn(),
     environmentId: threadRef.environmentId,
+    linkedEnvironments: new Map(),
     routeThreadKey,
     composerDraftTarget: target,
     draftId: typeof target === "string" ? target : null,

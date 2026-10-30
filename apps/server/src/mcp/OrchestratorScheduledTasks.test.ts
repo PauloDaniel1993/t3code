@@ -1,3 +1,4 @@
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -139,6 +140,7 @@ const external = Layer.mergeAll(
   }),
   Layer.mock(GitVcsDriver.GitVcsDriver)({}),
   ServerSettings.layerTest(),
+  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
   Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
 );
 const scheduler = ScheduledTasks.layer.pipe(Layer.provide(external));

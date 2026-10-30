@@ -1,3 +1,4 @@
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "@effect/vitest";
 import {
@@ -194,6 +195,7 @@ const makeHarness = (handoffOnProjectRead = false) =>
           threadReads,
           projectReads,
           ServerSettings.layerTest(),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
