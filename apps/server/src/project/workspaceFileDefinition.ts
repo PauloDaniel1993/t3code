@@ -2,7 +2,7 @@
 // Pure parsing: `path.win32`/`path.posix` follow the server's platform on any OS.
 import type { WorkspaceFileDiagnostic, WorkspaceFolderEntry } from "@t3tools/contracts";
 import * as Result from "effect/Result";
-import { parse, printParseErrorCode, type ParseError } from "jsonc-parser/lib/esm/main.js";
+import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 

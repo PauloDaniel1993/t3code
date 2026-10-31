@@ -1,3 +1,5 @@
+import * as NodeModule from "node:module";
+import * as NodePath from "node:path";
 import "vite-plus/test/config";
 import { defineConfig, mergeConfig } from "vite-plus";
 
@@ -14,6 +16,12 @@ import {
 } from "../../scripts/lib/cli-external-packages.ts";
 
 export { shouldBundleCliDependency };
+
+// jsonc-parser's UMD main hides its requires from the bundler; its ESM build only loads when bundled.
+const jsoncParserEsm = NodePath.join(
+  NodePath.dirname(NodeModule.createRequire(import.meta.url).resolve("jsonc-parser/package.json")),
+  "lib/esm/main.js",
+);
 
 const repoEnv = loadRepoEnv();
 const cliBuildChannel = /^[^-+]+-(?:nightly|preview)\./.test(packageJson.version)
@@ -87,6 +95,7 @@ export default mergeConfig(
       outDir: packExecutable ? "dist-exe" : "dist",
       sourcemap: !packExecutable,
       clean: true,
+      alias: { "jsonc-parser": jsoncParserEsm },
       // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
       // SEA can only resolve built-ins; keep dynamic imports inside its one module.
       ...(packExecutable ? { outputOptions: { codeSplitting: false } } : {}),
