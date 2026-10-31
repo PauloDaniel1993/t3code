@@ -1,4 +1,10 @@
-import { useState } from "react";
+import { ExternalLink, RefreshCw, RotateCcw } from "lucide-react";
+import { Badge } from "../ui/badge";
+import { Skeleton } from "../ui/skeleton";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
+import { FlowStepStatus, flowStatusBar } from "./FlowStepStatus";
+import { cn } from "../../lib/utils";
+import { useState, useEffect, useEffectEvent } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
 import type {
@@ -64,7 +70,7 @@ export function FlowRunActions({
   const active = ["starting", "running", "waiting_approval"].includes(summary.status);
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span role="status">{summary.status.replaceAll("_", " ")}</span>
+      <FlowStepStatus status={summary.status} />
       {active && (
         <Button
           size="xs"
@@ -132,43 +138,98 @@ function StepRunDetails({
   const canRead = useAtomValue(flowEnvironment.stepRunOutput.permissionAtom(environmentId));
   const [comment, setComment] = useState("");
   const [output, setOutput] = useState<string | null>(null);
+  const [loadingOutput, setLoadingOutput] = useState(canRead);
+  const [outputError, setOutputError] = useState<string | null>(null);
+  const readOutput = useEffectEvent(async (active: () => boolean) => {
+    const result = await fetchOutput({ environmentId, input: { stepRunId: stepRun.id } });
+    if (!active()) return;
+    if (result._tag === "Success") setOutput(outputText(result.value));
+    else setOutputError(reportFlowFailure(result, "Could not fetch step output"));
+    setLoadingOutput(false);
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads persisted output when a step run is opened
+  useEffect(() => {
+    if (!canRead) return;
+    let active = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- publishes output only after the request resolves
+    void readOutput(() => active);
+    return () => {
+      active = false;
+    };
+  }, [canRead]);
   const [busy, setBusy] = useState(false);
   const approval = snapshot.approvals.find(
     (entry) => entry.stepRunId === stepRun.id && entry.decision === null,
   );
   return (
     <section className="flex flex-col gap-2 text-xs" aria-label="Step run details">
-      <p>
-        {stepRun.stepPath.join(" / ")} · {stepRun.status.replaceAll("_", " ")} · attempt{" "}
-        {stepRun.attempt}
-      </p>
+      <div className="flex items-center gap-2">
+        <FlowStepStatus status={stepRun.status} />
+        <Badge variant="secondary" size="sm">
+          Attempt {stepRun.attempt}
+        </Badge>
+      </div>
+      <p className="text-2xs text-muted-foreground">{stepRun.stepPath.join(" / ")}</p>
       {stepRun.error && <p role="alert">{stepRun.error.message}</p>}
       {stepRun.threadId && (
-        <Link to="/$environmentId/$threadId" params={{ environmentId, threadId: stepRun.threadId }}>
+        <Button
+          variant="link"
+          size="xs"
+          render={
+            <Link
+              to="/$environmentId/$threadId"
+              params={{ environmentId, threadId: stepRun.threadId }}
+            />
+          }
+        >
+          <ExternalLink />
           Open step thread
-        </Link>
+        </Button>
       )}
       {stepRun.outputFields && (
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap">
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-xs">
           {outputFieldsText(stepRun.outputFields)}
         </pre>
       )}
-      <Button
-        size="xs"
-        variant="outline"
-        disabled={!canRead || busy}
-        onClick={async () => {
-          setBusy(true);
-          const result = await fetchOutput({ environmentId, input: { stepRunId: stepRun.id } });
-          if (result._tag === "Success") setOutput(outputText(result.value));
-          reportFlowFailure(result, "Could not fetch step output");
-          setBusy(false);
-        }}
-      >
-        Fetch step output
-      </Button>
+      <div className="flex items-center justify-between">
+        <span className="text-2xs font-medium text-muted-foreground">OUTPUT</span>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Refresh step output"
+                disabled={!canRead || loadingOutput}
+                onClick={async () => {
+                  setLoadingOutput(true);
+                  setOutputError(null);
+                  const result = await fetchOutput({
+                    environmentId,
+                    input: { stepRunId: stepRun.id },
+                  });
+                  if (result._tag === "Success") setOutput(outputText(result.value));
+                  else setOutputError(reportFlowFailure(result, "Could not fetch step output"));
+                  setLoadingOutput(false);
+                }}
+              />
+            }
+          >
+            <RefreshCw />
+          </TooltipTrigger>
+          <TooltipPopup>Refresh step output</TooltipPopup>
+        </Tooltip>
+      </div>
+      {loadingOutput && <Skeleton className="h-16 w-full" />}
+      {outputError && (
+        <p role="alert" className="text-destructive">
+          {outputError}
+        </p>
+      )}
       {output !== null && (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{output}</pre>
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-xs">
+          {output}
+        </pre>
       )}
       {(stepRun.status === "failed" || stepRun.status === "interrupted") &&
         latestStepAttempts(snapshot).get(flowStepInstanceKey(stepRun))?.id === stepRun.id && (
@@ -185,18 +246,19 @@ function StepRunDetails({
               setBusy(false);
             }}
           >
-            Retry step
+            <RotateCcw /> Retry step
           </Button>
         )}
       {approval && (
         <>
           <p>{approval.prompt}</p>
-          <TextField label="Approval comment" value={comment} onChange={setComment} />
+          <TextField label="Approval comment" multiline value={comment} onChange={setComment} />
           <div className="flex gap-2">
             {(["approve", "reject"] as const).map((decision) => (
               <Button
                 key={decision}
                 size="xs"
+                variant={decision === "approve" ? "default" : "outline"}
                 disabled={!canAnswer || busy}
                 onClick={async () => {
                   setBusy(true);
@@ -234,38 +296,62 @@ export function FlowRunTimeline({
     ...steps.map((step) => Date.parse(step.finishedAt ?? step.startedAt ?? step.createdAt)),
   );
   return (
-    <ol className="flex flex-col gap-1">
-      {steps.map((step) => {
-        const from = Date.parse(step.startedAt ?? step.createdAt);
-        const to = Date.parse(step.finishedAt ?? step.startedAt ?? step.createdAt);
-        return (
-          <li key={step.id}>
-            <button
-              type="button"
-              onClick={() => onSelect(step)}
-              aria-pressed={selectedId === step.id}
-              className="flex w-full flex-col gap-1 rounded p-2 text-left text-xs hover:bg-accent aria-pressed:bg-accent"
-            >
-              <span style={{ paddingInlineStart: step.depth * 12 }}>
-                {step.stepId} · {step.status.replaceAll("_", " ")} · attempt {step.attempt}{" "}
-                {step.scopeLabel}
-                {step.finishedAt && step.startedAt
-                  ? ` · ${formatDuration(Math.max(0, to - from))}`
-                  : ""}
-              </span>
-              <span className="h-1.5 w-full rounded bg-muted">
+    <div className="flex flex-col gap-2">
+      <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-2 text-3xs text-muted-foreground">
+        <span>Step run</span>
+        <div className="flex justify-between">
+          <span>0s</span>
+          <span>{formatDuration((end - start) / 2)}</span>
+          <span>{formatDuration(end - start)}</span>
+        </div>
+      </div>
+      <ol className="flex flex-col gap-1">
+        {steps.map((step) => {
+          const from = Date.parse(step.startedAt ?? step.createdAt);
+          const to = Date.parse(step.finishedAt ?? step.startedAt ?? step.createdAt);
+          const left = Math.min(99, Math.max(0, ((from - start) / (end - start)) * 100));
+          return (
+            <li key={step.id}>
+              <button
+                type="button"
+                onClick={() => onSelect(step)}
+                aria-pressed={selectedId === step.id}
+                className="grid w-full grid-cols-[7rem_minmax(0,1fr)] items-center gap-2 rounded-md p-2 text-left text-xs hover:bg-accent/60 aria-pressed:bg-accent/60"
+              >
                 <span
-                  className="block h-full rounded bg-primary"
-                  style={{
-                    marginInlineStart: `${Math.max(0, ((from - start) / (end - start)) * 100)}%`,
-                    width: `${Math.max(1, ((to - from) / (end - start)) * 100)}%`,
-                  }}
-                />
-              </span>
-            </button>
-          </li>
-        );
-      })}
-    </ol>
+                  className="min-w-0"
+                  style={{ paddingInlineStart: Math.min(step.depth, 4) * 12 }}
+                >
+                  <span className="block truncate font-medium">{step.stepId}</span>
+                  <span className="block truncate text-3xs text-muted-foreground">
+                    Attempt {step.attempt} {step.scopeLabel}
+                  </span>
+                </span>
+                <span className="min-w-0">
+                  <span className="relative block h-5 overflow-hidden rounded bg-muted/50">
+                    <span
+                      className={cn(
+                        "absolute inset-y-1 rounded-sm opacity-80",
+                        flowStatusBar(step.status),
+                      )}
+                      style={{
+                        left: `${left}%`,
+                        width: `${Math.min(100 - left, Math.max(1, ((to - from) / (end - start)) * 100))}%`,
+                      }}
+                    />
+                  </span>
+                  <span className="mt-1 flex items-center justify-between gap-1">
+                    <FlowStepStatus status={step.status} />
+                    <span className="text-3xs text-muted-foreground">
+                      {formatDuration(Math.max(0, to - from))}
+                    </span>
+                  </span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }

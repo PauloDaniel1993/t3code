@@ -41,3 +41,12 @@ export function FlowKindIcon({ kind }: { kind: FlowStep["kind"] }) {
   const Icon = icons[kind];
   return <Icon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />;
 }
+
+export function flowStatusBar(status: Status) {
+  if (status === "succeeded") return "bg-success";
+  if (status === "failed" || status === "interrupted") return "bg-destructive";
+  if (status === "waiting_approval") return "bg-warning";
+  if (status === "running" || status === "starting" || status === "waiting_report")
+    return "bg-primary";
+  return "bg-muted-foreground/50";
+}

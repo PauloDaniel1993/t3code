@@ -1,4 +1,7 @@
-import { FlowKindIcon } from "./FlowStepStatus";
+import { ArrowLeft, ChevronRight, Workflow } from "lucide-react";
+import { Empty, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent } from "../ui/empty";
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { FlowKindIcon, FlowStepStatus } from "./FlowStepStatus";
 import { Plus, MoreHorizontal, TriangleAlert, X, Trash2 } from "lucide-react";
 import {
   Select,
@@ -229,9 +232,24 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
         />
       ) : (
         !list.isPending && (
-          <p className="p-4 text-muted-foreground">
-            {entry ? "Fix this flow file in the project to edit it." : "Create a flow to begin."}
-          </p>
+          <Empty size="compact">
+            <EmptyMedia variant="icon">
+              <Workflow />
+            </EmptyMedia>
+            <EmptyTitle>{entry ? "Unable to edit this flow" : "Create your first flow"}</EmptyTitle>
+            <EmptyDescription>
+              {entry
+                ? "Fix this flow file in the project to edit it."
+                : "Connect agent, command and approval steps on the canvas."}
+            </EmptyDescription>
+            {!entry && (
+              <EmptyContent>
+                <Button size="xs" disabled={!canSave} onClick={() => setNewId("")}>
+                  New flow
+                </Button>
+              </EmptyContent>
+            )}
+          </Empty>
         )
       )}
     </div>
@@ -604,25 +622,60 @@ function FlowEditor({
         {tab === "runs" ? (
           <div className="min-h-0 flex-1 overflow-auto p-2">
             {history.error && <p role="alert">{history.error}</p>}
-            {runs.map((run) => (
-              <Button
-                key={run.id}
-                size="sm"
-                variant={flowRunId === run.id ? "secondary" : "ghost"}
-                aria-pressed={flowRunId === run.id}
-                onClick={() => {
-                  setFlowRunId(run.id);
-                  setStepRunId(null);
-                }}
-              >
-                {run.flowTitle} · Flow run {run.runNumber} · {run.status.replaceAll("_", " ")} ·{" "}
-                {formatRelativeTimeLabel(run.createdAt)}
-              </Button>
-            ))}
-            {cursor && (
+            {!flowRunId && runs.length === 0 && (
+              <Empty size="compact">
+                <EmptyMedia variant="icon">
+                  <Workflow />
+                </EmptyMedia>
+                <EmptyTitle>No flow runs yet</EmptyTitle>
+                <EmptyDescription>Start runs this flow in a fresh worktree.</EmptyDescription>
+                <EmptyContent>
+                  <Button
+                    size="xs"
+                    disabled={!canStart || dirty || !validation.valid}
+                    onClick={() => setShowStart(true)}
+                  >
+                    Start
+                  </Button>
+                </EmptyContent>
+              </Empty>
+            )}
+            {!flowRunId &&
+              runs.map((run) => (
+                <button
+                  key={run.id}
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent/60"
+                  onClick={() => {
+                    setFlowRunId(run.id);
+                    setStepRunId(null);
+                    setSelection(null);
+                  }}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium">Flow run {run.runNumber}</span>
+                      <span className="truncate text-2xs text-muted-foreground">
+                        {formatRelativeTimeLabel(run.createdAt)}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex items-center gap-2">
+                      <FlowStepStatus status={run.status} />
+                      <span className="text-2xs text-muted-foreground">
+                        {run.startedAt && run.finishedAt
+                          ? formatDuration(Date.parse(run.finishedAt) - Date.parse(run.startedAt))
+                          : ""}
+                        {run.scheduledTaskId ? " · via schedule" : ""}
+                      </span>
+                    </div>
+                  </div>
+                  <ChevronRight className="size-3.5 text-muted-foreground" />
+                </button>
+              ))}
+            {!flowRunId && cursor && (
               <Button
                 size="xs"
-                variant="outline"
+                variant="ghost"
                 disabled={loadingOlder}
                 onClick={async () => {
                   setLoadingOlder(true);
@@ -647,9 +700,24 @@ function FlowEditor({
             {pageError && <p role="alert">Could not load older flow runs.</p>}
             {snapshot && (
               <>
-                <Button size="xs" variant="outline" onClick={() => setTab("design")}>
-                  View on canvas
-                </Button>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => {
+                      setFlowRunId(null);
+                      setStepRunId(null);
+                      setSelection(null);
+                    }}
+                  >
+                    <ArrowLeft />
+                    All flow runs
+                  </Button>
+                  <span className="text-xs font-medium">Flow run {snapshot.summary.runNumber}</span>
+                  <Button size="xs" variant="outline" onClick={() => setTab("design")}>
+                    View on canvas
+                  </Button>
+                </div>
                 <FlowRunTimeline
                   selectedId={selectedRun?.id ?? null}
                   snapshot={snapshot}

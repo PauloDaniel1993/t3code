@@ -336,6 +336,13 @@ function Canvas({
                 );
             }}
           >
+            {definition.steps.length === 0 && (
+              <Panel position="top-center">
+                <div className="mt-24 max-w-48 text-center text-xs text-muted-foreground">
+                  Drag a step from the palette to start building your flow.
+                </div>
+              </Panel>
+            )}
             <Background gap={18} size={1} />
             <Controls showInteractive={false} position="top-right" />
             {!locked && (
