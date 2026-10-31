@@ -301,3 +301,31 @@ it("flushes edits made during an in-flight save with the returned revision", asy
   ]);
   expect(draft.getSnapshot().saved).toBe(second);
 });
+
+it("saves an invalid draft and retains its validation errors", async () => {
+  const draft = createFlowDraft({ definition: base.definition, revision: "old" });
+  const definition = {
+    ...base.definition,
+    steps: [{ id: "a", kind: "agent" as const, prompt: "{{inputs.missing}}" }],
+  };
+  draft.change(definition);
+  const inputs: unknown[] = [];
+  await draft.save(async (input) => {
+    inputs.push(input);
+    return AsyncResult.success({
+      flowId: summary.flowId,
+      definition,
+      revision: "invalid",
+      validation: {
+        valid: false,
+        errors: [{ path: "$.steps[0].prompt", message: "Unknown flow input" }],
+      },
+    });
+  });
+  expect(inputs).toEqual([{ definition, baseRevision: "old" }]);
+  expect(draft.getSnapshot()).toMatchObject({
+    saved: definition,
+    revision: "invalid",
+    saving: false,
+  });
+});

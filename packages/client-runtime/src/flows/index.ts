@@ -10,7 +10,6 @@ import {
   type FlowRunsPage,
   type FlowStepRunState,
 } from "@t3tools/contracts";
-import { validateFlowDefinition } from "@t3tools/shared/flow";
 import * as Cause from "effect/Cause";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/reactivity";
@@ -208,7 +207,6 @@ export function createFlowDraft(
       pending = (async () => {
         while (state.definition !== state.saved && !state.conflict) {
           const definition = state.definition;
-          if (!validateFlowDefinition(definition).valid) break;
           update({ ...state, saving: true, error: null });
           const result = await execute({ definition, baseRevision: state.revision });
           if (result._tag === "Success")
