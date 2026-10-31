@@ -1,3 +1,4 @@
+import { useFlowPanelRequest } from "./flows/flowPanelState";
 import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import { useNewThreadTaskAvailability } from "../hooks/useNewThreadTaskAvailability";
 import { openNewThreadTaskDialog } from "../newThreadTaskBus";
@@ -1196,6 +1197,22 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  if (activeThread !== null) {
+    for (const start of [false, true])
+      actionItems.push({
+        kind: "action",
+        value: start ? "action:start-flow" : "action:flow-panel",
+        title: start ? "Start flow?" : "Open Flow panel",
+        searchTerms: ["flow", "graph", "steps"],
+        icon: <ListPlusIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          useFlowPanelRequest
+            .getState()
+            .open(scopeThreadRef(activeThread.environmentId, activeThread.id), { start });
+        },
+      });
+  }
+
   if (activeThread !== null && pathname !== "/pull-requests") {
     actionItems.push({
       kind: "action",

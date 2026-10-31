@@ -140,6 +140,11 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     addDiffSurface();
   };
   const openChangesFromThreadPanelStable = useStableCallback(openChangesFromThreadPanel);
+  const addFlowSurface = () => {
+    if (!activeThreadRef || !activeProject) return;
+    useRightPanelStore.getState().open(activeThreadRef, "flow");
+  };
+  const addFlowSurfaceStable = useStableCallback(addFlowSurface);
   const addMapSurface = () => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "map");
@@ -352,6 +357,10 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
       if (!activeRightPanelSurface) return false;
       if (!event.repeat) closeRightPanelSurface(activeRightPanelSurface);
     },
+    "flow.panel.toggle": () => {
+      if (activeThreadRef && activeProject)
+        useRightPanelStore.getState().toggle(activeThreadRef, "flow");
+    },
     "diff.toggle": () => onToggleDiff(),
   } satisfies ChatShortcutCommands;
 
@@ -362,6 +371,7 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     addDiffSurfaceStable,
     addFilesSurfaceStable,
     addMapSurfaceStable,
+    addFlowSurfaceStable,
     openFolderChangesFromThreadPanelStable,
     addPullRequestSurfaceStable,
     addPullRequestsSurfaceStable,

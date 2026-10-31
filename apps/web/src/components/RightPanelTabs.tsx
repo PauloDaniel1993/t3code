@@ -89,6 +89,7 @@ import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanel
 import { FaviconImage } from "./preview/PreviewFaviconIcon";
 import { previewBridge } from "./preview/previewBridge";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
+import { FLOW_SURFACE } from "./flows/flowSurface";
 import { MAP_SURFACE } from "./map/mapSurface";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
@@ -131,6 +132,7 @@ export interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddMap: () => void;
+  onAddFlow?: (() => void) | undefined;
   onAddDevice: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
@@ -307,6 +309,7 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddMap: () => void;
+  onAddFlow?: (() => void) | undefined;
   onAddDevice: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
@@ -369,6 +372,11 @@ function RightPanelEmptyState(props: {
       onClick: props.onAddPullRequests,
     },
     { ...MAP_SURFACE.emptyState, available: props.mapAvailable, onClick: props.onAddMap },
+    {
+      ...FLOW_SURFACE.emptyState,
+      available: props.mapAvailable && !!props.onAddFlow,
+      onClick: () => props.onAddFlow?.(),
+    },
     {
       label: "Device",
       description: "Watch an iOS Simulator or Android Emulator.",
@@ -561,6 +569,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
+    case "flow":
+      return FLOW_SURFACE.title;
     case "map":
       return MAP_SURFACE.title;
     case "device":
@@ -653,6 +663,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "flow":
+      return <FLOW_SURFACE.icon className="size-3 shrink-0" />;
     case "map":
       return <MAP_SURFACE.icon className="size-3 shrink-0" />;
     case "device":
@@ -1070,6 +1082,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     },
     { ...MAP_SURFACE.menu, available: props.mapAvailable, onClick: props.onAddMap },
     {
+      ...FLOW_SURFACE.menu,
+      available: props.mapAvailable && !!props.onAddFlow,
+      onClick: () => props.onAddFlow?.(),
+    },
+    {
       label: "Device",
       icon: Smartphone,
       shortcut: "M",
@@ -1451,6 +1468,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddMap={props.onAddMap}
+            onAddFlow={props.onAddFlow}
             onAddDevice={props.onAddDevice}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}

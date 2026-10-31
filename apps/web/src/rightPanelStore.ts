@@ -22,6 +22,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "map",
+  "flow",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -79,7 +80,8 @@ export type RightPanelSurface =
   /** The thread's linked pull requests, one singleton tab beside any number of `pull-request` tabs. */
   | { id: "pull-requests"; kind: "pull-requests" }
   /** The workspace's Wayfinder star map, one singleton tab. */
-  | { id: "map"; kind: "map" };
+  | { id: "map"; kind: "map" }
+  | { id: "flow"; kind: "flow" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -230,6 +232,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "flow":
+      return { id: "flow", kind };
     case "map":
       return { id: "map", kind };
   }

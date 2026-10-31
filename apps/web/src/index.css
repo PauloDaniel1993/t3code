@@ -1,6 +1,7 @@
 /* Clerk injects its component styles into the clerk layer (clerkAppearance.cssLayerName). */
 @layer theme, base, clerk, components, utilities;
 @import "tailwindcss";
+@import "@xyflow/react/dist/style.css" layer(base);
 
 @custom-variant dark (&:is(.dark, .dark *));
 @custom-variant light (&:not(.dark, .dark *));
@@ -2544,4 +2545,16 @@ code {
 [data-workspace-area]:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: -2px;
+}
+
+@layer base {
+  .flow-canvas {
+    --xy-background-color: var(--background);
+    --xy-node-background-color: var(--card);
+    --xy-node-color: var(--foreground);
+    --xy-node-border: 1px solid var(--border);
+    --xy-edge-stroke: var(--muted-foreground);
+    --xy-controls-button-background-color: var(--popover);
+    --xy-controls-button-color: var(--foreground);
+  }
 }
