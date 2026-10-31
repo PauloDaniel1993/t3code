@@ -21,6 +21,8 @@ import ForkMigration0009 from "./ForkMigrations/009_ForkImportDiagnostics.ts";
 import ForkMigration0010 from "./ForkMigrations/010_AttachmentReferenceIndex.ts";
 import ForkMigration0011 from "./ForkMigrations/011_TaskDeliveryIndex.ts";
 import ForkMigration0012 from "./ForkMigrations/012_ProjectionProjectsWorkspaceFile.ts";
+import ForkMigration0013 from "./ForkMigrations/013_FlowRuns.ts";
+import ForkMigration0014 from "./ForkMigrations/014_ScheduledTaskFlow.ts";
 
 const FORK_MIGRATIONS_TABLE = "fork_sql_migrations";
 
@@ -37,6 +39,8 @@ const forkMigrationEntries = [
   [10, "AttachmentReferenceIndex", ForkMigration0010],
   [11, "TaskDeliveryIndex", ForkMigration0011],
   [12, "ProjectionProjectsWorkspaceFile", ForkMigration0012],
+  [13, "FlowRuns", ForkMigration0013],
+  [14, "ScheduledTaskFlow", ForkMigration0014],
 ] as const;
 
 const makeForkMigrationLoader = (throughId?: number) =>
