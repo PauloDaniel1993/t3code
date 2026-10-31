@@ -198,14 +198,17 @@ const awaitStatus = (service: Service.FlowService["Service"], id: FlowRunId, sta
   );
 
 it.effect(
-  "drives agent, reported loop, rendered command and approval; streams omit text and resolves thread roles",
+  "drives agent, reported loop, command and map approvals; snapshots omit text and resolve thread roles",
   () =>
     Effect.gen(function* () {
       const { service, launches, finish, commands, attention, launched } = yield* setup({
         version: 1,
         title: "Review",
         workspace: "worktree",
-        inputs: [{ name: "issue", type: "string", required: true }],
+        inputs: [
+          { name: "issue", type: "string", required: true },
+          { name: "items", type: "string[]", default: ["first"] },
+        ],
         steps: [
           { id: "implement", kind: "agent", prompt: "Fix {{inputs.issue}}" },
           {
@@ -229,12 +232,18 @@ it.effect(
             command: "echo done",
             env: { ISSUE: "{{inputs.issue}}" },
           },
-          { id: "gate", kind: "approval", prompt: "Ship?" },
+          {
+            id: "map",
+            kind: "map",
+            over: "inputs.items",
+            steps: [{ id: "gate", kind: "approval", prompt: "Ship {{item}}?" }],
+            edges: [],
+          },
         ],
         edges: [
           { from: "implement", to: "review-loop" },
           { from: "review-loop", to: "command" },
-          { from: "command", to: "gate" },
+          { from: "command", to: "map" },
         ],
       });
       yield* service.recover();
@@ -242,13 +251,14 @@ it.effect(
         projectId: ProjectId.make("project"),
         flowId: FlowId.make("example"),
         inputs: { issue: "123" },
+        baseRef: "main",
       });
       yield* Queue.take(launched);
       yield* Queue.take(launched);
       expect(launches[0]?.title).toBe("▶ Review · run 1");
       expect(launches[0]?.workspace).toEqual({
         type: "worktree",
-        baseRef: "HEAD",
+        baseRef: "main",
         branch: `flow/example/${run.id.slice(0, 8)}`,
         startFromOrigin: false,
       });
@@ -286,6 +296,13 @@ it.effect(
       yield* awaitStatus(service, run.id, "waiting_approval");
       expect(commands[0]?.env).toEqual({ ISSUE: "123" });
       const snapshot = yield* service.snapshot(run.id);
+      expect(snapshot.baseRef).toBe("main");
+      const map = snapshot.stepRuns.find((step) => step.stepPath[0] === "map")!;
+      expect(map.itemCount).toBe(1);
+      expect(map).not.toHaveProperty("items");
+      expect(snapshot.stepRuns.find((step) => step.stepPath[0] === "implement")).not.toHaveProperty(
+        "itemCount",
+      );
       expect(JSON.stringify(snapshot)).not.toContain("assistant text");
       const implement = snapshot.stepRuns.find((step) => step.stepPath[0] === "implement")!;
       expect((yield* service.stepRunOutput(implement.id))?.kind).toBe("agent");
@@ -295,6 +312,9 @@ it.effect(
         "tester",
       );
       expect(result.status).toBe("succeeded");
+      expect(
+        (yield* service.snapshot(run.id)).stepRuns.find((step) => step.id === map.id),
+      ).toMatchObject({ itemCount: 1, status: "succeeded" });
       expect(attention).toContain("waiting_approval");
       expect(attention).toContain("succeeded");
     }).pipe(Effect.scoped, Effect.provide(database)),
@@ -336,6 +356,7 @@ it.effect("rejects stale saves and typed inputs; scheduled starts coerce and ski
     expect((yield* service.start(input).pipe(Effect.exit))._tag).toBe("Failure");
     const run = yield* service.start({ ...input, coerce: true });
     expect((yield* service.snapshot(run.id)).inputs).toEqual({ count: 3 });
+    expect((yield* service.snapshot(run.id)).baseRef).toBeNull();
     expect((yield* service.start({ ...input, coerce: true }).pipe(Effect.exit))._tag).toBe(
       "Failure",
     );
@@ -364,6 +385,7 @@ it.effect(
         inputs: {},
       });
       continuing.set(launches[1]!.threadId, "continued-message");
+      expect((yield* service.snapshot(run.id)).baseRef).toBe("HEAD");
       yield* service.recover();
       const state = yield* repository.read(run.id);
       expect(state?.stepRuns.find((step) => step.stepPath[0] === "agent")?.expectedMessageId).toBe(
@@ -438,6 +460,7 @@ it.effect(
         inputs: {},
       });
       const messageId = launches[1]!.messageId!;
+      expect((yield* service.snapshot(run.id)).baseRef).toBeNull();
       settled.set(messageId, { messageId, turnId: "persisted-turn", text: "done", failed: false });
       yield* service.recover();
       yield* awaitStatus(service, run.id, "waiting_approval");

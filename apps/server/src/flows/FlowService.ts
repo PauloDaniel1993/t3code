@@ -47,6 +47,7 @@ import {
   type Action,
 } from "./FlowEngine.ts";
 import { sweepOrphanedFlowRuns } from "./FlowCleanup.ts";
+import { flowReportInstruction } from "./FlowAgentInstructions.ts";
 
 export interface FlowStart {
   readonly projectId: ProjectId;
@@ -133,18 +134,17 @@ function stepDefinition(state: State, step: StepRun) {
 }
 function reportInstruction(state: State, step: StepRun) {
   const definition = stepDefinition(state, step);
-  return definition.kind === "agent" && definition.outputs?.length
-    ? `\n\nBefore finishing, call t3_flow_report with fields matching: ${JSON.stringify(definition.outputs)}.`
-    : "";
+  return flowReportInstruction(definition.kind === "agent" ? definition.outputs : undefined);
 }
 function snapshotOf(state: State): FlowRunSnapshot {
   return {
+    baseRef: state.baseRef,
     definition: state.definition,
     inputs: state.inputs,
     summary: state.run,
     approvals: state.approvals,
     stepRuns: state.stepRuns.map((step) => {
-      const { output, scope: _scope, ...rest } = step;
+      const { output, scope: _scope, items, ...rest } = step;
       let outputFields: FlowRunSnapshot["stepRuns"][number]["outputFields"] = null;
       if (output)
         switch (output.kind) {
@@ -175,7 +175,7 @@ function snapshotOf(state: State): FlowRunSnapshot {
             outputFields = { kind: "map", items: output.items.map(({ status }) => ({ status })) };
             break;
         }
-      return { ...rest, outputFields };
+      return { ...rest, outputFields, ...(items ? { itemCount: items.length } : {}) };
     }),
   };
 }
@@ -519,7 +519,7 @@ const make = Effect.gen(function* () {
             definition,
             inputs,
             workspace: root,
-            baseRef: input.baseRef ?? null,
+            baseRef: definition.workspace === "root" ? null : (input.baseRef ?? "HEAD"),
             stepRuns: [],
             approvals: [],
             run: {

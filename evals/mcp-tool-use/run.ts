@@ -15,6 +15,7 @@ import {
   ComposerContextRecord,
   DeviceOperationError,
   DeviceSummary,
+  FlowOutputField,
   OrchestratorMcpTaskRole,
   ProviderInstanceId,
 } from "@t3tools/contracts";
@@ -53,6 +54,8 @@ import {
 } from "../../apps/server/src/mcp/toolkits/pullRequests/tools.ts";
 import { ThreadToolkit } from "../../apps/server/src/mcp/toolkits/thread/tools.ts";
 import { WorktreeToolkit } from "../../apps/server/src/mcp/toolkits/worktree/tools.ts";
+import { FlowToolkit } from "../../apps/server/src/flows/FlowMcp.ts";
+import { flowReportInstruction } from "../../apps/server/src/flows/FlowAgentInstructions.ts";
 import {
   CLAUDE_PROVIDER,
   makeClaudeQueryOptions,
@@ -230,6 +233,7 @@ export const McpToolUseCase = Schema.Struct({
     /** delegate_task `role` for a delegated child. T3 builds the child's first message from it. */
     delegateRole: Schema.optional(OrchestratorMcpTaskRole),
     context: Schema.optional(Schema.String),
+    flowStepOutputs: Schema.optional(Schema.Array(FlowOutputField)),
     priorTurns: Schema.optional(
       Schema.Array(
         Schema.Struct({
@@ -364,6 +368,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   PreviewToolkit,
   DeviceToolkit,
   HtmlToolkit,
+  FlowToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
   name: `${T3_PREFIX}${tool.name}`,
@@ -875,7 +880,13 @@ export const buildMessages = (sample: Sample) => {
       ? testCase.prompt
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
-  push("user", text(role === "delegated-child" ? childPrompt() : prompt));
+  push(
+    "user",
+    text(
+      (role === "delegated-child" ? childPrompt() : prompt) +
+        flowReportInstruction(testCase.setup.flowStepOutputs),
+    ),
+  );
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));

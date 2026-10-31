@@ -102,10 +102,18 @@ const cases = [
     path: "$.steps[2].thread",
   },
 
-  ...["iterations", "kind"].map((id) => ({
-    name: `reserved loop child ${id}`,
-    value: flow({ steps: [{ ...loop, steps: [agent(id)] }] }),
-    path: "$.steps[0].steps[0].id",
+  ...["iterations", "kind", "steps"].map((id) => ({
+    name: `loop child ${id} does not collide with output metadata`,
+    value: flow({
+      steps: [
+        {
+          ...loop,
+          steps: [agent(id)],
+          until: { ref: `steps.${id}.output.text`, op: "isEmpty" },
+        },
+      ],
+    }),
+    path: undefined,
   })),
   {
     name: "reserved output kind",
@@ -439,7 +447,7 @@ const cases = [
   {
     name: "loop output outside",
     value: flow({
-      steps: [loop, agent("fix", { prompt: "{{steps.loop.output.review.verdict}}" })],
+      steps: [loop, agent("fix", { prompt: "{{steps.loop.output.steps.review.verdict}}" })],
       edges: [{ from: "loop", to: "fix" }],
     }),
     path: undefined,

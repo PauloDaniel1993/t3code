@@ -214,9 +214,11 @@ it("renders command environment values without prompt bullets or shell quoting",
 });
 it("names the innermost source thread in a nested truncation marker", () => {
   const output = renderFlowTemplate(
-    "{{steps.outer.output.inner.review.text}}",
+    "{{steps.outer.output.steps.inner.steps.review.text}}",
     {
-      steps: { outer: { output: { inner: { review: { text: "x".repeat(17000) } } } } },
+      steps: {
+        outer: { output: { steps: { inner: { steps: { review: { text: "x".repeat(17000) } } } } } },
+      },
     },
     (id) => `${id} thread`,
   );
