@@ -505,7 +505,7 @@ function enqueueProcessEvent(
   return true;
 }
 
-export function defaultShellResolver(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
+function defaultShellResolver(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
   if (platform === "win32") {
     return "pwsh.exe";
   }
@@ -599,7 +599,7 @@ function uniqueShellCandidates(candidates: Array<ShellCandidate | null>): ShellC
   return ordered;
 }
 
-export function resolveShellCandidates(
+function resolveShellCandidates(
   shellResolver: () => string,
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
@@ -1379,7 +1379,7 @@ function stripAppImageRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return scrubbed;
 }
 
-function createTerminalSpawnEnv(
+export function createTerminalSpawnEnv(
   baseEnv: NodeJS.ProcessEnv,
   runtimeEnv: Record<string, string> | null | undefined,
   platform: NodeJS.Platform,
