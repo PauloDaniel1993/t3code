@@ -58,9 +58,11 @@ it.each([
     kind: "loop",
     iterations: 2,
     exitReason: "condition",
-    inner: {
-      kind: "map",
-      items: [{ status: "succeeded", outputs: { agent: { kind: "agent", text: "done" } } }],
+    steps: {
+      inner: {
+        kind: "map",
+        items: [{ status: "succeeded", outputs: { agent: { kind: "agent", text: "done" } } }],
+      },
     },
   },
 ])("decodes step outputs $", (value) => expect(encodeOutput(decodeOutput(value))).toEqual(value));

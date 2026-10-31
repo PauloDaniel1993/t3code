@@ -130,8 +130,14 @@ export function renameStep(definition: FlowDefinition, from: string, to: string)
       const parsed = parseFlowReference(value);
       if (parsed.kind !== "step") return value;
       let current = findStep(definition.steps, parsed.stepId);
+      let childField = false;
       const fields = parsed.fields.map((field) => {
         if (current?.kind !== "loop") return field;
+        if (!childField) {
+          childField = field === "steps";
+          return field;
+        }
+        childField = false;
         current = current.steps.find((child) => child.id === field);
         return current && field === from ? to : field;
       });

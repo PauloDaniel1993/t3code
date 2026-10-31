@@ -42,6 +42,18 @@ it.effect("keeps upstream and fork histories separate on fresh startup and resta
     const fork = yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`;
     assert.lengthOf(base, 73);
     assert.lengthOf(fork, 14);
+    assert.deepEqual(
+      yield* sql`SELECT name FROM pragma_table_info('flow_runs') WHERE name = 'version'`,
+      [{ name: "version" }],
+    );
+    assert.lengthOf(
+      yield* sql`SELECT name FROM sqlite_schema WHERE type = 'index' AND name IN ('flow_steps_thread', 'flow_runs_recovery', 'flow_runs_schedule')`,
+      3,
+    );
+    assert.deepEqual(
+      yield* sql`SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name = 'flow_thread_deleted'`,
+      [],
+    );
     yield* migrate;
     assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, base);
     assert.deepEqual(yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`, fork);

@@ -4,7 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE IF NOT EXISTS flow_runs (
-    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, flow_id TEXT NOT NULL,
+    id TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0, project_id TEXT NOT NULL, flow_id TEXT NOT NULL,
     run_number INTEGER NOT NULL, flow_title TEXT NOT NULL,
     flow_run_thread_id TEXT NOT NULL UNIQUE, definition_snapshot TEXT NOT NULL,
     inputs TEXT NOT NULL, base_ref TEXT, workspace TEXT NOT NULL,
@@ -30,9 +30,8 @@ export default Effect.gen(function* () {
     step_run_id TEXT PRIMARY KEY REFERENCES flow_step_runs(id) ON DELETE CASCADE,
     prompt TEXT NOT NULL, decision TEXT, comment TEXT, answered_by TEXT, answered_at TEXT
   )`;
-  // Thread deletion is a tombstone update; projection rebuilds must not erase flow history.
-  yield* sql`CREATE TRIGGER IF NOT EXISTS flow_thread_deleted
-    AFTER UPDATE OF deleted_at ON orchestration_v2_projection_threads
-    WHEN NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL
-    BEGIN DELETE FROM flow_runs WHERE flow_run_thread_id = NEW.thread_id; END`;
+  yield* sql`CREATE INDEX IF NOT EXISTS flow_steps_thread ON flow_step_runs(thread_id)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS flow_runs_recovery ON flow_runs(status) WHERE status IN ('starting', 'running', 'waiting_approval')`;
+  yield* sql`CREATE INDEX IF NOT EXISTS flow_runs_schedule ON flow_runs(scheduled_task_id, created_at)`;
+  yield* sql`DROP TRIGGER IF EXISTS flow_thread_deleted`;
 });

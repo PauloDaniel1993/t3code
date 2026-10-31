@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ThreadId, type FlowDefinition, type FlowStep, type FlowInputs } from "@t3tools/contracts";
+import { type FlowDefinition, type FlowStep, type FlowInputs } from "@t3tools/contracts";
 import { applyTransitions, decide, type Trigger, type Action } from "./FlowEngine.ts";
 
-import { initialState } from "./flowTestUtils.ts";
+import { initialState } from "./FlowEngine.test-support.ts";
 
 const at = "2026-10-31T00:00:00.000Z";
 const agent = (id: string): FlowStep => ({ id, kind: "agent", prompt: id });
@@ -19,11 +19,11 @@ function trace(definition: FlowDefinition, inputs: FlowInputs = {}) {
   };
   const row = (id: string) =>
     state.stepRuns.findLast((s) => !s.superseded && s.stepPath.at(-1) === id)!;
-  let turn = 0;
   const settle = (id: string, error?: "turn_failed") =>
     send({
       type: "step_thread_settled",
-      turnId: `turn-${turn++}`,
+      turnId: row(id).expectedMessageId!,
+      messageId: row(id).expectedMessageId!,
       at,
       stepRunId: row(id).id,
       text: `${id} result`,
@@ -56,6 +56,215 @@ const graph = (
 ): FlowDefinition => ({ version: 1, title: "Test", steps, edges });
 
 describe("FlowEngine decision traces", () => {
+  it("nests reserved inner step ids under loop output steps", () => {
+    const t = trace(
+      graph([
+        {
+          id: "loop",
+          kind: "loop",
+          maxIterations: 1,
+          until: { ref: "iteration", op: "eq", value: 0 },
+          steps: [agent("kind"), agent("iterations"), agent("steps")],
+          edges: [],
+        },
+      ]),
+    );
+    for (const id of ["kind", "iterations", "steps"]) t.settle(id);
+    expect(t.row("loop").output).toEqual({
+      kind: "loop",
+      iterations: 1,
+      exitReason: "condition",
+      steps: {
+        kind: { kind: "agent", text: "kind result" },
+        iterations: { kind: "agent", text: "iterations result" },
+        steps: { kind: "agent", text: "steps result" },
+      },
+    });
+  });
+  it.each([
+    agent("after"),
+    command("after"),
+    { id: "after", kind: "approval", prompt: "ok?" } as const,
+  ])("recovery preserves pending $kind steps", (after) => {
+    const t = trace(graph([agent("a"), after], [{ from: "a", to: "after" }]));
+    t.send({ type: "recovered", at, continuingThreadIds: [t.row("a").threadId!] });
+    expect(t.row("a").status).toBe("running");
+    expect(t.row("after").status).toBe("pending");
+    expect(t.state.run.status).toBe("running");
+  });
+
+  it("recovery preserves waiting approvals and pending successors", () => {
+    const t = trace(
+      graph(
+        [{ id: "gate", kind: "approval", prompt: "ok?" }, agent("after")],
+        [{ from: "gate", to: "after" }],
+      ),
+    );
+    t.send({ type: "recovered", at, continuingThreadIds: [] });
+    expect(t.row("gate").status).toBe("waiting_approval");
+    expect(t.row("after").status).toBe("pending");
+  });
+
+  it("recovers mixed running, pending, reporting and approval rows after catch-up", () => {
+    const t = trace(
+      graph(
+        [
+          agent("done"),
+          agent("a"),
+          command("cmd"),
+          {
+            id: "report",
+            kind: "agent",
+            prompt: "report",
+            outputs: [{ name: "ok", type: "boolean" }],
+          },
+          { id: "gate", kind: "approval", prompt: "ok?" },
+          agent("later"),
+        ],
+        [
+          { from: "gate", to: "later" },
+          { from: "cmd", to: "later", on: "failure" },
+        ],
+      ),
+    );
+    t.settle("done");
+    t.settle("report");
+    t.send({
+      type: "recovered",
+      at,
+      continuingThreadIds: [t.row("a").threadId!, t.row("report").threadId!],
+      continuingMessageIds: { [t.row("a").threadId!]: "auto-continued" },
+    });
+    expect(["done", "a", "cmd", "report", "gate", "later"].map((id) => t.row(id).status)).toEqual([
+      "succeeded",
+      "running",
+      "interrupted",
+      "waiting_report",
+      "waiting_approval",
+      "pending",
+    ]);
+    expect(t.row("a").expectedMessageId).toBe("auto-continued");
+  });
+
+  it("persists thread and message identity before launch and rejects unrelated turns", () => {
+    const t = trace(graph([agent("a")]));
+    expect(t.actions[0]).toMatchObject({
+      type: "launch_step_thread",
+      threadId: t.row("a").threadId,
+      messageId: t.row("a").expectedMessageId,
+    });
+    expect(t.row("a").threadId).not.toBeNull();
+    expect(
+      t.send({
+        type: "step_thread_settled",
+        at,
+        stepRunId: t.row("a").id,
+        messageId: "unrelated",
+        turnId: "unrelated",
+        text: "wrong",
+      }).rejected?.reason,
+    ).toBe("not_applicable");
+    t.send({
+      type: "action_failed",
+      at,
+      stepRunId: t.row("a").id,
+      error: { code: "other", message: "launch failed" },
+    });
+    expect(t.row("a").status).toBe("failed");
+  });
+
+  it("resume retains the first attempt for steps that never started", () => {
+    const t = trace(graph([agent("a"), agent("b")], [{ from: "a", to: "b" }]));
+    t.send({ type: "stop", at });
+    t.send({ type: "resume", at });
+    expect(t.row("a").attempt).toBe(2);
+    expect(t.row("b")).toMatchObject({ attempt: 1, status: "pending" });
+    expect(t.state.run.activeStepRunIds).toEqual([t.row("a").id]);
+  });
+
+  it.each(["agent", "command", "approval"] as const)("rejects early %s completion", (kind) => {
+    const step =
+      kind === "agent"
+        ? agent("later")
+        : kind === "command"
+          ? command("later")
+          : { id: "later", kind, prompt: "ok?" };
+    const t = trace(graph([agent("a"), step], [{ from: "a", to: "later" }]));
+    const trigger =
+      kind === "agent"
+        ? {
+            type: "step_thread_settled" as const,
+            text: "early",
+            turnId: "early",
+            messageId: "early",
+          }
+        : kind === "command"
+          ? { type: "command_finished" as const }
+          : {
+              type: "approval_answered" as const,
+              decision: "approve" as const,
+              answeredBy: "test",
+            };
+    const result = t.send({ ...trigger, at, stepRunId: t.row("later").id });
+    expect(result.transitions).toEqual([]);
+    expect(t.row("later").status).toBe("pending");
+  });
+
+  it("retry cannot resume a stopped flow", () => {
+    const t = trace(
+      graph(
+        [agent("a"), agent("handler"), agent("b"), agent("c")],
+        [
+          { from: "a", to: "handler", on: "failure" },
+          { from: "b", to: "c" },
+        ],
+      ),
+    );
+    t.settle("a", "turn_failed");
+    t.send({ type: "stop", at });
+    expect(t.send({ type: "retry_step", at, stepRunId: t.row("a").id }).transitions).toEqual([]);
+    expect(t.state.run.status).toBe("cancelled");
+  });
+
+  it("retry leaves finished map item cancellations alone", () => {
+    const t = trace(
+      graph(
+        [
+          {
+            id: "map",
+            kind: "map",
+            over: "inputs.items",
+            onItemFailure: "continue",
+            steps: [agent("a"), command("cmd")],
+            edges: [],
+          },
+          agent("after"),
+        ],
+        [{ from: "map", to: "after" }],
+      ),
+      { items: ["one"] },
+    );
+    t.settle("a", "turn_failed");
+    t.settle("after", "turn_failed");
+    t.send({ type: "retry_step", at, stepRunId: t.row("after").id });
+    expect(t.row("cmd").status).not.toBe("pending");
+    t.settle("after");
+    expect(t.state.run.activeStepRunIds).toEqual([]);
+  });
+
+  it("retry rejects an unrelated outstanding failure without launch churn", () => {
+    const t = trace(
+      graph(
+        [agent("a"), agent("handler"), agent("y"), agent("x")],
+        [{ from: "a", to: "handler", on: "failure" }],
+      ),
+    );
+    t.settle("a", "turn_failed");
+    t.settle("y", "turn_failed");
+    const result = t.send({ type: "retry_step", at, stepRunId: t.row("a").id });
+    expect(result.transitions).toEqual([]);
+    expect(result.actions).toEqual([]);
+  });
   it.each([false, true])("sameAs falls back when target has no thread, skipped=%s", (skipped) => {
     const t = trace(
       graph(
@@ -81,10 +290,14 @@ describe("FlowEngine decision traces", () => {
     if (!skipped) t.settle("target");
     expect(t.row("reuse")).toMatchObject({
       status: "running",
-      threadId: null,
-      error: { code: "other", message: "sameAs target target had no thread" },
+      threadId: expect.any(String),
+      ...(skipped
+        ? { error: { code: "other", message: "sameAs target target had no thread" } }
+        : {}),
     });
-    expect(t.actions.find((a) => a.type === "launch_step_thread")).toMatchObject({
+    expect(
+      t.actions.find((a) => a.type === (skipped ? "launch_step_thread" : "continue_thread")),
+    ).toMatchObject({
       prompt: skipped ? "" : "target result",
     });
   });
@@ -122,14 +335,8 @@ describe("FlowEngine decision traces", () => {
         ],
       ),
     );
-    t.send({
-      type: "thread_started",
-      at,
-      stepRunId: t.row("entry").id,
-      threadId: ThreadId.make("shared"),
-    });
     t.settle("entry");
-    expect(t.actions.filter((action) => action.type === "continue_thread")).toHaveLength(1);
+    expect(t.actions.filter((action) => action.type === "continue_thread")).toHaveLength(0);
     expect(t.row("right").error?.message).toBe("Thread already has an active flow step");
     expect(t.state.run.status).toBe("failed");
   });
@@ -209,8 +416,6 @@ describe("FlowEngine decision traces", () => {
     t.settle("a", "turn_failed");
     const failedId = t.row("a").id;
     t.settle("recovery");
-    t.settle("a");
-    expect(t.state.run.status).toBe("succeeded");
     t.send({ type: "retry_step", at, stepRunId: failedId });
     expect(t.state.run.status).toBe("running");
     expect(t.row("a")).toMatchObject({ attempt: 2, iteration: 0, status: "running" });
@@ -260,13 +465,14 @@ describe("FlowEngine decision traces", () => {
       type: "step_thread_settled",
       at,
       turnId: "original",
+      messageId: t.row("a").expectedMessageId!,
       stepRunId: t.row("a").id,
       text: "done",
     };
     t.send(settled);
-    expect(t.send(settled)).toEqual({ transitions: [], actions: [] });
+    expect(t.send(settled)).toMatchObject({ transitions: [], actions: [] });
     expect(t.row("a").status).toBe("waiting_report");
-    t.send({ ...settled, turnId: "reminder" });
+    t.send({ ...settled, turnId: "reminder", messageId: t.row("a").expectedMessageId! });
     expect(t.row("a").error?.code).toBe("missing_report");
   });
 
@@ -504,9 +710,10 @@ describe("FlowEngine decision traces", () => {
       outputs: [{ name: "ok", type: "boolean" }],
     };
     const t = trace(graph([step]));
-    expect(() =>
-      t.send({ type: "report_received", at, stepRunId: t.row("a").id, fields: { ok: "wrong" } }),
-    ).toThrow();
+    expect(
+      t.send({ type: "report_received", at, stepRunId: t.row("a").id, fields: { ok: "wrong" } })
+        .rejected?.reason,
+    ).toBe("invalid_report");
     t.settle("a");
     expect(t.row("a").status).toBe("waiting_report");
     expect(t.actions.filter((a) => a.type === "send_reminder")).toHaveLength(1);
@@ -543,19 +750,13 @@ describe("FlowEngine decision traces", () => {
       );
       expect(action?.type).toBe(i === 0 ? "launch_step_thread" : "continue_thread");
       expect(action && "prompt" in action ? action.prompt : null).toBe(`iteration ${i}`);
-      t.send({
-        type: "thread_started",
-        at,
-        stepRunId: t.row("a").id,
-        threadId: ThreadId.make("same-thread"),
-      });
       t.settle("a");
     }
     expect(t.row("loop").output).toEqual({
       kind: "loop",
       iterations: maxIterations,
       exitReason: "maxIterations",
-      a: { kind: "agent", text: "a result" },
+      steps: { a: { kind: "agent", text: "a result" } },
     });
   });
 
@@ -610,15 +811,9 @@ describe("FlowEngine decision traces", () => {
       { ...definition, defaults: { model: { providerInstanceId: "codex", model: "default" } } },
       { done: true },
     );
-    t.send({
-      type: "thread_started",
-      at,
-      stepRunId: t.row("a").id,
-      threadId: ThreadId.make("reuse"),
-    });
     t.settle("a");
     expect(t.actions.find((a) => a.type === "continue_thread")).toMatchObject({
-      threadId: "reuse",
+      threadId: t.row("a").threadId,
       model: undefined,
       prompt: "a result",
     });
@@ -645,7 +840,8 @@ describe("FlowEngine decision traces", () => {
       expect(leaves().filter((s) => s.status === "running")).toHaveLength(2);
       t.send({
         type: "step_thread_settled",
-        turnId: "turn",
+        turnId: leaves()[1]!.expectedMessageId!,
+        messageId: leaves()[1]!.expectedMessageId!,
         at,
         stepRunId: leaves()[1]!.id,
         text: "second",
@@ -658,14 +854,16 @@ describe("FlowEngine decision traces", () => {
         expect(leaves().filter((s) => s.status === "running")).toHaveLength(2);
         t.send({
           type: "step_thread_settled",
-          turnId: "turn",
+          turnId: leaves()[2]!.expectedMessageId!,
+          messageId: leaves()[2]!.expectedMessageId!,
           at,
           stepRunId: leaves()[2]!.id,
           text: "third",
         });
         t.send({
           type: "step_thread_settled",
-          turnId: "turn",
+          turnId: leaves()[0]!.expectedMessageId!,
+          messageId: leaves()[0]!.expectedMessageId!,
           at,
           stepRunId: leaves()[0]!.id,
           text: "first",
@@ -755,15 +953,9 @@ describe("FlowEngine decision traces", () => {
   it.each([true, false])("restart agent auto-continuation=%s", (continuing) => {
     const t = trace(graph([agent("a")]));
     t.send({
-      type: "thread_started",
-      at,
-      stepRunId: t.row("a").id,
-      threadId: ThreadId.make("child"),
-    });
-    t.send({
       type: "recovered",
       at,
-      continuingThreadIds: continuing ? [ThreadId.make("child")] : [],
+      continuingThreadIds: continuing ? [t.row("a").threadId!] : [],
     });
     expect(t.row("a").status).toBe(continuing ? "running" : "interrupted");
   });

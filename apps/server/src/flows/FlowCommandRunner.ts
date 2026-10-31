@@ -9,20 +9,16 @@ import { capFlowCommandOutput } from "@t3tools/shared/flow";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import type { FlowCommandOutput } from "@t3tools/contracts";
 import * as ProcessRunner from "../processRunner.ts";
-import { defaultShellResolver, resolveShellCandidates } from "../terminal/Manager.ts";
+import { createTerminalSpawnEnv } from "../terminal/Manager.ts";
 
 export class FlowCommandError extends Schema.TaggedError<FlowCommandError>()("FlowCommandError", {
-  cause: Schema.Defect(),
+  reason: Schema.Literals(["spawn", "unsafe_cwd", "shell_unavailable"]),
+  cause: Schema.optional(Schema.Defect()),
 }) {
   override get message() {
     return "Could not run the flow command.";
   }
 }
-
-export class FlowCommandShell extends Context.Reference<string | undefined>(
-  "t3/flows/CommandShell",
-  { defaultValue: () => undefined },
-) {}
 
 export class FlowCommandRunner extends Context.Service<
   FlowCommandRunner,
@@ -41,47 +37,58 @@ const make = Effect.gen(function* () {
   const runner = yield* ProcessRunner.ProcessRunner;
   const platform = yield* HostProcess.Platform;
   const environment = yield* HostProcess.Environment;
-  const selectedShell = yield* FlowCommandShell;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   return FlowCommandRunner.of({
     run: Effect.fn("FlowCommandRunner.run")(function* (input) {
       const root = yield* fs
         .realPath(input.workspace)
-        .pipe(Effect.mapError((cause) => new FlowCommandError({ cause })));
+        .pipe(Effect.mapError((cause) => new FlowCommandError({ reason: "spawn", cause })));
       if (input.cwd && (path.isAbsolute(input.cwd) || /^[a-z]:/i.test(input.cwd)))
-        return yield* new FlowCommandError({ cause: "Absolute cwd" });
+        return yield* new FlowCommandError({ reason: "unsafe_cwd" });
       const cwd = yield* fs
         .realPath(path.resolve(root, input.cwd ?? "."))
-        .pipe(Effect.mapError((cause) => new FlowCommandError({ cause })));
+        .pipe(Effect.mapError((cause) => new FlowCommandError({ reason: "spawn", cause })));
       const relative = path.relative(root, cwd);
       if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
-        return yield* new FlowCommandError({ cause: "cwd escapes workspace" });
-      let shell = "bash";
+        return yield* new FlowCommandError({ reason: "unsafe_cwd" });
+      let shell = environment.SHELL || "bash";
       if (platform === "win32") {
-        const candidates = resolveShellCandidates(
-          () => selectedShell ?? defaultShellResolver(platform, environment),
-          platform,
-          environment,
-        );
         let resolved: string | null = null;
-        for (const candidate of candidates) {
-          resolved = yield* resolveCommandPath(candidate.shell, { env: environment }).pipe(
+        for (const candidate of ["pwsh", "powershell.exe"]) {
+          resolved = yield* resolveCommandPath(candidate, { env: environment }).pipe(
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, path),
             Effect.provideService(HostProcess.Platform, platform),
           );
           if (resolved) break;
         }
-        if (!resolved) return yield* new FlowCommandError({ cause: "No shell available" });
+        if (!resolved) return yield* new FlowCommandError({ reason: "shell_unavailable" });
         shell = resolved;
       }
+      const wrapper = [
+        "$ErrorActionPreference = 'Stop'",
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+        "$OutputEncoding = [Console]::OutputEncoding",
+        "$global:LASTEXITCODE = $null",
+        "try {",
+        input.command,
+        "$ok = $?",
+        "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }",
+        "if (-not $ok) { exit 1 }",
+        "exit 0",
+        "} catch { [Console]::Error.WriteLine($_); exit 1 }",
+      ].join("\n");
       const args =
-        platform !== "win32"
-          ? ["-lc", input.command]
-          : /(?:^|[\\/])cmd(?:\.exe)?$/i.test(shell)
-            ? ["/d", "/s", "/c", input.command]
-            : ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", input.command];
+        platform === "win32"
+          ? ["-NoProfile", "-NonInteractive", "-Command", wrapper]
+          : ["-lc", input.command];
+      const env = createTerminalSpawnEnv(
+        environment,
+        input.env ? { ...input.env } : undefined,
+        platform,
+        environment.HOME ?? environment.USERPROFILE ?? "",
+      );
       let tail = "";
       const lines: string[] = [];
       let line = "";
@@ -90,7 +97,8 @@ const make = Effect.gen(function* () {
       const finishLine = () => {
         if (nonEmpty) {
           lineCount++;
-          if (lines.length < 200) lines.push(line.replace(/\r$/, ""));
+          lines.push(line.replace(/\r$/, ""));
+          if (lines.length > 200) lines.shift();
         }
         line = "";
         nonEmpty = false;
@@ -113,7 +121,9 @@ const make = Effect.gen(function* () {
           command: shell,
           args,
           cwd,
-          env: input.env,
+          env,
+          extendEnv: false,
+          stdin: "",
           timeout: input.timeoutMs ?? 600_000,
           timeoutBehavior: "timedOutResult",
           outputMode: "truncate",
@@ -125,7 +135,7 @@ const make = Effect.gen(function* () {
           },
           onStderrChunk: (chunk) => append(errDecoder.decode(chunk, { stream: true })),
         })
-        .pipe(Effect.mapError((cause) => new FlowCommandError({ cause })));
+        .pipe(Effect.mapError((cause) => new FlowCommandError({ reason: "spawn", cause })));
       const remaining = outDecoder.decode();
       append(remaining);
       stdout(remaining);

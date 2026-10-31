@@ -92,13 +92,13 @@ it("rewrites previous outputs and inner loop output paths without changing simil
         kind: "approval",
         id: "consumer",
         prompt:
-          "{{steps.loop.output.child.text}} {{steps.source.previous.output.text}} {{steps.source-other.output.text}}",
+          "{{steps.loop.output.steps.child.text}} {{steps.source.previous.output.text}} {{steps.source-other.output.text}}",
       },
     ],
   };
   const result = renameStep(renameStep(input, "child", "renamed"), "source", "new-source");
   expect(findStep(result.steps, "consumer")).toMatchObject({
     prompt:
-      "{{steps.loop.output.renamed.text}} {{steps.new-source.previous.output.text}} {{steps.source-other.output.text}}",
+      "{{steps.loop.output.steps.renamed.text}} {{steps.new-source.previous.output.text}} {{steps.source-other.output.text}}",
   });
 });

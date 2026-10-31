@@ -233,8 +233,9 @@ it.each([
   "checks command map size $count against $maxItems without silent truncation",
   ({ count, maxItems, valid }) => {
     const output = { kind: "command", ...capFlowCommandOutput("", "line\n".repeat(count)) };
-    const context = { steps: { loop: { output: { command: output } } } };
-    const read = () => resolveFlowMapItems("steps.loop.output.command.lines", context, maxItems);
+    const context = { steps: { loop: { output: { steps: { command: output } } } } };
+    const read = () =>
+      resolveFlowMapItems("steps.loop.output.steps.command.lines", context, maxItems);
     if (valid) expect(read()).toHaveLength(count);
     else expect(read).toThrow(FlowValueError);
   },
