@@ -8,6 +8,8 @@ import {
   FlowStepRunId,
   ProjectId,
   ThreadId,
+  type FlowDefinition,
+  type FlowModel,
   type FlowRunSnapshot,
   type FlowStepRunState,
 } from "@t3tools/contracts";
@@ -279,15 +281,36 @@ it("retains a conflicting draft until explicit overwrite or reload", async () =>
   draft.reload({ definition: edited, revision: "new" });
   expect(draft.getSnapshot().definition).toBe(draft.getSnapshot().saved);
 });
-it("flushes edits made during an in-flight save with the returned revision", async () => {
+it.each(
+  [
+    undefined,
+    { providerInstanceId: "", model: "" },
+    { providerInstanceId: "devReplay", model: "" },
+    { providerInstanceId: "", model: "showcase" },
+  ].flatMap((model) => ["default", "agent", "nested"].map((location) => ({ model, location }))),
+)("flushes only complete $location model overrides: $model", async ({ model, location }) => {
   const draft = createFlowDraft({ definition: base.definition, revision: "old" });
   const first = { ...base.definition, title: "First" };
   const second = { ...base.definition, title: "Second" };
+  const withModel = (value: FlowModel): FlowDefinition => {
+    const agent = { id: "agent", kind: "agent" as const, prompt: "Test", model: value };
+    return {
+      ...second,
+      ...(location === "default"
+        ? { defaults: { model: value } }
+        : {
+            steps:
+              location === "agent"
+                ? [agent]
+                : [{ id: "map", kind: "map", over: "inputs.items", steps: [agent], edges: [] }],
+          }),
+    };
+  };
   draft.change(first);
   const inputs: unknown[] = [];
   await draft.save(async (input) => {
     inputs.push(input);
-    if (inputs.length === 1) draft.change(second);
+    if (inputs.length === 1) draft.change(model ? withModel(model) : second);
     return AsyncResult.success({
       flowId: summary.flowId,
       definition: input.definition,
@@ -295,11 +318,31 @@ it("flushes edits made during an in-flight save with the returned revision", asy
       validation: { valid: true, errors: [] },
     });
   });
+  const completed = model
+    ? withModel({ providerInstanceId: "devReplay", model: "showcase", options: { effort: "high" } })
+    : second;
+  if (model) {
+    expect(inputs).toEqual([{ definition: first, baseRevision: "old" }]);
+    expect(draft.getSnapshot()).toMatchObject({ saving: false, error: null, saved: first });
+    await draft.save(async () => {
+      throw new Error("Incomplete override must not reach the save transport");
+    });
+    draft.change(completed);
+    await draft.save(async (input) => {
+      inputs.push(input);
+      return AsyncResult.success({
+        flowId: summary.flowId,
+        definition: input.definition,
+        revision: "r2",
+        validation: { valid: true, errors: [] },
+      });
+    });
+  }
   expect(inputs).toEqual([
     { definition: first, baseRevision: "old" },
-    { definition: second, baseRevision: "r1" },
+    { definition: completed, baseRevision: "r1" },
   ]);
-  expect(draft.getSnapshot().saved).toBe(second);
+  expect(draft.getSnapshot().saved).toBe(completed);
 });
 
 it("saves an invalid draft and retains its validation errors", async () => {

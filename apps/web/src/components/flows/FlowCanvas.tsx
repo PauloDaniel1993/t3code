@@ -64,7 +64,7 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
           {count.succeeded}/{count.total} succeeded · {count.failed} failed
         </div>
       )}
-      {data.errors?.map((error) => (
+      {[...new Set(data.errors)].map((error) => (
         <div role="alert" key={error} className="text-destructive">
           {error}
         </div>

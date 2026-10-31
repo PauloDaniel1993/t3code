@@ -81,7 +81,7 @@ export function Choice({
         </SelectTrigger>
         <SelectPopup>
           <SelectGroup>
-            {values.map((item) => (
+            {[...new Set(values)].map((item) => (
               <SelectItem key={item} value={item}>
                 {labels?.[item] ?? item}
               </SelectItem>

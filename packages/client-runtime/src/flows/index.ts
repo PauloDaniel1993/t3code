@@ -1,6 +1,8 @@
 import {
   FLOW_WS_METHODS,
   type FlowDefinition,
+  type FlowModel,
+  type FlowStep,
   type FlowDefinitionEntry,
   type FlowSaveInput,
   type FlowRunSnapshot,
@@ -155,6 +157,18 @@ export function flowStepCountsById(snapshot: FlowRunSnapshot) {
   return counts;
 }
 
+function incompleteModel(model: FlowModel | undefined) {
+  return model !== undefined && (!model.providerInstanceId.trim() || !model.model.trim());
+}
+
+function hasIncompleteStepModel(steps: ReadonlyArray<FlowStep>): boolean {
+  return steps.some((step) =>
+    step.kind === "agent"
+      ? incompleteModel(step.model)
+      : (step.kind === "loop" || step.kind === "map") && hasIncompleteStepModel(step.steps),
+  );
+}
+
 export function createFlowDraft(
   entry: Pick<typeof FlowDefinitionEntry.Type, "definition" | "revision"> & {
     definition: FlowDefinition;
@@ -207,6 +221,11 @@ export function createFlowDraft(
       pending = (async () => {
         while (state.definition !== state.saved && !state.conflict) {
           const definition = state.definition;
+          if (
+            incompleteModel(definition.defaults?.model) ||
+            hasIncompleteStepModel(definition.steps)
+          )
+            break;
           update({ ...state, saving: true, error: null });
           const result = await execute({ definition, baseRevision: state.revision });
           if (result._tag === "Success")
