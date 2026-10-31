@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { expect, it } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
-import type { FlowCondition } from "@t3tools/contracts";
+import type { FlowCondition, FlowStep } from "@t3tools/contracts";
 import { render } from "../../../test/render";
-import { ConditionForm } from "./FlowFields";
+import { ConditionForm, StepForm } from "./FlowFields";
 
 function ConditionHarness({ initial }: { initial: FlowCondition }) {
   const [value, setValue] = useState(initial);
@@ -43,4 +43,35 @@ it("preserves isEmpty without a value when editing a reference", async () => {
   await expect
     .element(screen.getByLabelText("Condition JSON"))
     .toHaveTextContent('{"ref":"steps.command.output.lines","op":"isEmpty"}');
+});
+
+function CommandHarness() {
+  const [step, setStep] = useState<FlowStep>({
+    id: "command",
+    kind: "command",
+    command: "echo $VALUE",
+    env: { VALUE: "{{inputs.issue}}" },
+  });
+  return (
+    <>
+      <StepForm step={step} onChange={setStep} />
+      <output aria-label="Step JSON">{JSON.stringify(step)}</output>
+    </>
+  );
+}
+
+it("keeps focus while renaming command environment variables", async () => {
+  await using screen = await render(<CommandHarness />);
+  await userEvent.type(
+    screen.getByRole("textbox", { name: "Environment variable", exact: true }),
+    "_NAME",
+  );
+  await expect.element(screen.getByLabelText("Step JSON")).toHaveTextContent(
+    JSON.stringify({
+      id: "command",
+      kind: "command",
+      command: "echo $VALUE",
+      env: { VALUE_NAME: "{{inputs.issue}}" },
+    }),
+  );
 });

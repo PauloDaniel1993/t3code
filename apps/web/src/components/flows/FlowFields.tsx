@@ -638,16 +638,22 @@ export function StepForm({
             Command lines are literal. Put flow references in environment values and read them from
             the shell.
           </p>
-          {Object.entries(step.env ?? {}).map(([name, value]) => (
-            <div key={name} className="flex flex-col gap-2">
+          {Object.entries(step.env ?? {}).map(([name, value], index) => (
+            <div key={index} className="flex flex-col gap-2">
               <TextField
                 label="Environment variable"
                 value={name}
                 onChange={(next) => {
-                  const env = { ...step.env };
-                  delete env[name];
-                  env[next] = value;
-                  onChange({ ...step, env });
+                  if (next !== name && Object.hasOwn(step.env ?? {}, next)) return;
+                  onChange({
+                    ...step,
+                    env: Object.fromEntries(
+                      Object.entries(step.env ?? {}).map(([key, entry]) => [
+                        key === name ? next : key,
+                        entry,
+                      ]),
+                    ),
+                  });
                 }}
               />
               <TextField
