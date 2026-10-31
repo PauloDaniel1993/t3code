@@ -172,6 +172,41 @@ it.effect("shares a project scan across subscribers and releases it when both le
   }).pipe(Effect.scoped, Effect.provide(dependencies)),
 );
 
+it.live("reattaches after the flow directory is replaced at the same path", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-flow-watch-replace-" });
+    const flows = yield* FlowDefinitions.FlowDefinitions;
+    const id = FlowId.make("test");
+    const definition = { version: 1 as const, title: "Initial", steps: [], edges: [] };
+    yield* flows.write(root, id, definition);
+    const ready = yield* Deferred.make<void>();
+    const replaced = yield* Deferred.make<void>();
+    const updated = yield* Deferred.make<void>();
+    const watcher = yield* flows.stream(root).pipe(
+      Stream.runForEach((entries) => {
+        const title = entries[0]?.definition?.title;
+        return title === "Initial"
+          ? Deferred.succeed(ready, undefined)
+          : title === "Replaced"
+            ? Deferred.succeed(replaced, undefined)
+            : title === "Updated"
+              ? Deferred.succeed(updated, undefined)
+              : Effect.void;
+      }),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(ready);
+    yield* fs.rename(path.join(root, ".t3code/flow"), path.join(root, ".t3code/old-flow"));
+    yield* flows.write(root, id, { ...definition, title: "Replaced" });
+    yield* Deferred.await(replaced);
+    yield* flows.write(root, id, { ...definition, title: "Updated" });
+    yield* Deferred.await(updated);
+    yield* Fiber.interrupt(watcher);
+  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
 it.each([
   ["", "change", ".git", false],
   ["", "change", ".t3code", false],

@@ -30,6 +30,8 @@ export class FlowPersistenceError extends Schema.TaggedError<FlowPersistenceErro
     cause: Schema.Defect(),
   },
 ) {
+  static readonly is = Schema.is(FlowPersistenceError);
+
   override get message() {
     return `Flow persistence failed during ${this.operation}.`;
   }
@@ -132,9 +134,7 @@ const make = Effect.gen(function* () {
   ) =>
     effect.pipe(
       Effect.mapError((cause) =>
-        cause instanceof FlowPersistenceError
-          ? cause
-          : new FlowPersistenceError({ operation, cause }),
+        FlowPersistenceError.is(cause) ? cause : new FlowPersistenceError({ operation, cause }),
       ),
     );
   const read = Effect.fn("FlowRunRepository.read")(function* (id: FlowRunId) {

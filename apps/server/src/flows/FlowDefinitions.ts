@@ -45,6 +45,8 @@ export class FlowDefinitionError extends Schema.TaggedError<FlowDefinitionError>
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
+  static readonly is = Schema.is(FlowDefinitionError);
+
   override get message() {
     return `Flow file ${this.operation}: ${this.reason}.`;
   }
@@ -114,7 +116,7 @@ const make = Effect.gen(function* () {
   const wrap = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.mapError((cause) =>
-        cause instanceof FlowDefinitionError
+        FlowDefinitionError.is(cause)
           ? cause
           : new FlowDefinitionError({ operation, reason: "io", cause }),
       ),
@@ -245,6 +247,11 @@ const make = Effect.gen(function* () {
             const resolved = dir === "" ? real : yield* files.resolveDirectory(dir);
             if (resolved) {
               desired.set(dir, resolved);
+              if (dir === ".t3code/flow") {
+                // Windows does not notify a directory watcher when that directory itself is renamed.
+                const parent = yield* files.resolveDirectory(".t3code");
+                if (parent) desired.set(".t3code", parent);
+              }
               break;
             }
           }
@@ -258,13 +265,21 @@ const make = Effect.gen(function* () {
               resolved,
               false,
               (event, name) => {
-                if (isFlowFileChange(dir, event, name)) Queue.offerUnsafe(changed, undefined);
+                if (isFlowFileChange(dir, event, name)) {
+                  if (event === "rename" && name.toLowerCase() === "flow") resolvedWatches.clear();
+                  Queue.offerUnsafe(changed, undefined);
+                }
               },
               () => Queue.offerUnsafe(changed, undefined),
             ).pipe(Effect.provideService(Scope.Scope, watcherScope), Effect.option);
             if (closed._tag === "Some")
               yield* Deferred.await(closed.value).pipe(
-                Effect.andThen(Queue.offer(changed, undefined)),
+                Effect.andThen(
+                  Effect.sync(() => {
+                    resolvedWatches.clear();
+                    Queue.offerUnsafe(changed, undefined);
+                  }),
+                ),
                 Effect.forkIn(watcherScope),
               );
           }
@@ -331,7 +346,9 @@ const make = Effect.gen(function* () {
                 }),
             ),
           );
-          yield* fs.remove(source);
+          yield* fs
+            .remove(source)
+            .pipe(Effect.onError(() => fs.remove(target).pipe(Effect.ignore)));
           return yield* read(root, newId);
         }),
       );
