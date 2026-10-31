@@ -1,3 +1,4 @@
+import { coerceFlowInputs } from "@t3tools/shared/flow";
 import * as FlowService from "../flows/FlowService.ts";
 import {
   FlowScheduledTarget,
@@ -603,7 +604,7 @@ export const layer = Layer.effect(
     ) =>
       sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
-          flow_json,
+        flow_json,
         task_id,
           title,
           prompt,
@@ -941,12 +942,20 @@ export const layer = Layer.effect(
                     }
                   }
                   const run = yield* flows.value.start({
+                    creationSource: "server",
                     projectId: active.projectId,
                     flowId: active.flow!.flowId,
                     inputs,
                     baseRef: active.flow!.baseRef,
                     scheduledTaskId: active.id,
                     coerce: true,
+                    ...(webhook
+                      ? {
+                          webhookInputs: Object.keys(active.flow!.inputs).filter((key) =>
+                            active.flow!.inputs[key]!.includes("{{"),
+                          ),
+                        }
+                      : {}),
                   });
                   return run.flowRunThreadId;
                 }),
@@ -1193,6 +1202,30 @@ export const layer = Layer.effect(
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
     )(function* (input) {
+      if (input.flow) {
+        if (Option.isNone(flows)) return yield* taskError("Flow service is unavailable.");
+        const entry = yield* flows.value
+          .read(input.projectId, input.flow.flowId)
+          .pipe(Effect.mapError((cause) => taskError("Flow not found.", { cause })));
+        if (!entry.definition || !entry.validation.valid)
+          return yield* taskError("Scheduled flow is invalid.");
+        const fields = entry.definition.inputs ?? [];
+        const values = input.flow.inputs;
+        yield* Effect.try({
+          try: () => {
+            if (input.schedule.type !== "webhook") return coerceFlowInputs(fields, values);
+            for (const key of Object.keys(values))
+              if (!fields.some((field) => field.name === key))
+                throw new Error("Unknown flow input");
+            for (const field of fields) {
+              const value = values[field.name];
+              if (value?.includes("{{")) continue;
+              coerceFlowInputs([field], value === undefined ? {} : { [field.name]: value });
+            }
+          },
+          catch: (cause) => taskError("Invalid flow inputs.", { cause }),
+        });
+      }
       const now = yield* localNow;
       const uuid =
         input.commandId === undefined

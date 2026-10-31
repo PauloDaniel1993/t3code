@@ -665,7 +665,7 @@ export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabiliti
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
-  prompt: OrchestratorMcpPrompt,
+  prompt: Schema.optional(OrchestratorMcpPrompt),
   schedule: OrchestratorMcpSchedule,
   title: Schema.optional(OrchestratorMcpTitle),
   enabled: Schema.optional(Schema.Boolean.annotate({ description: "Default true." })),

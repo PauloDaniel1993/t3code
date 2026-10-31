@@ -1,3 +1,5 @@
+import { FlowId } from "@t3tools/contracts";
+import * as Flows from "../flows/FlowService.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -108,6 +110,15 @@ const caller = {
 const external = Layer.mergeAll(
   NodeServices.layer,
   Scheduler.layer,
+  Layer.mock(Flows.FlowService)({
+    read: (_projectId, flowId) =>
+      Effect.succeed({
+        flowId,
+        definition: { version: 1, title: "Test flow", steps: [], edges: [] },
+        revision: "test",
+        validation: { valid: true, errors: [] },
+      }),
+  }),
   Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
   Layer.mock(ThreadManagement.ThreadManagementService)({
     getThreadRecords: () => Effect.succeed(projection),
@@ -185,6 +196,17 @@ it.effect("keeps schedule defaults, inherited settings, idempotency and project 
       projectId: ProjectId.make("project:other"),
     });
     expect((yield* mcp.listScheduledTasks(scope, {})).tasks).toHaveLength(2);
+    const flow = { flowId: FlowId.make("test-flow"), inputs: {} };
+    const scheduledFlow = yield* mcp.scheduleTask(scope, {
+      schedule: scheduleInput.schedule,
+      flow,
+    });
+    const savedFlow = (yield* tasks.list()).tasks.find(
+      (task) => task.id === scheduledFlow.scheduledTaskId,
+    )!;
+    expect(savedFlow.flow).toEqual(flow);
+    expect(savedFlow.threadId).toBeNull();
+    expect(savedFlow.prompt).toBe("Run flow: test-flow");
   }).pipe(Effect.provide(layer)),
 );
 

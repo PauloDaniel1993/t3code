@@ -31,6 +31,19 @@ it.effect(
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(FlowService.FlowService)({
+              read: () =>
+                Effect.succeed({
+                  flowId: FlowId.make("example"),
+                  definition: {
+                    version: 1,
+                    title: "Flow",
+                    inputs: [{ name: "count", type: "number", required: true }],
+                    steps: [],
+                    edges: [],
+                  },
+                  revision: "test",
+                  validation: { valid: true, errors: [] },
+                }),
               start: (input) => {
                 calls.push(input);
                 if (calls.length > 1)
@@ -84,6 +97,11 @@ it.effect(
       });
       expect(task.flow).toEqual(target);
       expect(task.threadId).toBeNull();
+      expect(
+        (yield* tasks
+          .upsert({ ...task, flow: { ...target, inputs: { count: "not-a-number" } } })
+          .pipe(Effect.exit))._tag,
+      ).toBe("Failure");
       yield* tasks.runNow({ id: task.id });
       expect(calls[0]).toEqual({
         projectId: task.projectId,
@@ -92,6 +110,7 @@ it.effect(
         baseRef: "dev",
         scheduledTaskId: task.id,
         coerce: true,
+        creationSource: "server",
       });
       yield* tasks.runNow({ id: task.id });
       const sql = yield* SqlClient.SqlClient;

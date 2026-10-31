@@ -1860,9 +1860,10 @@ const make = Effect.gen(function* () {
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
-      const bindToCurrentThread =
-        input.bindToCurrentThread ??
-        (parent !== undefined && parent.thread.projectId === projectId);
+      const bindToCurrentThread = input.flow
+        ? false
+        : (input.bindToCurrentThread ??
+          (parent !== undefined && parent.thread.projectId === projectId));
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -1879,12 +1880,15 @@ const make = Effect.gen(function* () {
           "A bound scheduled task follows its thread's workspace; omit workspaceStrategy or set bindToCurrentThread:false.",
         );
       }
-      const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
+      const prompt = input.prompt ?? (input.flow ? `Run flow: ${input.flow.flowId}` : "");
+      if (!prompt) return yield* failure("invalid_request", "A prompt or flow is required.");
+      const derivedTitle = prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
       const upsertInput: ScheduledTaskUpsertInput = {
         title,
-        prompt: input.prompt,
+        prompt,
+        ...(input.flow ? { flow: input.flow } : {}),
         enabled: input.enabled ?? true,
         schedule: input.schedule,
         projectId,
@@ -1976,6 +1980,7 @@ const make = Effect.gen(function* () {
           id: existing.id,
           title: input.title ?? existing.title,
           prompt: input.prompt ?? existing.prompt,
+          ...((input.flow ?? existing.flow) ? { flow: input.flow ?? existing.flow } : {}),
           enabled: input.enabled ?? existing.enabled,
           schedule: input.schedule ?? existing.schedule,
           projectId: existing.projectId,
