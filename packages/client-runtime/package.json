@@ -539,6 +539,10 @@
     "./provider-clients": {
       "types": "./src/providerClients.ts",
       "default": "./src/providerClients.ts"
+    },
+    "./flows": {
+      "types": "./src/flows/index.ts",
+      "default": "./src/flows/index.ts"
     }
   },
   "scripts": {

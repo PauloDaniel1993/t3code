@@ -1,5 +1,6 @@
 import {
   EnvironmentAuthorizationError,
+  FLOW_WS_METHODS,
   clientRpcRequiredScopes,
   authScopeRequiredResponse,
   type EnvironmentId,
@@ -49,6 +50,9 @@ export type EnvironmentRpcTag = keyof WsRpcProtocolClient & string;
 type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 
 export type EnvironmentSubscriptionRpcTag =
+  | typeof FLOW_WS_METHODS.flowList
+  | typeof FLOW_WS_METHODS.flowRuns
+  | typeof FLOW_WS_METHODS.flowRun
   | typeof WS_METHODS.providerAuthSubscribe
   | typeof WS_METHODS.providerInstallSubscribe
   | typeof ORCHESTRATION_V2_WS_METHODS.subscribeShell

@@ -8,7 +8,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { FlowId, FlowValue } from "./flowDefinition.ts";
+import { FlowDefinition, FlowId, FlowValue } from "./flowDefinition.ts";
 
 export const FlowRunId = TrimmedNonEmptyString.pipe(Schema.brand("FlowRunId"));
 export type FlowRunId = typeof FlowRunId.Type;
@@ -190,6 +190,7 @@ export const FlowStepRunState = Schema.Struct({
 });
 export type FlowStepRunState = typeof FlowStepRunState.Type;
 export const FlowRunSnapshot = Schema.Struct({
+  definitionSnapshot: Schema.optional(FlowDefinition),
   summary: FlowRunSummary,
   stepRuns: Schema.Array(FlowStepRunState),
   approvals: Schema.Array(FlowApproval),
