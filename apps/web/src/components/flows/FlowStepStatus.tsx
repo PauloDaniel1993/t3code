@@ -4,7 +4,7 @@ import { cn } from "../../lib/utils";
 
 type Status = FlowStepRunStatus | FlowRunSummary["status"];
 const labels: Record<Status, string> = {
-  queued: "Queued",
+  pending: "Queued",
   starting: "Starting",
   running: "Running",
   waiting_report: "Waiting for report",

@@ -1,4 +1,5 @@
-import { Plus, MoreHorizontal, TriangleAlert } from "lucide-react";
+import { FlowKindIcon } from "./FlowStepStatus";
+import { Plus, MoreHorizontal, TriangleAlert, X, Trash2 } from "lucide-react";
 import {
   Select,
   SelectTrigger,
@@ -599,278 +600,290 @@ function FlowEditor({
         </div>
       )}
       {detail.error && <p role="alert">{detail.error}</p>}
-      {tab === "runs" ? (
-        <div className="min-h-0 flex-1 overflow-auto p-2">
-          {history.error && <p role="alert">{history.error}</p>}
-          {runs.map((run) => (
-            <Button
-              key={run.id}
-              size="sm"
-              variant={flowRunId === run.id ? "secondary" : "ghost"}
-              aria-pressed={flowRunId === run.id}
-              onClick={() => {
-                setFlowRunId(run.id);
-                setStepRunId(null);
-              }}
-            >
-              {run.flowTitle} · Flow run {run.runNumber} · {run.status.replaceAll("_", " ")} ·{" "}
-              {formatRelativeTimeLabel(run.createdAt)}
-            </Button>
-          ))}
-          {cursor && (
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={loadingOlder}
-              onClick={async () => {
-                setLoadingOlder(true);
-                setPageError(false);
-                const result = await loadOlder({
-                  environmentId,
-                  input: { projectId, before: cursor },
-                });
-                if (result._tag === "Success") {
-                  setOlder((previous) => ({
-                    ...applyFlowRunsEvent(previous, { type: "upsert", runs: result.value.runs }),
-                    nextCursor: result.value.nextCursor,
-                  }));
-                  setLoadedOlder(true);
-                } else setPageError(true);
-                setLoadingOlder(false);
-              }}
-            >
-              Load older flow runs
-            </Button>
-          )}
-          {pageError && <p role="alert">Could not load older flow runs.</p>}
-          {snapshot && (
-            <>
-              <Button size="xs" variant="outline" onClick={() => setTab("design")}>
-                View on canvas
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {tab === "runs" ? (
+          <div className="min-h-0 flex-1 overflow-auto p-2">
+            {history.error && <p role="alert">{history.error}</p>}
+            {runs.map((run) => (
+              <Button
+                key={run.id}
+                size="sm"
+                variant={flowRunId === run.id ? "secondary" : "ghost"}
+                aria-pressed={flowRunId === run.id}
+                onClick={() => {
+                  setFlowRunId(run.id);
+                  setStepRunId(null);
+                }}
+              >
+                {run.flowTitle} · Flow run {run.runNumber} · {run.status.replaceAll("_", " ")} ·{" "}
+                {formatRelativeTimeLabel(run.createdAt)}
               </Button>
-              <FlowRunTimeline
-                selectedId={selectedRun?.id ?? null}
-                snapshot={snapshot}
-                onSelect={(step) => setStepRunId(step.id)}
-              />
-            </>
-          )}
-        </div>
-      ) : (
-        <div className="relative min-h-0 flex-1">
-          {flowRunId && !snapshot ? (
-            <p className="p-3 text-xs text-muted-foreground">Loading flow run…</p>
-          ) : (
-            <FlowCanvas
-              definition={displayed}
-              snapshot={snapshot}
-              locked={locked}
-              selectedId={
-                selection?.kind === "step" || selection?.kind === "edge" ? selection.id : null
-              }
-              errors={validation.errors}
-              onDeselect={() => {
-                setSelection(null);
-                setStepRunId(null);
-              }}
-              onChange={change}
-              onSelectStep={(id) => {
-                setSelection({ kind: "step", id });
-                setStepRunId(null);
-              }}
-              onSelectEdge={(id) => {
-                setSelection({ kind: "edge", id });
-                setStepRunId(null);
-              }}
-            />
-          )}
-        </div>
-      )}
-      {(selection || selectedRun) && (
-        <section
-          aria-label="Flow inspector"
-          className="max-h-[55%] shrink-0 overflow-auto rounded-t-xl border-t border-border bg-popover p-3"
-        >
-          <div className="mb-2 flex justify-between">
-            <h3 className="text-sm font-medium">
-              {flowRunId
-                ? "Step run"
-                : selection?.kind === "flow"
-                  ? "Flow settings"
-                  : step
-                    ? `${step.id} · ${step.kind} step`
-                    : "Edge"}
-            </h3>
-            <Button
-              size="xs"
-              variant="ghost"
-              onClick={() => {
-                setSelection(null);
-                setStepRunId(null);
-              }}
-            >
-              Close inspector
-            </Button>
+            ))}
+            {cursor && (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={loadingOlder}
+                onClick={async () => {
+                  setLoadingOlder(true);
+                  setPageError(false);
+                  const result = await loadOlder({
+                    environmentId,
+                    input: { projectId, before: cursor },
+                  });
+                  if (result._tag === "Success") {
+                    setOlder((previous) => ({
+                      ...applyFlowRunsEvent(previous, { type: "upsert", runs: result.value.runs }),
+                      nextCursor: result.value.nextCursor,
+                    }));
+                    setLoadedOlder(true);
+                  } else setPageError(true);
+                  setLoadingOlder(false);
+                }}
+              >
+                Load older flow runs
+              </Button>
+            )}
+            {pageError && <p role="alert">Could not load older flow runs.</p>}
+            {snapshot && (
+              <>
+                <Button size="xs" variant="outline" onClick={() => setTab("design")}>
+                  View on canvas
+                </Button>
+                <FlowRunTimeline
+                  selectedId={selectedRun?.id ?? null}
+                  snapshot={snapshot}
+                  onSelect={(step) => setStepRunId(step.id)}
+                />
+              </>
+            )}
           </div>
-          {flowRunId ? (
-            selectedRun && snapshot ? (
-              <StepRunInspector
-                key={selectedRun.id}
-                environmentId={environmentId}
-                snapshot={snapshot}
-                stepRun={selectedRun}
-              />
+        ) : (
+          <div className="relative min-h-0 flex-1">
+            {flowRunId && !snapshot ? (
+              <p className="p-3 text-xs text-muted-foreground">Loading flow run…</p>
             ) : (
-              <p>No step run recorded for this step.</p>
-            )
-          ) : (
-            <fieldset disabled={locked} className="flex flex-col gap-3">
-              {step && (
-                <>
-                  <StepForm
-                    key={step.id}
-                    errors={[...validation.errors, ...serverErrors].filter(
-                      (error) => stepIdAtPath(draft, error.path) === step.id,
-                    )}
-                    step={step}
-                    onRename={(id) => {
-                      change(renameStep(draft, step.id, id));
-                      setSelection({ kind: "step", id });
-                    }}
-                    onChange={(next) => {
-                      change({ ...draft, steps: updateStep(draft.steps, step.id, () => next) });
-                      if (next.id !== step.id) setSelection({ kind: "step", id: next.id });
-                    }}
-                  />
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    onClick={() => {
-                      change(removeStep(draft, step.id));
-                      setSelection(null);
-                    }}
-                  >
-                    Delete step
-                  </Button>
-                </>
-              )}
-              {edge && (
-                <>
-                  <TextField
-                    label="From step"
-                    value={edge.from}
-                    onChange={(from) => editEdge({ ...edge, from })}
-                  />
-                  <TextField
-                    label="To step"
-                    value={edge.to}
-                    onChange={(to) => editEdge({ ...edge, to })}
-                  />
-                  <Choice
-                    label="When step"
-                    value={edge.on ?? "success"}
-                    values={["success", "failure"]}
-                    onChange={(value) =>
-                      editEdge({ ...edge, on: value === "failure" ? "failure" : undefined })
-                    }
-                  />
-                  <Choice
-                    label="Edge condition"
-                    value={edge.when ? "conditional" : "always"}
-                    values={["always", "conditional"]}
-                    onChange={(value) =>
-                      editEdge({
-                        ...edge,
-                        when:
-                          value === "conditional" ? { ref: "", op: "eq", value: "" } : undefined,
-                      })
-                    }
-                  />
-                  {edge.when && (
-                    <ConditionForm
-                      value={edge.when}
-                      onChange={(when) => editEdge({ ...edge, when })}
+              <FlowCanvas
+                definition={displayed}
+                snapshot={snapshot}
+                locked={locked}
+                selectedId={
+                  selection?.kind === "step" || selection?.kind === "edge" ? selection.id : null
+                }
+                errors={validation.errors}
+                onDeselect={() => {
+                  setSelection(null);
+                  setStepRunId(null);
+                }}
+                onChange={change}
+                onSelectStep={(id) => {
+                  setSelection({ kind: "step", id });
+                  setStepRunId(null);
+                }}
+                onSelectEdge={(id) => {
+                  setSelection({ kind: "edge", id });
+                  setStepRunId(null);
+                }}
+              />
+            )}
+          </div>
+        )}
+        {(selection || selectedRun) && (
+          <section
+            aria-label="Flow inspector"
+            className="absolute inset-x-0 bottom-0 z-10 max-h-[55%] overflow-auto scrollbar-gutter-both rounded-t-2xl border-t border-border bg-popover p-3 text-xs shadow-xl"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                setSelection(null);
+                setStepRunId(null);
+              }
+            }}
+          >
+            <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-border" />
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                {step && <FlowKindIcon kind={step.kind} />}
+                {flowRunId
+                  ? (selectedRun?.stepPath.at(-1) ?? "Step run")
+                  : selection?.kind === "flow"
+                    ? "Flow settings"
+                    : step
+                      ? step.id
+                      : "Edge"}
+              </h3>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Close inspector"
+                onClick={() => {
+                  setSelection(null);
+                  setStepRunId(null);
+                }}
+              >
+                <X />
+              </Button>
+            </div>
+            {flowRunId ? (
+              selectedRun && snapshot ? (
+                <StepRunInspector
+                  key={selectedRun.id}
+                  environmentId={environmentId}
+                  snapshot={snapshot}
+                  stepRun={selectedRun}
+                />
+              ) : (
+                <p>No step run recorded for this step.</p>
+              )
+            ) : (
+              <fieldset disabled={locked} className="flex flex-col gap-3">
+                {step && (
+                  <>
+                    <StepForm
+                      key={step.id}
+                      errors={[...validation.errors, ...serverErrors].filter(
+                        (error) => stepIdAtPath(draft, error.path) === step.id,
+                      )}
+                      step={step}
+                      onRename={(id) => {
+                        change(renameStep(draft, step.id, id));
+                        setSelection({ kind: "step", id });
+                      }}
+                      onChange={(next) => {
+                        change({ ...draft, steps: updateStep(draft.steps, step.id, () => next) });
+                        if (next.id !== step.id) setSelection({ kind: "step", id: next.id });
+                      }}
                     />
-                  )}
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    onClick={() => {
-                      editEdge(null);
-                      setSelection(null);
-                    }}
-                  >
-                    Delete edge
-                  </Button>
-                </>
-              )}
-              {selection?.kind === "flow" && (
-                <>
-                  <TextField
-                    label="Title"
-                    value={draft.title}
-                    onChange={(title) => change({ ...draft, title })}
-                  />
-                  <TextField
-                    label="Description"
-                    value={draft.description ?? ""}
-                    multiline
-                    onChange={(description) =>
-                      change({ ...draft, description: description || undefined })
-                    }
-                  />
-                  <Choice
-                    label="Workspace"
-                    value={draft.workspace ?? "worktree"}
-                    values={["worktree", "root"]}
-                    onChange={(workspace) =>
-                      change({ ...draft, workspace: workspace === "root" ? "root" : "worktree" })
-                    }
-                  />
-                  {draft.workspace === "root" && (
-                    <p>
-                      Flow runs share the project folder. Concurrent flow runs can change the same
-                      files.
-                    </p>
-                  )}
-                  <InputFieldsForm
-                    fields={draft.inputs ?? []}
-                    onChange={(inputs) => change({ ...draft, inputs })}
-                  />
-                  <ModelFields
-                    value={draft.defaults?.model}
-                    onChange={(model) =>
-                      change({ ...draft, defaults: { ...draft.defaults, model } })
-                    }
-                  />
-                  <AgentModes
-                    value={draft.defaults ?? {}}
-                    onChange={(modes) =>
-                      change({ ...draft, defaults: { ...draft.defaults, ...modes } })
-                    }
-                  />
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={!canRename || dirty}
-                    onClick={() => setRenameId(flowId)}
-                  >
-                    Rename flow file
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={!canDelete || dirty}
-                    onClick={() => setDeleteOpen(true)}
-                  >
-                    Delete flow
-                  </Button>
-                </>
-              )}
-            </fieldset>
-          )}
-        </section>
-      )}
+                    <Button
+                      size="xs"
+                      variant="ghost-destructive"
+                      onClick={() => {
+                        change(removeStep(draft, step.id));
+                        setSelection(null);
+                      }}
+                    >
+                      <Trash2 /> Remove step
+                    </Button>
+                  </>
+                )}
+                {edge && (
+                  <>
+                    <TextField
+                      label="From step"
+                      value={edge.from}
+                      onChange={(from) => editEdge({ ...edge, from })}
+                    />
+                    <TextField
+                      label="To step"
+                      value={edge.to}
+                      onChange={(to) => editEdge({ ...edge, to })}
+                    />
+                    <Choice
+                      label="When step"
+                      value={edge.on ?? "success"}
+                      values={["success", "failure"]}
+                      onChange={(value) =>
+                        editEdge({ ...edge, on: value === "failure" ? "failure" : undefined })
+                      }
+                    />
+                    <Choice
+                      label="Edge condition"
+                      value={edge.when ? "conditional" : "always"}
+                      values={["always", "conditional"]}
+                      onChange={(value) =>
+                        editEdge({
+                          ...edge,
+                          when:
+                            value === "conditional" ? { ref: "", op: "eq", value: "" } : undefined,
+                        })
+                      }
+                    />
+                    {edge.when && (
+                      <ConditionForm
+                        value={edge.when}
+                        onChange={(when) => editEdge({ ...edge, when })}
+                      />
+                    )}
+                    <Button
+                      size="xs"
+                      variant="ghost-destructive"
+                      onClick={() => {
+                        editEdge(null);
+                        setSelection(null);
+                      }}
+                    >
+                      <Trash2 /> Remove edge
+                    </Button>
+                  </>
+                )}
+                {selection?.kind === "flow" && (
+                  <>
+                    <TextField
+                      label="Title"
+                      value={draft.title}
+                      onChange={(title) => change({ ...draft, title })}
+                    />
+                    <TextField
+                      label="Description"
+                      value={draft.description ?? ""}
+                      multiline
+                      onChange={(description) =>
+                        change({ ...draft, description: description || undefined })
+                      }
+                    />
+                    <Choice
+                      label="Workspace"
+                      value={draft.workspace ?? "worktree"}
+                      values={["worktree", "root"]}
+                      onChange={(workspace) =>
+                        change({ ...draft, workspace: workspace === "root" ? "root" : "worktree" })
+                      }
+                    />
+                    {draft.workspace === "root" && (
+                      <p>
+                        Flow runs share the project folder. Concurrent flow runs can change the same
+                        files.
+                      </p>
+                    )}
+                    <InputFieldsForm
+                      fields={draft.inputs ?? []}
+                      onChange={(inputs) => change({ ...draft, inputs })}
+                    />
+                    <ModelFields
+                      value={draft.defaults?.model}
+                      onChange={(model) =>
+                        change({ ...draft, defaults: { ...draft.defaults, model } })
+                      }
+                    />
+                    <AgentModes
+                      value={draft.defaults ?? {}}
+                      onChange={(modes) =>
+                        change({ ...draft, defaults: { ...draft.defaults, ...modes } })
+                      }
+                    />
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={!canRename || dirty}
+                      onClick={() => setRenameId(flowId)}
+                    >
+                      Rename flow file
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={!canDelete || dirty}
+                      onClick={() => setDeleteOpen(true)}
+                    >
+                      Delete flow
+                    </Button>
+                  </>
+                )}
+              </fieldset>
+            )}
+          </section>
+        )}
+      </div>
       {renameId !== null && (
         <div className="flex flex-col gap-2 p-3">
           <TextField label="New flow id" value={renameId} onChange={setRenameId} />

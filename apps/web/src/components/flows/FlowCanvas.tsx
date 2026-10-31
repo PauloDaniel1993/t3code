@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useState } from "react";
+import { createContext, memo, useContext, useState, useEffect, useRef } from "react";
 import {
   applyNodeChanges,
   Background,
@@ -148,7 +148,8 @@ function Canvas({
   onSelectEdge,
 }: Parameters<typeof FlowCanvas>[0]) {
   const { resolvedTheme } = useTheme();
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, setCenter, getViewport } = useReactFlow();
+  const wrapper = useRef<HTMLDivElement>(null);
   const [dropParent, setDropParent] = useState<string | null>(null);
   const [graphState, setGraphState] = useState(() => ({
     definition,
@@ -181,6 +182,24 @@ function Canvas({
     setGraphState({ definition, graph });
   }
   const selectedNode = graph.nodes.find((node) => node.id === selectedId);
+  let selectedX = selectedNode?.position.x;
+  let selectedY = selectedNode?.position.y;
+  let ancestorId = selectedNode?.parentId;
+  while (ancestorId && selectedX !== undefined && selectedY !== undefined) {
+    const ancestor = graph.nodes.find((node) => node.id === ancestorId);
+    if (!ancestor) break;
+    selectedX += ancestor.position.x;
+    selectedY += ancestor.position.y;
+    ancestorId = ancestor.parentId;
+  }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- positions the external canvas viewport above the overlay inspector
+  useEffect(() => {
+    if (selectedX === undefined || selectedY === undefined || !wrapper.current) return;
+    const zoom = getViewport().zoom;
+    void setCenter(selectedX + 112, selectedY + 40 + (wrapper.current.clientHeight * 0.22) / zoom, {
+      zoom,
+    });
+  }, [selectedX, selectedY, setCenter, getViewport]);
   const parent =
     selectedNode &&
     (selectedNode.data.step.kind === "loop" || selectedNode.data.step.kind === "map")
@@ -233,6 +252,7 @@ function Canvas({
     <FlowRunContext value={currentRun.statuses}>
       <FlowCountsContext value={currentRun.counts}>
         <div
+          ref={wrapper}
           className="flow-canvas @container h-full"
           onDragLeave={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropParent(null);

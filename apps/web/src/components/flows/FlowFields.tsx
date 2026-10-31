@@ -1,3 +1,6 @@
+import { X } from "lucide-react";
+import { Checkbox } from "../ui/checkbox";
+import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from "../ui/collapsible";
 /* oxlint-disable react/no-array-index-key -- Form slots are controlled values; their editable names and condition shapes cannot serve as keys. */
 import { createContext, useContext, useState, type ReactNode } from "react";
 import type {
@@ -30,31 +33,95 @@ const fieldPaths: Record<string, string> = {
   "Approval prompt": "prompt",
   Command: "command",
   "Working directory": "cwd",
-  "Timeout (ms, default 600000)": "timeoutMs",
+  Timeout: "timeoutMs",
   "Maximum iterations": "maxIterations",
-  "Over reference": "over",
+  "Iterate over": "over",
   Concurrency: "concurrency",
   "Maximum items": "maxItems",
-  "Same as step": "thread.sameAs",
+  "Share thread with": "thread.sameAs",
   Reference: "ref",
 };
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  children,
+  hint,
+  error,
+}: {
+  label: string;
+  children: ReactNode;
+  hint?: string | undefined;
+  error?: string | null;
+}) {
   const errors = useContext(FieldErrors).filter(
     (error) => fieldPaths[label] && error.path.endsWith(`.${fieldPaths[label]}`),
   );
   return (
-    <label className="flex min-w-0 flex-col gap-1 text-xs">
-      <span>{label}</span>
+    <div className="flex min-w-0 flex-col gap-1 text-xs">
+      <div className="flex items-center justify-between gap-2 text-muted-foreground">
+        <span>{label}</span>
+        {hint && <span className="text-2xs">{hint}</span>}
+      </div>
       {children}
+      {error && (
+        <span role="alert" className="text-destructive">
+          {error}
+        </span>
+      )}
       {errors.map((error) => (
         <span role="alert" key={`${error.path}:${error.message}`} className="text-destructive">
           {error.message}
         </span>
       ))}
-    </label>
+    </div>
   );
 }
 
+const optionLabels: Record<string, string> = {
+  inherit: "Inherit flow default",
+  override: "Override model",
+  "full-access": "Full access",
+  "approval-required": "Approval required",
+  "auto-accept-edits": "Auto-accept edits",
+  auto: "Auto",
+  default: "Default",
+  plan: "Plan",
+  new: "New thread",
+  continue: "Continue previous step's thread",
+  sameAs: "Same thread as step…",
+  eq: "equals",
+  neq: "does not equal",
+  lt: "less than",
+  lte: "at most",
+  gt: "greater than",
+  gte: "at least",
+  contains: "contains",
+  isEmpty: "is empty",
+  string: "Text",
+  number: "Number",
+  boolean: "Yes/No",
+  "string[]": "List of text",
+  enum: "Choice",
+  true: "Yes",
+  false: "No",
+  worktree: "Fresh worktree per run",
+  root: "Project folder",
+  fail: "Stop on failure",
+  all: "All conditions",
+  any: "Any condition",
+  not: "Not",
+  comparison: "Comparison",
+  success: "Success",
+  failure: "Failure",
+  always: "Always",
+  conditional: "Only when…",
+};
+function FlowSection({ children }: { children: ReactNode }) {
+  return (
+    <h4 className="border-t border-border/60 pt-3 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
+      {children}
+    </h4>
+  );
+}
 export function Choice({
   label,
   value,
@@ -68,6 +135,16 @@ export function Choice({
   labels?: Readonly<Record<string, ReactNode>>;
   onChange: (value: string) => void;
 }) {
+  if (values.length === 2 && values.includes("true") && values.includes("false"))
+    return (
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Checkbox
+          checked={value === "true"}
+          onCheckedChange={(checked) => onChange(String(checked === true))}
+        />
+        {label}
+      </label>
+    );
   return (
     <Field label={label}>
       <Select
@@ -76,14 +153,14 @@ export function Choice({
           if (value !== null) onChange(value);
         }}
       >
-        <SelectTrigger size="sm" aria-label={label}>
-          <SelectValue>{labels?.[value] ?? value}</SelectValue>
+        <SelectTrigger size="xs" aria-label={label}>
+          <SelectValue>{labels?.[value] ?? optionLabels[value] ?? value}</SelectValue>
         </SelectTrigger>
         <SelectPopup>
           <SelectGroup>
             {[...new Set(values)].map((item) => (
               <SelectItem key={item} value={item}>
-                {labels?.[item] ?? item}
+                {labels?.[item] ?? optionLabels[item] ?? item}
               </SelectItem>
             ))}
           </SelectGroup>
@@ -98,16 +175,21 @@ export function TextField({
   value,
   onChange,
   multiline = false,
+  hint,
+  mono = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   multiline?: boolean;
+  hint?: string | undefined;
+  mono?: boolean;
 }) {
   return (
-    <Field label={label}>
+    <Field label={label} hint={hint}>
       {multiline ? (
         <Textarea
+          size="sm"
           aria-label={label}
           value={value}
           onChange={(event) => onChange(event.target.value)}
@@ -115,6 +197,7 @@ export function TextField({
       ) : (
         <Input
           size="compact"
+          font={mono ? "mono" : "default"}
           aria-label={label}
           value={value}
           onChange={(event) => onChange(event.target.value)}
@@ -194,33 +277,36 @@ export function ConditionForm({
   value: FlowCondition;
   onChange: (value: FlowCondition) => void;
 }) {
-  const kind =
-    "all" in value ? "all" : "any" in value ? "any" : "not" in value ? "not" : "comparison";
+  const wrap = (kind: "all" | "any" | "not") =>
+    onChange(
+      kind === "all"
+        ? { all: [value, emptyCondition] }
+        : kind === "any"
+          ? { any: [value, emptyCondition] }
+          : { not: value },
+    );
+  const comparison = "ref" in value;
   return (
-    <fieldset className="flex min-w-0 flex-col gap-2 rounded border border-border p-2">
-      <legend className="text-xs">Condition</legend>
-      <Choice
-        label="Condition kind"
-        value={kind}
-        values={["comparison", "all", "any", "not"]}
-        onChange={(next) =>
-          onChange(
-            next === "all"
-              ? { all: [emptyCondition] }
-              : next === "any"
-                ? { any: [emptyCondition] }
-                : next === "not"
-                  ? { not: emptyCondition }
-                  : emptyCondition,
-          )
-        }
-      />
+    <div className="flex min-w-0 flex-col gap-2">
       {"not" in value ? (
-        <ConditionForm value={value.not} onChange={(not) => onChange({ not })} />
-      ) : "all" in value || "any" in value ? (
         <>
+          <div className="flex items-center gap-2 text-2xs text-muted-foreground">
+            Not{" "}
+            <Button size="xs" variant="ghost" onClick={() => onChange(value.not)}>
+              Remove not
+            </Button>
+          </div>
+          <div className="border-l border-border/60 pl-2">
+            <ConditionForm value={value.not} onChange={(not) => onChange({ not })} />
+          </div>
+        </>
+      ) : !comparison ? (
+        <>
+          <span className="text-2xs font-medium text-muted-foreground">
+            {"all" in value ? "All conditions" : "Any condition"}
+          </span>
           {("all" in value ? value.all : value.any).map((condition, index, conditions) => (
-            <div key={index} className="flex flex-col gap-1">
+            <div key={index} className="border-l border-border/60 pl-2">
               <ConditionForm
                 value={condition}
                 onChange={(next) => {
@@ -230,7 +316,7 @@ export function ConditionForm({
               />
               <Button
                 size="xs"
-                variant="ghost"
+                variant="ghost-destructive"
                 onClick={() => {
                   const children = conditions.filter((_, i) => i !== index);
                   onChange("all" in value ? { all: children } : { any: children });
@@ -242,7 +328,7 @@ export function ConditionForm({
           ))}
           <Button
             size="xs"
-            variant="outline"
+            variant="ghost"
             onClick={() =>
               onChange(
                 "all" in value
@@ -256,47 +342,68 @@ export function ConditionForm({
         </>
       ) : (
         <>
-          <TextField
-            label="Reference"
-            value={value.ref}
-            onChange={(ref) => onChange({ ...value, ref })}
-          />
-          <Choice
-            label="Operator"
-            value={value.op}
-            values={["eq", "neq", "lt", "lte", "gt", "gte", "contains", "isEmpty"]}
-            onChange={(op) => {
-              if (op === "isEmpty") onChange({ ref: value.ref, op });
-              else if (
-                op === "eq" ||
-                op === "neq" ||
-                op === "lt" ||
-                op === "lte" ||
-                op === "gt" ||
-                op === "gte" ||
-                op === "contains"
-              )
-                onChange({ ref: value.ref, op, value: "value" in value ? value.value : "" });
-            }}
-          />
-          {"value" in value && (
-            <>
-              <Choice
-                label="Value type"
-                value={valueType(value.value)}
-                values={valueTypes}
-                onChange={(type) => onChange({ ...value, value: emptyValue(type) })}
-              />
+          <div className="grid grid-cols-[minmax(0,1fr)_100px_minmax(0,1fr)] items-end gap-2">
+            <TextField
+              label="Reference"
+              mono
+              value={value.ref}
+              onChange={(ref) => onChange({ ...value, ref })}
+            />
+            <Choice
+              label="Operator"
+              value={value.op}
+              values={["eq", "neq", "lt", "lte", "gt", "gte", "contains", "isEmpty"]}
+              onChange={(op) => {
+                if (op === "isEmpty") onChange({ ref: value.ref, op });
+                else if (
+                  op === "eq" ||
+                  op === "neq" ||
+                  op === "lt" ||
+                  op === "lte" ||
+                  op === "gt" ||
+                  op === "gte" ||
+                  op === "contains"
+                )
+                  onChange({ ref: value.ref, op, value: "value" in value ? value.value : "" });
+              }}
+            />
+            {"value" in value && (
               <ValueField
                 label="Value"
                 value={value.value}
                 onChange={(next) => onChange({ ...value, value: next })}
               />
-            </>
+            )}
+          </div>
+          {"value" in value && (
+            <Collapsible>
+              <CollapsibleTrigger render={<Button size="xs" variant="ghost" />}>
+                Value type
+              </CollapsibleTrigger>
+              <CollapsiblePanel>
+                <Choice
+                  label="Value type"
+                  value={valueType(value.value)}
+                  values={valueTypes}
+                  onChange={(type) => onChange({ ...value, value: emptyValue(type) })}
+                />
+              </CollapsiblePanel>
+            </Collapsible>
           )}
         </>
       )}
-    </fieldset>
+      <div className="flex gap-1">
+        <Button size="xs" variant="ghost" onClick={() => wrap("all")}>
+          + and
+        </Button>
+        <Button size="xs" variant="ghost" onClick={() => wrap("any")}>
+          + or
+        </Button>
+        <Button size="xs" variant="ghost" onClick={() => wrap("not")}>
+          Not
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -309,12 +416,12 @@ function OutputFieldsForm({
 }) {
   return (
     <fieldset className="flex flex-col gap-2">
-      <legend>Output fields</legend>
+      <FlowSection>Output fields</FlowSection>
       {fields.map((field, index) => {
         const update = (next: FlowOutputField) =>
           onChange(fields.map((entry, i) => (i === index ? next : entry)));
         return (
-          <div key={index} className="flex flex-col gap-2 rounded border border-border p-2">
+          <div key={index} className="grid grid-cols-[minmax(0,1fr)_100px_24px] items-end gap-2">
             <TextField
               label="Output name"
               value={field.name}
@@ -336,25 +443,28 @@ function OutputFieldsForm({
               }}
             />
             {field.type === "enum" && (
-              <TextField
-                label="Enum values (one per line)"
-                multiline
-                value={field.values.join("\n")}
-                onChange={(next) => update({ ...field, values: next.split("\n") })}
-              />
+              <div className="col-span-full">
+                <TextField
+                  label="Enum values (one per line)"
+                  multiline
+                  value={field.values.join("\n")}
+                  onChange={(next) => update({ ...field, values: next.split("\n") })}
+                />
+              </div>
             )}
             <Button
-              variant="ghost"
-              size="xs"
+              variant="ghost-destructive"
+              size="icon-xs"
+              aria-label="Remove output"
               onClick={() => onChange(fields.filter((_, i) => i !== index))}
             >
-              Remove output
+              <X />
             </Button>
           </div>
         );
       })}
       <Button
-        variant="outline"
+        variant="ghost"
         size="xs"
         onClick={() => onChange([...fields, { name: "result", type: "string" }])}
       >
@@ -373,21 +483,16 @@ export function InputFieldsForm({
 }) {
   return (
     <fieldset className="flex flex-col gap-2">
-      <legend>Flow inputs</legend>
+      <FlowSection>Inputs</FlowSection>
       {fields.map((field, index) => {
         const update = (next: FlowInput) =>
           onChange(fields.map((entry, i) => (i === index ? next : entry)));
         return (
-          <div key={index} className="flex flex-col gap-2 rounded border border-border p-2">
+          <div key={index} className="grid grid-cols-[minmax(0,1fr)_100px_24px] items-end gap-2">
             <TextField
               label="Input name"
               value={field.name}
               onChange={(name) => update({ ...field, name })}
-            />
-            <TextField
-              label="Input description"
-              value={field.description ?? ""}
-              onChange={(description) => update({ ...field, description })}
             />
             <Choice
               label="Input type"
@@ -405,48 +510,63 @@ export function InputFieldsForm({
                 else update({ ...base, type: "string" });
               }}
             />
-            <Choice
-              label="Required"
-              value={String(field.required ?? false)}
-              values={["true", "false"]}
-              onChange={(next) => update({ ...field, required: next === "true" })}
-            />
-            <Choice
-              label="Has default"
-              value={String(field.default !== undefined)}
-              values={["true", "false"]}
-              onChange={(next) => {
-                const { default: _default, ...rest } = field;
-                onChange(
-                  fields.map((entry, i) =>
-                    i === index
-                      ? next === "true"
-                        ? inputWithDefault(rest, emptyValue(field.type))
-                        : rest
-                      : entry,
-                  ),
-                );
-              }}
-            />
-            {field.default !== undefined && (
-              <ValueField
-                label="Default value"
-                value={field.default}
-                onChange={(value) => update(inputWithDefault(field, value))}
-              />
-            )}
             <Button
-              variant="ghost"
-              size="xs"
+              variant="ghost-destructive"
+              size="icon-xs"
+              aria-label="Remove input"
               onClick={() => onChange(fields.filter((_, i) => i !== index))}
             >
-              Remove input
+              <X />
             </Button>
+            <Collapsible className="col-span-full">
+              <CollapsibleTrigger render={<Button size="xs" variant="ghost" />}>
+                Description and defaults
+              </CollapsibleTrigger>
+              <CollapsiblePanel>
+                <div className="flex flex-col gap-2 py-2">
+                  <TextField
+                    label="Input description"
+                    value={field.description ?? ""}
+                    onChange={(description) => update({ ...field, description })}
+                  />
+                  <Choice
+                    label="Required"
+                    value={String(field.required ?? false)}
+                    values={["true", "false"]}
+                    onChange={(next) => update({ ...field, required: next === "true" })}
+                  />
+                  <Choice
+                    label="Has default"
+                    value={String(field.default !== undefined)}
+                    values={["true", "false"]}
+                    onChange={(next) => {
+                      const { default: _default, ...rest } = field;
+                      onChange(
+                        fields.map((entry, i) =>
+                          i === index
+                            ? next === "true"
+                              ? inputWithDefault(rest, emptyValue(field.type))
+                              : rest
+                            : entry,
+                        ),
+                      );
+                    }}
+                  />
+                  {field.default !== undefined && (
+                    <ValueField
+                      label="Default value"
+                      value={field.default}
+                      onChange={(value) => update(inputWithDefault(field, value))}
+                    />
+                  )}
+                </div>
+              </CollapsiblePanel>
+            </Collapsible>
           </div>
         );
       })}
       <Button
-        variant="outline"
+        variant="ghost"
         size="xs"
         onClick={() => onChange([...fields, { name: "input", type: "string" }])}
       >
@@ -476,13 +596,13 @@ export function ModelFields({
   const context = useContext(FlowModelContext);
   return (
     <fieldset className="flex flex-col gap-2">
-      <legend>Model</legend>
+      <FlowSection>Agent defaults</FlowSection>
       <Choice
-        label="Model override"
-        value={value ? "override" : "inherit"}
-        values={["inherit", "override"]}
+        label="Override model"
+        value={String(!!value)}
+        values={["true", "false"]}
         onChange={(next) =>
-          onChange(next === "inherit" ? undefined : { providerInstanceId: "", model: "" })
+          onChange(next === "false" ? undefined : { providerInstanceId: "", model: "" })
         }
       />
       {value && (
@@ -566,7 +686,7 @@ export function StepForm({
   return (
     <FieldErrors value={errors}>
       <div className="flex flex-col gap-3">
-        <Field label="Step id">
+        <Field label="Step id" error={idError}>
           <Input
             size="compact"
             aria-label="Step id"
@@ -581,11 +701,6 @@ export function StepForm({
             }}
           />
         </Field>
-        {idError && (
-          <p role="alert" className="text-destructive">
-            {idError}
-          </p>
-        )}
         {step.kind === "agent" && (
           <>
             <TextField
@@ -614,7 +729,7 @@ export function StepForm({
             />
             {typeof step.thread === "object" && (
               <TextField
-                label="Same as step"
+                label="Share thread with"
                 value={step.thread.sameAs}
                 onChange={(sameAs) => onChange({ ...step, thread: { sameAs } })}
               />
@@ -638,9 +753,13 @@ export function StepForm({
               from the shell.
             </p>
             {Object.entries(step.env ?? {}).map(([name, value], index) => (
-              <div key={index} className="flex flex-col gap-2">
+              <div
+                key={index}
+                className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_24px] items-end gap-2"
+              >
                 <TextField
                   label="Environment variable"
+                  mono
                   value={name}
                   onChange={(next) => {
                     if (next !== name && Object.hasOwn(step.env ?? {}, next)) return;
@@ -657,20 +776,20 @@ export function StepForm({
                 />
                 <TextField
                   label={`Environment value ${name}`}
-                  multiline
                   value={value}
                   onChange={(next) => onChange({ ...step, env: { ...step.env, [name]: next } })}
                 />
                 <Button
-                  size="xs"
-                  variant="ghost"
+                  size="icon-xs"
+                  variant="ghost-destructive"
+                  aria-label="Remove environment variable"
                   onClick={() => {
                     const env = { ...step.env };
                     delete env[name];
                     onChange({ ...step, env });
                   }}
                 >
-                  Remove environment variable
+                  <X />
                 </Button>
               </div>
             ))}
@@ -691,7 +810,8 @@ export function StepForm({
               onChange={(cwd) => onChange({ ...step, cwd: cwd || undefined })}
             />
             <TextField
-              label="Timeout (ms, default 600000)"
+              label="Timeout"
+              hint="ms · default 10 min"
               value={step.timeoutMs === undefined ? "" : String(step.timeoutMs)}
               onChange={(value) =>
                 onChange({ ...step, timeoutMs: value === "" ? undefined : Number(value) })
@@ -720,7 +840,7 @@ export function StepForm({
         {step.kind === "map" && (
           <>
             <TextField
-              label="Over reference"
+              label="Iterate over"
               value={step.over}
               onChange={(over) => onChange({ ...step, over })}
             />
