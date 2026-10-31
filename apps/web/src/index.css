@@ -2550,11 +2550,33 @@ code {
 @layer base {
   .flow-canvas {
     --xy-background-color: var(--background);
-    --xy-node-background-color: var(--card);
+    --xy-edge-stroke: var(--muted-foreground);
+    --xy-edge-stroke-selected: var(--primary);
+    --xy-edge-label-color: var(--muted-foreground);
+    --xy-edge-label-background-color: var(--background);
+    --xy-connectionline-stroke: var(--primary);
+    --xy-attribution-background-color: transparent;
+    --xy-controls-button-background-color: var(--popover);
+    --xy-controls-button-background-color-hover: var(--accent);
+    --xy-controls-button-color: var(--foreground);
+    --xy-controls-button-color-hover: var(--foreground);
+    --xy-controls-button-border-color: var(--border);
+    --xy-controls-box-shadow: none;
+    --xy-background-pattern-dots-color: var(--border);
+    --xy-handle-background-color: var(--primary);
+    --xy-handle-border-color: var(--background);
     --xy-node-color: var(--foreground);
     --xy-node-border: 1px solid var(--border);
-    --xy-edge-stroke: var(--muted-foreground);
-    --xy-controls-button-background-color: var(--popover);
-    --xy-controls-button-color: var(--foreground);
+    --xy-node-background-color: var(--card);
+    --xy-node-group-background-color: var(--muted);
+    --xy-selection-background-color: color-mix(in srgb, var(--primary) 8%, transparent);
+    --xy-selection-border: 1px dashed var(--primary);
+  }
+  .flow-canvas .react-flow__handle {
+    width: 10px;
+    height: 10px;
+  }
+  .flow-canvas .react-flow__edge-text {
+    font-size: 10px;
   }
 }

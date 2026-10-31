@@ -1,18 +1,18 @@
-import { GitBranch } from "lucide-react";
+import { Workflow } from "lucide-react";
 
 export const FLOW_SURFACE = {
   title: "Flow",
-  icon: GitBranch,
+  icon: Workflow,
   emptyState: {
     label: "Flow",
     description: "Design and monitor project flows.",
-    icon: GitBranch,
+    icon: Workflow,
     shortcut: "W",
     disabledReason: "Available when a project is open.",
   },
   menu: {
     label: "Flow",
-    icon: GitBranch,
+    icon: Workflow,
     shortcut: "W",
     disabledReason: "Available when a project is open.",
   },

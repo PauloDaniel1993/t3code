@@ -29,7 +29,10 @@ import {
   newStep,
   type FlowNode,
 } from "./flowGraph";
-import { Choice } from "./FlowFields";
+import { FlowKindIcon, FlowStepStatus } from "./FlowStepStatus";
+import { Plus, TriangleAlert } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
+import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../ui/menu";
 import { cn } from "../../lib/utils";
 const FlowRunContext = createContext<ReadonlyMap<string, FlowStepRunStatus>>(new Map());
 const FlowCountsContext = createContext<
@@ -42,11 +45,13 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
   return (
     <div
       data-step-status={status ?? "editing"}
+      data-drop-target={data.dropTarget || undefined}
       className={cn(
-        "h-full rounded-lg border bg-card px-3 py-2 text-xs text-card-foreground",
-        container ? "min-h-full border-dashed" : "min-w-40",
-        selected && "ring-2 ring-ring",
-        (status === "skipped" || status === "cancelled") && "border-dashed opacity-60",
+        "h-full rounded-xl border px-3 py-2 text-xs text-card-foreground shadow-xs",
+        container ? "min-h-full border-dashed border-border bg-muted/40" : "h-20 w-56 bg-card",
+        data.dropTarget && "ring-2 ring-primary/40",
+        selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+        (status === "skipped" || status === "cancelled") && "opacity-60",
         data.errors?.length && "border-destructive",
         status === "succeeded" && "border-success",
         (status === "failed" || status === "interrupted") && "border-destructive",
@@ -55,25 +60,63 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
       )}
     >
       <Handle type="target" position={Position.Top} />
-      <div className="font-medium">{data.step.id}</div>
-      <div className="text-muted-foreground">
-        {data.step.kind} step{status ? ` · ${status.replaceAll("_", " ")}` : ""}
+      <div className="flex items-center gap-2">
+        <FlowKindIcon kind={data.step.kind} />
+        <span className="truncate font-medium">{data.step.id}</span>
+        {data.errors?.length ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span tabIndex={0} aria-label="Step problems" aria-describedby={`${id}-errors`} />
+              }
+            >
+              <TriangleAlert className="size-3.5 text-destructive" />
+            </TooltipTrigger>
+            <TooltipPopup>
+              <span id={`${id}-errors`}>{data.errors.join("; ")}</span>
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
+        <span className="ml-auto text-3xs text-muted-foreground">{data.step.kind}</span>
       </div>
-      {count && count.total > 1 && (
-        <div>
-          {count.succeeded}/{count.total} succeeded · {count.failed} failed
+      <p
+        className={cn(
+          "mt-1 truncate text-3xs text-muted-foreground",
+          data.step.kind === "command" && "font-mono",
+        )}
+      >
+        {data.step.kind === "agent"
+          ? `${data.step.model?.model || "Inherits model"} · ${data.step.prompt.split("\n")[0]}`
+          : data.step.kind === "command"
+            ? data.step.command.split("\n")[0]
+            : data.step.kind === "approval"
+              ? data.step.prompt.split("\n")[0] || "Approve or reject + comment"
+              : data.step.kind === "loop"
+                ? `Up to ${data.step.maxIterations} iterations`
+                : `Over ${data.step.over} · ×${data.step.concurrency ?? 1}`}
+      </p>
+      {status && (
+        <div className="mt-1 flex items-center gap-2">
+          <FlowStepStatus status={status} />
+          {count && count.total > 1 && (
+            <span className="text-3xs text-muted-foreground">
+              {count.succeeded}/{count.total} succeeded
+            </span>
+          )}
         </div>
       )}
-      {[...new Set(data.errors)].map((error) => (
-        <div role="alert" key={error} className="text-destructive">
-          {error}
-        </div>
-      ))}
       <Handle type="source" position={Position.Bottom} />
     </div>
   );
 });
 const nodeTypes = { step: FlowStepNode };
+const paletteDescriptions = {
+  agent: "Ask an agent to work on a prompt",
+  command: "Run a shell command",
+  approval: "Wait for a person to approve or reject",
+  loop: "Repeat steps until a condition is met",
+  map: "Run steps for each item in a list",
+};
 const kinds: ReadonlyArray<FlowStep["kind"]> = ["agent", "command", "approval", "loop", "map"];
 
 export function FlowCanvas(props: {
@@ -106,7 +149,7 @@ function Canvas({
 }: Parameters<typeof FlowCanvas>[0]) {
   const { resolvedTheme } = useTheme();
   const { screenToFlowPosition } = useReactFlow();
-  const [parentId, setParentId] = useState<string | null>(null);
+  const [dropParent, setDropParent] = useState<string | null>(null);
   const [graphState, setGraphState] = useState(() => ({
     definition,
     graph: flowGraph(definition),
@@ -122,17 +165,54 @@ function Canvas({
       .filter((error) => stepIdAtPath(definition, error.path) === node.id)
       .map((error) => error.message);
     const unchanged =
-      selected === !!node.selected && messages.join("\n") === (node.data.errors ?? []).join("\n");
-    return unchanged ? node : { ...node, selected, data: { ...node.data, errors: messages } };
+      !!node.data.dropTarget === (dropParent === node.id) &&
+      selected === !!node.selected &&
+      messages.join("\n") === (node.data.errors ?? []).join("\n");
+    return unchanged
+      ? node
+      : {
+          ...node,
+          selected,
+          data: { ...node.data, errors: messages, dropTarget: dropParent === node.id },
+        };
   });
   if (nodes.some((node, i) => node !== graph.nodes[i])) {
     graph = { ...graph, nodes };
     setGraphState({ definition, graph });
   }
-  const containers = graph.nodes.filter(
-    (node) => node.data.step.kind === "loop" || node.data.step.kind === "map",
+  const selectedNode = graph.nodes.find((node) => node.id === selectedId);
+  const parent =
+    selectedNode &&
+    (selectedNode.data.step.kind === "loop" || selectedNode.data.step.kind === "map")
+      ? selectedNode.id
+      : (selectedNode?.parentId ?? null);
+  const edges = graph.edges.map((edge) =>
+    !!edge.selected === (selectedId === edge.id)
+      ? edge
+      : { ...edge, selected: selectedId === edge.id },
   );
-  const parent = parentId && findStep(definition.steps, parentId) ? parentId : null;
+  if (edges.some((edge, i) => edge !== graph.edges[i])) {
+    graph = { ...graph, edges };
+    setGraphState({ definition, graph });
+  }
+  const [runState, setRunState] = useState(() => ({
+    snapshot,
+    statuses: snapshot ? flowStepStatusById(snapshot) : new Map<string, FlowStepRunStatus>(),
+    counts: snapshot
+      ? flowStepCountsById(snapshot)
+      : new Map<string, { total: number; succeeded: number; failed: number }>(),
+  }));
+  let currentRun = runState;
+  if (snapshot !== runState.snapshot) {
+    currentRun = {
+      snapshot,
+      statuses: snapshot ? flowStepStatusById(snapshot) : new Map<string, FlowStepRunStatus>(),
+      counts: snapshot
+        ? flowStepCountsById(snapshot)
+        : new Map<string, { total: number; succeeded: number; failed: number }>(),
+    };
+    setRunState(currentRun);
+  }
   const add = (
     kind: FlowStep["kind"],
     position?: { x: number; y: number },
@@ -150,14 +230,23 @@ function Canvas({
     onSelectStep(step.id);
   };
   return (
-    <FlowRunContext value={snapshot ? flowStepStatusById(snapshot) : new Map()}>
-      <FlowCountsContext value={snapshot ? flowStepCountsById(snapshot) : new Map()}>
+    <FlowRunContext value={currentRun.statuses}>
+      <FlowCountsContext value={currentRun.counts}>
         <div
-          className="flow-canvas h-full min-h-72"
+          className="flow-canvas @container h-full"
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropParent(null);
+          }}
           onDragOver={(event) => {
             if (!locked) {
               event.preventDefault();
               event.dataTransfer.dropEffect = "copy";
+              setDropParent(
+                dropTarget(
+                  graph.nodes,
+                  screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+                ).parentId,
+              );
             }
           }}
           onDrop={(event) => {
@@ -168,13 +257,14 @@ function Canvas({
             if (kind) {
               const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
               const target = dropTarget(graph.nodes, position);
+              setDropParent(null);
               add(kind, target.position, target.parentId);
             }
           }}
         >
           <ReactFlow
             nodes={graph.nodes}
-            edges={graph.edges.map((edge) => ({ ...edge, selected: selectedId === edge.id }))}
+            edges={graph.edges}
             nodeTypes={nodeTypes}
             colorMode={resolvedTheme}
             fitView
@@ -226,30 +316,65 @@ function Canvas({
                 );
             }}
           >
-            <Background />
+            <Background gap={18} size={1} />
             <Controls showInteractive={false} position="top-right" />
             {!locked && (
               <Panel position="top-left">
-                <div className="flex flex-col gap-1 rounded-lg border border-border bg-popover p-2 text-xs shadow">
-                  <Choice
-                    label="Add steps to"
-                    value={parent ?? "Flow"}
-                    values={["Flow", ...containers.map((node) => node.id)]}
-                    onChange={(value) => setParentId(value === "Flow" ? null : value)}
-                  />
+                <div className="hidden min-w-32 flex-col gap-0.5 rounded-xl border border-border bg-popover p-1.5 shadow-lg @min-[24rem]:flex">
+                  <span className="px-2 py-1 text-3xs font-medium text-muted-foreground">
+                    DRAG A STEP
+                  </span>
+                  {parent && (
+                    <span className="max-w-40 truncate px-2 text-3xs text-muted-foreground">
+                      Adding into {parent}
+                    </span>
+                  )}
                   {kinds.map((kind) => (
-                    <div
-                      key={kind}
-                      draggable
-                      onDragStart={(event) =>
-                        event.dataTransfer.setData("application/t3-flow-step", kind)
-                      }
-                    >
-                      <Button variant="ghost" size="xs" onClick={() => add(kind)}>
-                        + {kind} step
-                      </Button>
-                    </div>
+                    <Tooltip key={kind}>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            draggable
+                            className="flex cursor-grab items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent"
+                            onDragStart={(event) =>
+                              event.dataTransfer.setData("application/t3-flow-step", kind)
+                            }
+                            onClick={() => add(kind)}
+                          />
+                        }
+                      >
+                        <FlowKindIcon kind={kind} />
+                        {kind === "agent"
+                          ? "Agent"
+                          : kind === "command"
+                            ? "Command"
+                            : kind === "approval"
+                              ? "Approval"
+                              : kind === "loop"
+                                ? "Loop"
+                                : "Map"}
+                      </TooltipTrigger>
+                      <TooltipPopup>{paletteDescriptions[kind]}</TooltipPopup>
+                    </Tooltip>
                   ))}
+                </div>
+                <div className="@min-[24rem]:hidden">
+                  <Menu>
+                    <MenuTrigger
+                      render={<Button size="icon-sm" variant="outline" aria-label="Add step" />}
+                    >
+                      <Plus />
+                    </MenuTrigger>
+                    <MenuPopup align="start">
+                      {kinds.map((kind) => (
+                        <MenuItem key={kind} onClick={() => add(kind)}>
+                          <FlowKindIcon kind={kind} />
+                          {kind}
+                        </MenuItem>
+                      ))}
+                    </MenuPopup>
+                  </Menu>
                 </div>
               </Panel>
             )}

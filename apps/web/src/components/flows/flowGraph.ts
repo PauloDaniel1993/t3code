@@ -1,8 +1,11 @@
-import type { FlowDefinition, FlowEdge, FlowStep } from "@t3tools/contracts";
+import type { FlowDefinition, FlowEdge, FlowStep, FlowCondition } from "@t3tools/contracts";
 import { parseFlowReference } from "@t3tools/shared/flow";
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 
-export type FlowNode = Node<{ step: FlowStep; errors?: ReadonlyArray<string> }, "step">;
+export type FlowNode = Node<
+  { step: FlowStep; errors?: ReadonlyArray<string>; dropTarget?: boolean },
+  "step"
+>;
 export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<FlowNode> = []) {
   const nodes: FlowNode[] = [];
   const oldNodes = new Map(previous.map((node) => [node.id, node]));
@@ -19,16 +22,16 @@ export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<Fl
     size: { width: number; height: number };
   } => {
     let bottom = nested ? 70 : 80;
-    let right = 400;
+    let right = 272;
     const measured = steps.map((step) => {
       const container = step.kind === "loop" || step.kind === "map";
-      const size = container ? measure(step.steps, true).size : { width: 170, height: 70 };
-      const position = definition.layout?.[step.id] ?? { x: nested ? 30 : 200, y: bottom };
+      const size = container ? measure(step.steps, true).size : { width: 224, height: 80 };
+      const position = definition.layout?.[step.id] ?? { x: nested ? 24 : 200, y: bottom };
       bottom = Math.max(bottom, position.y + size.height + 50);
-      right = Math.max(right, position.x + size.width + 30);
+      right = Math.max(right, position.x + size.width + 24);
       return { step, size, position };
     });
-    return { measured, size: { width: right, height: Math.max(240, bottom) } };
+    return { measured, size: { width: right, height: Math.max(120, bottom - 26) } };
   };
   const visit = (
     steps: ReadonlyArray<FlowStep>,
@@ -63,10 +66,20 @@ export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<Fl
     links.forEach((edge, index) =>
       edges.push({
         id: `${parentId ?? "$"}:${index}`,
-        markerEnd: { type: MarkerType.ArrowClosed },
+        type: "smoothstep",
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: edge.on === "failure" ? "var(--destructive)" : "var(--muted-foreground)",
+          width: 14,
+          height: 14,
+        },
+        ...(edge.on === "failure"
+          ? { style: { stroke: "var(--destructive)", strokeDasharray: "4 4" } }
+          : {}),
         source: edge.from,
         target: edge.to,
-        label: edge.on === "failure" ? "failure" : edge.when ? "condition" : undefined,
+        label:
+          edge.on === "failure" ? "on failure" : edge.when ? conditionLabel(edge.when) : undefined,
       }),
     );
   };
@@ -305,4 +318,11 @@ export function stepIdAtPath(definition: FlowDefinition, path: string) {
     if (step.kind === "map" || step.kind === "loop") steps = step.steps;
   }
   return id;
+}
+
+function conditionLabel(condition: FlowCondition): string {
+  if ("all" in condition) return `all(${condition.all.length})`;
+  if ("any" in condition) return `any(${condition.any.length})`;
+  if ("not" in condition) return `not ${conditionLabel(condition.not)}`;
+  return `${condition.ref.split(".").at(-1)} ${condition.op}${"value" in condition ? ` ${String(condition.value)}` : ""}`;
 }
