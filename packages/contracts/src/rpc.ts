@@ -409,6 +409,7 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import { FLOW_WS_METHODS, FlowRpcs } from "./flowRpc.ts";
 import { WAYFINDER_WS_METHODS, WayfinderRpcs } from "./wayfinderRpc.ts";
 
 export const WS_METHODS = {
@@ -424,6 +425,7 @@ export const WS_METHODS = {
   projectsCreateFromThread: "projects.createFromThread",
 
   ...WAYFINDER_WS_METHODS,
+  ...FLOW_WS_METHODS,
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -2149,6 +2151,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   ...WayfinderRpcs,
+  ...FlowRpcs,
   WsSubscribeWorktreeSetupRpc,
   WsWorktreeSetupCancelRpc,
   WsVcsPullRpc,

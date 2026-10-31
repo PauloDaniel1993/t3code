@@ -1,3 +1,4 @@
+import { FlowScheduledTarget } from "./flowDefinition.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -195,6 +196,7 @@ export const ScheduledTaskWebhookEndpoint = Schema.Struct({
 export type ScheduledTaskWebhookEndpoint = typeof ScheduledTaskWebhookEndpoint.Type;
 
 export const ScheduledTask = Schema.Struct({
+  flow: Schema.optional(FlowScheduledTarget),
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
   prompt: TrimmedNonEmptyString,
@@ -228,6 +230,7 @@ export const ScheduledTaskListResult = Schema.Struct({
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 
 export const ScheduledTaskUpsertInput = Schema.Struct({
+  flow: Schema.optional(FlowScheduledTarget),
   id: Schema.optional(ScheduledTaskId),
   requireExisting: Schema.optional(Schema.Boolean).annotate({
     description: "Reject the save if the task no longer exists, for edits from a client form.",
