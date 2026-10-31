@@ -81,11 +81,29 @@ export function resolveFlowReference(
           : undefined;
     }
   }
-  if (value === undefined)
-    throw new FlowValueError(path, `Flow reference is unavailable: ${reference}`);
+  return value;
+}
+export function resolveFlowMapItems(
+  reference: string,
+  context: FlowReferenceContext,
+  maxItems = 50,
+) {
+  const value = resolveFlowReference(reference, context, "$.over");
+  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === "string"))
+    throw new FlowValueError("$.over", "Map requires an available string[]");
+  if (reference.endsWith(".lines")) {
+    const parent = reference.slice(0, -"lines".length);
+    if (resolveFlowReference(`${parent}kind`, context) === "command") {
+      const count = resolveFlowReference(`${parent}lineCount`, context);
+      if (typeof count === "number" && count > value.length)
+        throw new FlowValueError("$.over", "Command lines were truncated");
+    }
+  }
+  if (value.length > maxItems) throw new FlowValueError("$.over", "Map exceeds maxItems");
   return value;
 }
 function templateReferences(template: string, path: string) {
+  template = template.replace(/\\\{\{(?:[^{}]*?\}\})?/g, "");
   const matches = [...template.matchAll(/\{\{\s*([^{}]*?)\s*\}\}/g)];
   const rest = template.replace(/\{\{\s*([^{}]*?)\s*\}\}/g, "");
   if (rest.includes("{{") || rest.includes("}}"))
@@ -110,26 +128,54 @@ export function capFlowText(text: string, sourceThreadLabel: string) {
   const marker = `\n[Truncated; full output in ${truncateUtf8(sourceThreadLabel, 512)}]`;
   return truncateUtf8(text, FLOW_TEXT_MAX_BYTES - encoder.encode(marker).length) + marker;
 }
+function renderTemplate(
+  template: string,
+  context: FlowReferenceContext,
+  sourceThreadLabel: (stepId: string) => string,
+  path: string,
+  environment: boolean,
+) {
+  return template.replace(
+    /(\\\{\{)|\{\{\s*([^{}]*?)\s*\}\}/g,
+    (_match, literal: string | undefined, raw: string | undefined) => {
+      if (literal !== undefined) return "{{";
+      try {
+        const reference = raw!.trim();
+        const parsed = parseFlowReference(reference, path);
+        const value = resolveFlowReference(reference, context, path);
+        if (Array.isArray(value) && value.every((item) => typeof item === "string"))
+          return value.map((item) => (environment ? item : `- ${item}`)).join("\n");
+        if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+          return "";
+        return parsed.kind === "step" && parsed.fields.at(-1) === "text"
+          ? capFlowText(String(value), sourceThreadLabel(parsed.fields.at(-2) ?? parsed.stepId))
+          : String(value);
+      } catch (error) {
+        if (error instanceof FlowValueError) return "";
+        throw error;
+      }
+    },
+  );
+}
 export function renderFlowTemplate(
   template: string,
   context: FlowReferenceContext,
   sourceThreadLabel: (stepId: string) => string,
   path = "$",
 ) {
-  templateReferences(template, path);
-  return template.replace(/\{\{\s*([^{}]*?)\s*\}\}/g, (_match, raw: string) => {
-    const reference = raw.trim();
-    const parsed = parseFlowReference(reference, path);
-    const value = resolveFlowReference(reference, context, path);
-    if (Array.isArray(value) && value.every((item) => typeof item === "string"))
-      return value.map((item) => `- ${item}`).join("\n");
-    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
-      throw new FlowValueError(path, `Cannot interpolate ${reference}`);
-    const text = String(value);
-    return parsed.kind === "step" && parsed.fields.at(-1) === "text"
-      ? capFlowText(text, sourceThreadLabel(parsed.stepId))
-      : text;
-  });
+  return renderTemplate(template, context, sourceThreadLabel, path, false);
+}
+export function renderFlowCommandEnv(
+  env: Readonly<Record<string, string>>,
+  context: FlowReferenceContext,
+  sourceThreadLabel: (stepId: string) => string,
+) {
+  return Object.fromEntries(
+    Object.entries(env).map(([name, template]) => [
+      name,
+      renderTemplate(template, context, sourceThreadLabel, `$.env.${name}`, true),
+    ]),
+  );
 }
 export function evaluateFlowCondition(
   condition: FlowCondition,
@@ -145,7 +191,13 @@ export function evaluateFlowCondition(
       evaluateFlowCondition(child, context, `${path}.any[${i}]`),
     );
   if ("not" in condition) return !evaluateFlowCondition(condition.not, context, `${path}.not`);
-  const actual = resolveFlowReference(condition.ref, context, `${path}.ref`);
+  let actual: unknown;
+  try {
+    actual = resolveFlowReference(condition.ref, context, `${path}.ref`);
+  } catch (error) {
+    if (!(error instanceof FlowValueError)) throw error;
+  }
+  if (actual === undefined || actual === null) return condition.op === "isEmpty";
   const equal = (left: unknown, right: unknown): boolean =>
     Array.isArray(left) && Array.isArray(right)
       ? left.length === right.length && left.every((entry, i) => entry === right[i])
@@ -187,65 +239,89 @@ export function evaluateFlowCondition(
       );
   }
 }
-export function coerceFlowInputs(
+type ReferenceType = {
+  readonly type: FlowOutputField["type"] | "items";
+  readonly values?: ReadonlyArray<string>;
+};
+function matchesType(field: ReferenceType, value: unknown): value is FlowValue {
+  switch (field.type) {
+    case "enum":
+      return typeof value === "string" && (field.values?.includes(value) ?? false);
+    case "string[]":
+      return Array.isArray(value) && value.every((item) => typeof item === "string");
+    case "number":
+      return typeof value === "number" && Number.isFinite(value);
+    case "string":
+      return typeof value === "string";
+    case "boolean":
+      return typeof value === "boolean";
+    case "items":
+      return false;
+  }
+}
+export function resolveFlowInputs(
   inputs: ReadonlyArray<FlowInput>,
-  values: Readonly<Record<string, string>>,
+  values: Readonly<Record<string, unknown>>,
 ) {
   const output = new Map<string, FlowValue>();
   for (const name of Object.keys(values))
     if (!inputs.some((input) => input.name === name))
       throw new FlowValueError(`$.inputs.${name}`, "Unknown flow input");
   for (const input of inputs) {
-    const path = `$.inputs.${input.name}`;
-    const raw = values[input.name];
-    if (raw === undefined) {
-      if (input.default !== undefined) output.set(input.name, input.default);
-      else if (input.required) throw new FlowValueError(path, "Missing required flow input");
+    const value = Object.hasOwn(values, input.name) ? values[input.name] : undefined;
+    const resolved = value === undefined ? input.default : value;
+    if (resolved === undefined) {
+      if (input.required)
+        throw new FlowValueError(`$.inputs.${input.name}`, "Missing required flow input");
       continue;
     }
+    if (!matchesType(input, resolved))
+      throw new FlowValueError(`$.inputs.${input.name}`, `Expected ${input.type}`);
+    output.set(input.name, resolved);
+  }
+  return Object.fromEntries(output);
+}
+export function coerceFlowInputs(
+  inputs: ReadonlyArray<FlowInput>,
+  values: Readonly<Record<string, string>>,
+) {
+  const output = new Map<string, unknown>(Object.entries(values));
+  for (const input of inputs) {
+    const raw = Object.hasOwn(values, input.name) ? values[input.name] : undefined;
+    if (raw === undefined) continue;
     switch (input.type) {
       case "string":
-        output.set(input.name, raw);
         break;
-      case "number": {
-        if (raw.trim() === "" || !Number.isFinite(Number(raw)))
-          throw new FlowValueError(path, "Expected a finite number");
+      case "number":
+        if (raw.trim() === "")
+          throw new FlowValueError(`$.inputs.${input.name}`, "Expected a finite number");
         output.set(input.name, Number(raw));
         break;
-      }
-      case "boolean": {
-        if (raw.trim() !== "true" && raw.trim() !== "false")
-          throw new FlowValueError(path, "Expected true or false");
-        output.set(input.name, raw.trim() === "true");
+      case "boolean":
+        output.set(input.name, raw.trim() === "true" ? true : raw.trim() === "false" ? false : raw);
         break;
-      }
       case "string[]": {
-        if (raw.trimStart().startsWith("[")) {
-          let parsed: unknown;
+        let parsed: unknown;
+        if (raw.trim().startsWith("[") && raw.trim().endsWith("]")) {
           try {
             parsed = JSON.parse(raw);
           } catch {
-            throw new FlowValueError(path, "Expected a JSON string array");
+            /* A line-list item can start with a bracket. */
           }
-          if (
-            !Array.isArray(parsed) ||
-            !parsed.every((item): item is string => typeof item === "string")
-          )
-            throw new FlowValueError(path, "Expected a JSON string array");
-          output.set(input.name, parsed);
-        } else
-          output.set(
-            input.name,
+        }
+        output.set(
+          input.name,
+          parsed ??
             raw
               .split(/\r?\n/)
               .map((item) => item.trim())
               .filter(Boolean),
-          );
+        );
         break;
       }
     }
   }
-  return Object.fromEntries(output);
+  return resolveFlowInputs(inputs, Object.fromEntries(output));
 }
 export function validateFlowReport(fields: ReadonlyArray<FlowOutputField>, value: unknown) {
   const errors: FlowValidationError[] = [];
@@ -259,35 +335,24 @@ export function validateFlowReport(fields: ReadonlyArray<FlowOutputField>, value
       ? Reflect.get(value, field.name)
       : undefined;
     const path = `$.fields.${field.name}`;
-    const valid =
-      field.type === "enum"
-        ? typeof actual === "string" && field.values.includes(actual)
-        : field.type === "string[]"
-          ? Array.isArray(actual) &&
-            actual.length <= FLOW_LIST_MAX_ITEMS &&
-            actual.every(
-              (item) =>
-                typeof item === "string" && encoder.encode(item).length <= FLOW_FIELD_MAX_BYTES,
-            )
-          : field.type === "number"
-            ? typeof actual === "number" && Number.isFinite(actual)
-            : field.type === "string"
-              ? typeof actual === "string" && encoder.encode(actual).length <= FLOW_FIELD_MAX_BYTES
-              : typeof actual === "boolean";
+    const withinLimits = (item: unknown) =>
+      typeof item !== "string" || encoder.encode(item).length <= FLOW_FIELD_MAX_BYTES;
     if (
-      !valid ||
-      (typeof actual === "string" && encoder.encode(actual).length > FLOW_FIELD_MAX_BYTES)
+      !matchesType(field, actual) ||
+      !withinLimits(actual) ||
+      (Array.isArray(actual) &&
+        (actual.length > FLOW_LIST_MAX_ITEMS || !actual.every(withinLimits)))
     )
       errors.push({ path, message: `Expected ${field.type} within output limits` });
   }
   return { valid: errors.length === 0, errors };
 }
 export function capFlowCommandOutput(combined: string, stdout: string) {
+  const lines = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
   return {
+    lineCount: lines.length,
     text: truncateUtf8(combined, FLOW_COMMAND_MAX_BYTES, true),
-    lines: stdout
-      .split(/\r?\n/)
-      .filter((line) => line.trim().length > 0)
+    lines: lines
       .slice(0, FLOW_LIST_MAX_ITEMS)
       .map((line) => truncateUtf8(line, FLOW_FIELD_MAX_BYTES)),
   };
@@ -298,31 +363,34 @@ type Scope = {
   previous: ReadonlyMap<string, FlowStep>;
   inLoop: boolean;
   inMap: boolean;
+  canContinue: boolean;
 };
-function outputType(step: FlowStep, fields: ReadonlyArray<string>): string | undefined {
+function outputType(step: FlowStep, fields: ReadonlyArray<string>): ReferenceType | undefined {
   const [name, ...rest] = fields;
   if (step.kind === "loop") {
-    if (rest.length === 0 && name === "iterations") return "number";
-    if (rest.length === 0 && name === "exitReason") return "string";
+    if (rest.length === 0 && name === "iterations") return { type: "number" };
+    if (rest.length === 0 && name === "exitReason")
+      return { type: "enum", values: ["condition", "maxIterations"] };
     const inner = step.steps.find((child) => child.id === name);
     return inner ? outputType(inner, rest) : undefined;
   }
   if (rest.length > 0) return undefined;
   if (step.kind === "agent")
-    return name === "text" ? "string" : step.outputs?.find((field) => field.name === name)?.type;
-  if (step.kind === "command")
     return name === "text"
-      ? "string"
-      : name === "lines"
-        ? "string[]"
-        : name === "exitCode"
-          ? "number"
-          : name === "timedOut"
-            ? "boolean"
-            : undefined;
-  if (step.kind === "approval")
-    return name === "decision" || name === "comment" ? "string" : undefined;
-  return name === "items" ? "items" : undefined;
+      ? { type: "string" }
+      : step.outputs?.find((field) => field.name === name);
+  if (step.kind === "command") {
+    if (name === "text") return { type: "string" };
+    if (name === "lines") return { type: "string[]" };
+    if (name === "exitCode" || name === "lineCount") return { type: "number" };
+    if (name === "timedOut") return { type: "boolean" };
+    return undefined;
+  }
+  if (step.kind === "approval") {
+    if (name === "decision") return { type: "enum", values: ["approve", "reject"] };
+    return name === "comment" ? { type: "string" } : undefined;
+  }
+  return name === "items" ? { type: "items" } : undefined;
 }
 const decodeDefinition = SchemaParser.decodeUnknownResult(FlowDefinition, {
   errors: "all",
@@ -389,12 +457,12 @@ export function validateFlowDefinition(
     if (ref.kind === "input") {
       const input = inputs.get(ref.name);
       if (!input) throw new FlowValueError(path, "Unknown flow input");
-      return input.type;
+      return input;
     }
     if (ref.kind === "local") {
       if (ref.name === "iteration" ? !scope.inLoop : !scope.inMap)
         throw new FlowValueError(path, `${ref.name} is outside its container`);
-      return ref.name === "item" ? "string" : "number";
+      return { type: ref.name === "item" ? "string" : "number" } as const;
     }
     const step = (ref.previous && scope.inLoop ? scope.previous : scope.available).get(ref.stepId);
     if (ref.previous && !scope.inLoop)
@@ -412,14 +480,36 @@ export function validateFlowDefinition(
     else if ("not" in condition) checkCondition(condition.not, `${path}.not`, scope);
     else
       protect(`${path}.ref`, () => {
-        checkRef(condition.ref, `${path}.ref`, scope);
+        const field = checkRef(condition.ref, `${path}.ref`, scope);
+        if (condition.op === "isEmpty") return;
+        const valid =
+          condition.op === "contains"
+            ? (field.type === "string" || field.type === "string[]") &&
+              typeof condition.value === "string"
+            : condition.op === "eq" || condition.op === "neq"
+              ? matchesType(field, condition.value)
+              : field.type === "number" &&
+                typeof condition.value === "number" &&
+                Number.isFinite(condition.value);
+        if (!valid) fail(`${path}.value`, `Invalid ${condition.op} operand for ${field.type}`);
       });
   };
+  const locations = new Map<
+    string,
+    {
+      path: string;
+      lineage: ReadonlyArray<string>;
+      ancestors: ReadonlySet<string>;
+      parallelMaps: ReadonlyArray<string>;
+    }
+  >();
   const checkLevel = (
     steps: ReadonlyArray<FlowStep>,
     edges: ReadonlyArray<FlowEdge>,
     path: string,
     outer: Scope,
+    lineage: ReadonlyArray<string> = [],
+    parallelMaps: ReadonlyArray<string> = [],
   ): void => {
     const local = new Map(steps.map((step) => [step.id, step]));
     edges.forEach((edge, i) => {
@@ -451,10 +541,16 @@ export function validateFlowDefinition(
     steps.forEach((step, i) => {
       const p = `${path}.steps[${i}]`;
       const scope = scopeFor(step.id);
+      locations.set(step.id, {
+        path: p,
+        lineage: [...lineage, step.id],
+        ancestors: ancestors(step.id),
+        parallelMaps,
+      });
       if (ancestors(step.id).has(step.id)) fail(`${p}.id`, "Cycle at this graph level");
       if (step.kind === "agent") {
         checkModel(step.model, `${p}.model`);
-        if (step.thread === "continue" && !scope.inLoop)
+        if (step.thread === "continue" && !scope.canContinue)
           fail(`${p}.thread`, "Continue requires a loop");
         if (typeof step.thread === "object") {
           const target = scope.available.get(step.thread.sameAs);
@@ -463,18 +559,23 @@ export function validateFlowDefinition(
         }
         const fields = new Set<string>();
         step.outputs?.forEach((field, j) => {
-          if (field.name === "text" || fields.has(field.name))
+          if (field.name === "text" || field.name === "kind" || fields.has(field.name))
             fail(`${p}.outputs[${j}].name`, "Duplicate or reserved output field");
           fields.add(field.name);
         });
       }
       if (step.kind === "agent" || step.kind === "approval" || step.kind === "command") {
-        const key = step.kind === "command" ? "command" : "prompt";
-        const template = step.kind === "command" ? step.command : step.prompt;
-        protect(`${p}.${key}`, () => {
-          for (const ref of templateReferences(template, `${p}.${key}`))
-            checkRef(ref, `${p}.${key}`, scope);
-        });
+        if (step.kind === "command" && step.command.includes("{{"))
+          fail(`${p}.command`, "Command must be a literal shell line; use env for references");
+        const templates =
+          step.kind === "command"
+            ? Object.entries(step.env ?? {}).map(([name, value]) => [`env.${name}`, value] as const)
+            : [["prompt", step.prompt] as const];
+        for (const [key, template] of templates)
+          protect(`${p}.${key}`, () => {
+            for (const ref of templateReferences(template, `${p}.${key}`))
+              checkRef(ref, `${p}.${key}`, scope);
+          });
         if (step.kind === "command" && step.cwd !== undefined) {
           const parts = step.cwd.replaceAll("\\", "/").split("/");
           let depth = 0;
@@ -489,16 +590,20 @@ export function validateFlowDefinition(
             fail(`${p}.cwd`, "Command cwd must stay inside the workspace");
         }
       } else {
+        if (step.kind === "loop")
+          step.steps.forEach((child, j) => {
+            if (child.id === "iterations" || child.id === "kind")
+              fail(`${p}.steps[${j}].id`, "Reserved loop output key");
+          });
         if (step.kind === "map")
           protect(`${p}.over`, () => {
-            if (checkRef(step.over, `${p}.over`, scope) !== "string[]")
+            if (checkRef(step.over, `${p}.over`, scope).type !== "string[]")
               throw new FlowValueError(`${p}.over`, "Map requires a string[] reference");
           });
-        const previous = new Map(scope.previous);
+        const previous = new Map<string, FlowStep>();
         const addPrevious = (children: ReadonlyArray<FlowStep>) =>
           children.forEach((child) => {
             previous.set(child.id, child);
-            if (child.kind === "loop" || child.kind === "map") addPrevious(child.steps);
           });
         if (step.kind === "loop") addPrevious(step.steps);
         const inner = {
@@ -506,8 +611,18 @@ export function validateFlowDefinition(
           previous,
           inLoop: scope.inLoop || step.kind === "loop",
           inMap: scope.inMap || step.kind === "map",
+          canContinue: step.kind === "loop",
         };
-        checkLevel(step.steps, step.edges, p, inner);
+        checkLevel(
+          step.steps,
+          step.edges,
+          p,
+          inner,
+          [...lineage, step.id],
+          step.kind === "map" && (step.concurrency ?? 1) > 1
+            ? [...parallelMaps, step.id]
+            : parallelMaps,
+        );
         if (step.kind === "loop")
           checkCondition(step.until, `${p}.until`, {
             ...inner,
@@ -537,6 +652,31 @@ export function validateFlowDefinition(
     previous: new Map(),
     inLoop: false,
     inMap: false,
+    canContinue: false,
+  });
+  const threadRoot = (id: string, seen = new Set<string>()): string => {
+    const step = ids.get(id);
+    if (seen.has(id) || step?.kind !== "agent" || typeof step.thread !== "object") return id;
+    seen.add(id);
+    return threadRoot(step.thread.sameAs, seen);
+  };
+  const agents = [...ids.values()].filter((step) => step.kind === "agent");
+  agents.forEach((step, index) => {
+    const location = locations.get(step.id)!;
+    const root = threadRoot(step.id);
+    const rootLocation = locations.get(root);
+    if (rootLocation && location.parallelMaps.some((id) => !rootLocation.parallelMaps.includes(id)))
+      fail(`${location.path}.thread`, "Concurrent map items cannot share an outer thread");
+    for (const other of agents.slice(0, index)) {
+      if (threadRoot(other.id) !== root) continue;
+      const otherLocation = locations.get(other.id)!;
+      const divergence = location.lineage.findIndex((id, i) => otherLocation.lineage[i] !== id);
+      if (divergence < 0 || divergence >= otherLocation.lineage.length) continue;
+      const left = location.lineage[divergence]!;
+      const right = otherLocation.lineage[divergence]!;
+      if (!locations.get(left)!.ancestors.has(right) && !locations.get(right)!.ancestors.has(left))
+        fail(`${location.path}.thread`, "Concurrently runnable steps cannot share a thread");
+    }
   });
   for (const id of Object.keys(definition.layout ?? {}))
     if (!ids.has(id)) fail(`$.layout.${id}`, "Unknown layout step");

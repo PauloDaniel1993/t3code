@@ -3,6 +3,9 @@ import {
   capFlowCommandOutput,
   capFlowText,
   coerceFlowInputs,
+  resolveFlowInputs,
+  resolveFlowMapItems,
+  renderFlowCommandEnv,
   evaluateFlowCondition,
   FlowValueError,
   parseFlowReference,
@@ -37,6 +40,12 @@ it.each<{ condition: FlowCondition; expected: boolean }>([
   { condition: { ref: "inputs.files", op: "contains", value: "a" }, expected: true },
   { condition: { ref: "steps.review.output.text", op: "contains", value: "on" }, expected: true },
   { condition: { ref: "inputs.empty", op: "isEmpty" }, expected: true },
+  ...(["eq", "neq", "lt", "lte", "gt", "gte", "contains"] as const).map((op) => ({
+    condition: { ref: "steps.skipped.output.text", op, value: "" },
+    expected: false,
+  })),
+  { condition: { ref: "inputs.unset", op: "isEmpty" }, expected: true },
+  { condition: { ref: "steps.gate.output.comment", op: "isEmpty" }, expected: true },
   {
     condition: {
       all: [
@@ -62,15 +71,14 @@ it.each([
   ["{{item}}: {{index}} / {{iteration}} / {{inputs.enabled}}", "a: 0 / 2 / true"],
   ["{{ steps.review.previous.output.text }} {{steps.review.output.verdict}}", "Before approve"],
   ["{{inputs.empty}}", ""],
+  ["{{inputs.unset}}/{{steps.skipped.output.text}}", "/"],
+  ["{{steps.review.output.comment}}", ""],
+  [String.raw`\{{literal}}`, "{{literal}}"],
+  [String.raw`\{{`, "{{"],
 ])("renders %s", (template, expected) =>
   expect(renderFlowTemplate(template, context, () => "Review thread")).toBe(expected),
 );
-it.each([
-  "inputs.nope",
-  "steps.review.output.missing",
-  "steps.review.output.__proto__",
-  "steps.review.output.issues.join()",
-])("rejects unresolved reference %s", (reference) => {
+it.each(["steps.review.output.issues.join()"])("rejects unresolved reference %s", (reference) => {
   expect(() => resolveFlowReference(reference, context, "$.prompt")).toThrow(FlowValueError);
   try {
     resolveFlowReference(reference, context, "$.prompt");
@@ -85,7 +93,10 @@ it("parses references and refuses incomplete templates", () => {
     previous: true,
     fields: ["text"],
   });
-  expect(() => renderFlowTemplate("{{item", context, () => "Review")).toThrow("Unclosed");
+  expect(renderFlowTemplate("{{item", context, () => "Review")).toBe("{{item");
+  expect(renderFlowTemplate("{{bad()}}", context, () => "Review")).toBe("");
+  expect(evaluateFlowCondition({ ref: "bad()", op: "isEmpty" }, context)).toBe(true);
+  expect(renderFlowTemplate("{{steps.review.previous.output.text}}", {}, () => "Review")).toBe("");
 });
 it("caps UTF-8 text with its source thread and preserves bounded output", () => {
   const text = "😀".repeat(5000);
@@ -117,6 +128,10 @@ it.each([
     values: { count: "0", files: "a\r\n\n b\n" },
     expected: { count: 0, enabled: false, files: ["a", "b"] },
   },
+  {
+    values: { count: "1", files: "[WIP] fix\nsecond" },
+    expected: { count: 1, enabled: false, files: ["[WIP] fix", "second"] },
+  },
   { values: { count: "1e2", files: "" }, expected: { count: 100, enabled: false, files: [] } },
 ])("coerces $values", ({ values, expected }) =>
   expect(coerceFlowInputs(inputs, values)).toEqual(expected),
@@ -127,7 +142,7 @@ it.each([
   { values: { count: "Infinity" }, path: "$.inputs.count" },
   { values: { count: "1", enabled: "yes" }, path: "$.inputs.enabled" },
   { values: { count: "1", files: "[1]" }, path: "$.inputs.files" },
-  { values: { count: "1", files: "[oops" }, path: "$.inputs.files" },
+
   { values: { count: "1", extra: "x" }, path: "$.inputs.extra" },
 ])("rejects input at $path", ({ values, path }) => {
   try {
@@ -163,5 +178,68 @@ it("retains the bounded UTF-8 command tail and nonempty stdout lines", () => {
   expect(output.text).not.toContain("�");
   expect(new TextEncoder().encode(output.text).length).toBeLessThanOrEqual(16_384);
   expect(output.lines).toHaveLength(200);
+  expect(output.lineCount).toBe(302);
   expect(output.lines.slice(0, 2)).toEqual([" a", " b"]);
+});
+
+it.each([
+  { values: {}, path: "$.inputs.count" },
+  { values: { count: "3" }, path: "$.inputs.count" },
+  { values: { count: Infinity }, path: "$.inputs.count" },
+  { values: { count: 1, enabled: "true" }, path: "$.inputs.enabled" },
+  { values: { count: 1, files: [1] }, path: "$.inputs.files" },
+  { values: { count: 1, title: false }, path: "$.inputs.title" },
+  { values: { count: 1, extra: "x" }, path: "$.inputs.extra" },
+])("checks typed inputs at $path", ({ values, path }) => {
+  expect(() => resolveFlowInputs(inputs, values)).toThrow(expect.objectContaining({ path }));
+});
+it("resolves typed input defaults and optional values", () => {
+  expect(resolveFlowInputs(inputs, { count: 3, files: ["a"] })).toEqual({
+    count: 3,
+    enabled: false,
+    files: ["a"],
+  });
+});
+it("renders command environment values without prompt bullets or shell quoting", () => {
+  expect(
+    renderFlowCommandEnv(
+      { FILES: "{{inputs.files}}", VALUE: "{{inputs.value}}", UNSET: "{{inputs.unset}}" },
+      {
+        inputs: { files: ["a", "b"], value: '1; echo "$x"' },
+      },
+      () => "thread",
+    ),
+  ).toEqual({ FILES: "a\nb", VALUE: '1; echo "$x"', UNSET: "" });
+});
+it("names the innermost source thread in a nested truncation marker", () => {
+  const output = renderFlowTemplate(
+    "{{steps.outer.output.inner.review.text}}",
+    {
+      steps: { outer: { output: { inner: { review: { text: "x".repeat(17000) } } } } },
+    },
+    (id) => `${id} thread`,
+  );
+  expect(output).toContain("full output in review thread");
+});
+
+it.each([
+  { count: 49, maxItems: 50, valid: true },
+  { count: 50, maxItems: 50, valid: true },
+  { count: 51, maxItems: 50, valid: false },
+  { count: 200, maxItems: 500, valid: true },
+  { count: 300, maxItems: 500, valid: false },
+])(
+  "checks command map size $count against $maxItems without silent truncation",
+  ({ count, maxItems, valid }) => {
+    const output = { kind: "command", ...capFlowCommandOutput("", "line\n".repeat(count)) };
+    const context = { steps: { loop: { output: { command: output } } } };
+    const read = () => resolveFlowMapItems("steps.loop.output.command.lines", context, maxItems);
+    if (valid) expect(read()).toHaveLength(count);
+    else expect(read).toThrow(FlowValueError);
+  },
+);
+it("checks map inputs and missing lists", () => {
+  expect(resolveFlowMapItems("inputs.files", context)).toEqual(["a", "b"]);
+  expect(() => resolveFlowMapItems("inputs.files", context, 1)).toThrow("maxItems");
+  expect(() => resolveFlowMapItems("inputs.missing", context)).toThrow("available string[]");
 });

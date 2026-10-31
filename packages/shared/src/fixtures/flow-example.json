@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "title": "Fix failing tests",
+  "description": "Implement, review until approved, run tests, gate.",
+  "workspace": "worktree",
+  "inputs": [{ "name": "issue", "type": "string", "description": "What to fix" }],
+  "defaults": {
+    "model": {
+      "providerInstanceId": "codex",
+      "model": "gpt-6.1-sol",
+      "options": { "reasoningEffort": "high" }
+    },
+    "runtimeMode": "full-access",
+    "interactionMode": "default"
+  },
+  "steps": [
+    { "id": "implement", "kind": "agent", "prompt": "Fix: {{inputs.issue}}" },
+    {
+      "id": "review-loop",
+      "kind": "loop",
+      "maxIterations": 3,
+      "until": { "ref": "steps.review.output.verdict", "op": "eq", "value": "approve" },
+      "steps": [
+        {
+          "id": "review",
+          "kind": "agent",
+          "prompt": "Review the change for {{inputs.issue}}.",
+          "model": { "providerInstanceId": "claudeAgent", "model": "claude-opus-5-5" },
+          "outputs": [
+            { "name": "verdict", "type": "enum", "values": ["approve", "revise"] },
+            { "name": "issues", "type": "string[]" }
+          ]
+        },
+        {
+          "id": "fix",
+          "kind": "agent",
+          "thread": { "sameAs": "implement" },
+          "prompt": "Address: {{steps.review.output.issues}}"
+        }
+      ],
+      "edges": [
+        {
+          "from": "review",
+          "to": "fix",
+          "when": { "ref": "steps.review.output.verdict", "op": "eq", "value": "revise" }
+        }
+      ]
+    },
+    { "id": "tests", "kind": "command", "command": "vp run test", "timeoutMs": 600000 },
+    { "id": "ship-gate", "kind": "approval", "prompt": "Ship it?" },
+    { "id": "triage", "kind": "agent", "prompt": "Tests failed:\n{{steps.tests.output.text}}" }
+  ],
+  "edges": [
+    { "from": "implement", "to": "review-loop" },
+    { "from": "review-loop", "to": "tests" },
+    {
+      "from": "tests",
+      "to": "ship-gate",
+      "when": { "ref": "steps.tests.output.exitCode", "op": "eq", "value": 0 }
+    },
+    {
+      "from": "tests",
+      "to": "triage",
+      "when": { "ref": "steps.tests.output.exitCode", "op": "neq", "value": 0 }
+    },
+    { "from": "implement", "to": "triage", "on": "failure" }
+  ],
+  "layout": { "implement": { "x": 0, "y": 0 } }
+}

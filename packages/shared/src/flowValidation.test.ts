@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { validateFlowDefinition } from "./flow.ts";
+import example from "./fixtures/flow-example.json" with { type: "json" };
+import { renderFlowTemplate, validateFlowDefinition } from "./flow.ts";
 
 const agent = <T extends object>(id: string, extra?: T) => ({
   id,
@@ -37,6 +38,197 @@ const flow = (extra = {}) => ({
   ...extra,
 });
 const cases = [
+  ...[
+    { ref: "steps.test.output.text", op: "gt", value: 3, valid: false },
+    { ref: "steps.test.output.exitCode", op: "eq", value: "0", valid: false },
+    { ref: "steps.test.output.timedOut", op: "eq", value: false, valid: true },
+    { ref: "steps.test.output.lines", op: "eq", value: ["ok"], valid: true },
+    { ref: "steps.test.output.lines", op: "eq", value: "ok", valid: false },
+    { ref: "steps.test.output.lines", op: "contains", value: "ok", valid: true },
+    { ref: "steps.test.output.exitCode", op: "contains", value: "0", valid: false },
+    { ref: "steps.test.output.text", op: "contains", value: 0, valid: false },
+    { ref: "steps.test.output.text", op: "contains", value: "error", valid: true },
+    { ref: "steps.test.output.exitCode", op: "gte", value: 0, valid: true },
+  ].map(({ valid, ...when }) => ({
+    name: `condition ${when.ref} ${when.op} ${when.value}`,
+    value: flow({ steps: [command, agent("next")], edges: [{ from: "test", to: "next", when }] }),
+    path: valid ? undefined : "$.edges[0].when.value",
+  })),
+  {
+    name: "escaped opener",
+    value: flow({ steps: [agent("a", { prompt: String.raw`\{{` })] }),
+    path: undefined,
+  },
+  {
+    name: "valid command env",
+    value: flow({
+      inputs: [{ name: "files", type: "string[]" }],
+      steps: [{ ...command, command: "echo $FILES", env: { FILES: "{{inputs.files}}" } }],
+    }),
+    path: undefined,
+  },
+  {
+    name: "conditional failure edge",
+    value: flow({
+      steps: [command, agent("next")],
+      edges: [
+        {
+          from: "test",
+          to: "next",
+          on: "failure",
+          when: { ref: "steps.test.output.timedOut", op: "eq", value: true },
+        },
+      ],
+    }),
+    path: undefined,
+  },
+  {
+    name: "nested concurrent reuse",
+    value: flow({
+      steps: [
+        agent("a"),
+        {
+          ...loop,
+          steps: [agent("b", { thread: { sameAs: "a" } })],
+          until: { ref: "iteration", op: "gte", value: 2 },
+        },
+        agent("c", { thread: { sameAs: "a" } }),
+      ],
+      edges: [
+        { from: "a", to: "loop" },
+        { from: "a", to: "c" },
+      ],
+    }),
+    path: "$.steps[2].thread",
+  },
+
+  ...["iterations", "kind"].map((id) => ({
+    name: `reserved loop child ${id}`,
+    value: flow({ steps: [{ ...loop, steps: [agent(id)] }] }),
+    path: "$.steps[0].steps[0].id",
+  })),
+  {
+    name: "reserved output kind",
+    value: flow({ steps: [agent("a", { outputs: [{ name: "kind", type: "string" }] })] }),
+    path: "$.steps[0].outputs[0].name",
+  },
+  {
+    name: "literal command",
+    value: flow({ steps: [{ ...command, command: "echo {{inputs.x}}" }] }),
+    path: "$.steps[0].command",
+  },
+  {
+    name: "invalid env name",
+    value: flow({ steps: [{ ...command, env: { "bad-name": "value" } }] }),
+    path: "$.steps[0].env.bad-name",
+  },
+  {
+    name: "env reference",
+    value: flow({ steps: [{ ...command, env: { VALUE: "{{inputs.missing}}" } }] }),
+    path: "$.steps[0].env.VALUE",
+  },
+  {
+    name: "escaped braces",
+    value: flow({ steps: [agent("a", { prompt: String.raw`\{{literal}}` })] }),
+    path: undefined,
+  },
+  ...[
+    { op: "eq", value: "aprove" },
+    { op: "gt", value: 3 },
+    { op: "eq", value: 3 },
+  ].map((condition) => ({
+    name: `invalid enum condition ${condition.op} ${condition.value}`,
+    value: flow({
+      steps: [{ ...loop, until: { ref: "steps.review.output.verdict", ...condition } }],
+    }),
+    path: "$.steps[0].until.value",
+  })),
+  {
+    name: "concurrent reuse",
+    value: flow({
+      steps: [
+        agent("a"),
+        agent("b", { thread: { sameAs: "a" } }),
+        agent("c", { thread: { sameAs: "b" } }),
+        agent("d", { thread: { sameAs: "a" } }),
+      ],
+      edges: [
+        { from: "a", to: "b" },
+        { from: "b", to: "c" },
+        { from: "a", to: "d" },
+      ],
+    }),
+    path: "$.steps[3].thread",
+  },
+  {
+    name: "sequential reuse",
+    value: flow({
+      steps: [
+        agent("a"),
+        agent("b", { thread: { sameAs: "a" } }),
+        agent("c", { thread: { sameAs: "a" } }),
+      ],
+      edges: [
+        { from: "a", to: "b" },
+        { from: "b", to: "c" },
+      ],
+    }),
+    path: undefined,
+  },
+  ...[1, 2].map((concurrency) => ({
+    name: `map external reuse concurrency ${concurrency}`,
+    value: flow({
+      inputs: [{ name: "files", type: "string[]" }],
+      steps: [
+        agent("a"),
+        { ...map, concurrency, steps: [agent("edit", { thread: { sameAs: "a" } })] },
+      ],
+      edges: [{ from: "a", to: "map" }],
+    }),
+    path: concurrency === 1 ? undefined : "$.steps[1].steps[0].thread",
+  })),
+  {
+    name: "parallel map local reuse",
+    value: flow({
+      inputs: [{ name: "files", type: "string[]" }],
+      steps: [
+        {
+          ...map,
+          concurrency: 2,
+          steps: [agent("a"), agent("b", { thread: { sameAs: "a" } })],
+          edges: [{ from: "a", to: "b" }],
+        },
+      ],
+    }),
+    path: undefined,
+  },
+  ...["continue", "previous"].map((mode) => ({
+    name: `map nested in loop ${mode}`,
+    value: flow({
+      inputs: [{ name: "files", type: "string[]" }],
+      steps: [
+        {
+          ...loop,
+          steps: [
+            review,
+            {
+              ...map,
+              steps: [
+                agent(
+                  "edit",
+                  mode === "continue"
+                    ? { thread: "continue" }
+                    : { prompt: "{{steps.review.previous.output.text}}" },
+                ),
+              ],
+            },
+          ],
+          edges: [{ from: "review", to: "map" }],
+        },
+      ],
+    }),
+    path: `$.steps[0].steps[1].steps[0].${mode === "continue" ? "thread" : "prompt"}`,
+  })),
   { name: "minimal", value: flow(), path: undefined },
   { name: "unknown version", value: flow({ version: 2 }), path: "$.version" },
   { name: "unknown property", value: flow({ typo: true }), path: "$.typo" },
@@ -366,4 +558,16 @@ describe("flow validation", () => {
       expect(result.errors.map((error) => error.path)).toContain(path);
     }
   });
+});
+
+it("validates the spec example and renders triage after implementation fails", () => {
+  expect(
+    validateFlowDefinition(example, {
+      knownProviderInstanceIds: new Set(["codex", "claudeAgent"]),
+    }),
+  ).toEqual({ valid: true, errors: [] });
+  const triage = example.steps.find((step) => step.id === "triage")!;
+  expect(
+    renderFlowTemplate(triage.prompt!, { inputs: { issue: "Fix tests" } }, () => "Tests"),
+  ).toBe("Tests failed:\n");
 });
