@@ -306,13 +306,13 @@ function FlowEditor({
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- debounces writes to the environment's flow file
   useEffect(() => {
-    if (!dirty || saving || saveError || conflict || !validation.valid) return;
+    if (!dirty || saving || saveError || conflict) return;
     const timer = setTimeout(() => {
       if (draftStore.getSnapshot().definition === draft) void persist();
     }, 650);
     return () => clearTimeout(timer);
-  }, [draft, dirty, saving, saveError, conflict, validation.valid, persist, draftStore]);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- flushes the latest valid draft when this editor closes
+  }, [draft, dirty, saving, saveError, conflict, persist, draftStore]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- flushes the latest draft when this editor closes
   useEffect(
     () => () => {
       void persist();
@@ -388,7 +388,7 @@ function FlowEditor({
         <Button
           size="xs"
           variant="outline"
-          disabled={!canSave || saving || !dirty || !validation.valid}
+          disabled={!canSave || saving || !dirty}
           onClick={() => {
             void persist();
           }}
