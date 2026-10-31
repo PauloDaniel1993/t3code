@@ -43,6 +43,7 @@ it("decodes nested loop and map steps and condition combinators", () => {
   ).toThrow();
 });
 it.each([
+  { kind: "agent", text: "done", exitCode: 0, timedOut: false, lines: ["retained"] },
   { kind: "agent", text: "done", decision: "approve", verdict: "approve", issues: ["one"] },
   {
     kind: "command",

@@ -43,7 +43,9 @@ export const FlowAgentOutput = Schema.StructWithRest(
 );
 export const FlowCommandOutput = Schema.Struct({
   kind: Schema.Literal("command"),
-  lineCount: NonNegativeInt,
+  lineCount: NonNegativeInt.annotate({
+    description: "Non-empty stdout line count before capping lines; maps reject truncated sources.",
+  }),
   exitCode: Schema.NullOr(Schema.Int),
   timedOut: Schema.Boolean,
   text: Schema.String,
@@ -169,7 +171,10 @@ export const FlowOutputFields = Schema.Union([
     kind: Schema.Literal("command"),
     exitCode: Schema.NullOr(Schema.Int),
     timedOut: Schema.Boolean,
-    lineCount: NonNegativeInt,
+    lineCount: NonNegativeInt.annotate({
+      description:
+        "Non-empty stdout line count before capping lines; maps reject truncated sources.",
+    }),
   }),
   FlowApprovalOutput,
   Schema.Struct({
@@ -208,6 +213,7 @@ export const FlowRunEvent = Schema.Union([
 ]);
 export type FlowRunEvent = typeof FlowRunEvent.Type;
 export const FlowRunsCursor = Schema.Struct({ createdAt: IsoDateTime, id: FlowRunId });
+export type FlowRunsCursor = typeof FlowRunsCursor.Type;
 export const FlowRunsPage = Schema.Struct({
   runs: Schema.Array(FlowRunSummary).check(Schema.isMaxLength(50)),
   nextCursor: Schema.NullOr(FlowRunsCursor),

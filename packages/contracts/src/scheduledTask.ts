@@ -1,6 +1,5 @@
 import * as Schema from "effect/Schema";
 
-import { FlowScheduledTarget } from "./flowDefinition.ts";
 import {
   CommandId,
   ForwardCompatibleArray,
@@ -11,6 +10,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { FlowScheduledTarget } from "./flowDefinition.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import {
   OrchestrationV2Actor,
