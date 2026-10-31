@@ -1,27 +1,18 @@
-import { flowRunIdFromMetadata } from "@t3tools/client-runtime/flows";
-import type { ProjectId, ScopedThreadRef } from "@t3tools/contracts";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useState } from "react";
 import { useEnvironmentQuery } from "../../state/query";
 import { flowEnvironment } from "../../state/flows";
 import { Button } from "../ui/button";
 import { FlowRunActions, FlowRunTimeline, StepRunInspector } from "./FlowRunView";
 import { useFlowPanelRequest } from "./flowPanelState";
-
-export function FlowRunThreadCard({
-  threadRef,
-  projectId,
-  metadata,
-}: {
-  threadRef: ScopedThreadRef;
-  projectId: ProjectId;
-  metadata: unknown;
-}) {
-  const history = useEnvironmentQuery(
-    flowEnvironment.runs({ environmentId: threadRef.environmentId, input: { projectId } }),
+export function FlowRunThreadCard({ threadRef }: { threadRef: ScopedThreadRef }) {
+  const lookup = useEnvironmentQuery(
+    flowEnvironment.runForThread({
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId },
+    }),
   );
-  const id =
-    flowRunIdFromMetadata(metadata) ??
-    history.data?.runs.find((run) => run.flowRunThreadId === threadRef.threadId)?.id;
+  const id = lookup.data?.flowRunId;
   const detail = useEnvironmentQuery(
     id
       ? flowEnvironment.run({ environmentId: threadRef.environmentId, input: { flowRunId: id } })
@@ -30,6 +21,22 @@ export function FlowRunThreadCard({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const snapshot = detail.data;
   if (!snapshot) return id && detail.error ? <p role="alert">{detail.error}</p> : null;
+  if (lookup.data?.role === "step_thread")
+    return (
+      <div className="border-b border-border p-2 text-xs">
+        <button
+          type="button"
+          className="text-primary underline"
+          onClick={() =>
+            useFlowPanelRequest
+              .getState()
+              .open(threadRef, { flowId: snapshot.summary.flowId, flowRunId: snapshot.summary.id })
+          }
+        >
+          Part of {snapshot.summary.flowTitle} · run {snapshot.summary.runNumber}
+        </button>
+      </div>
+    );
   const selected = snapshot.stepRuns.find((step) => step.id === selectedId);
   return (
     <section
@@ -53,7 +60,11 @@ export function FlowRunThreadCard({
         </Button>
       </div>
       <FlowRunActions environmentId={threadRef.environmentId} summary={snapshot.summary} />
-      <FlowRunTimeline snapshot={snapshot} onSelect={(step) => setSelectedId(step.id)} />
+      <FlowRunTimeline
+        selectedId={selectedId}
+        snapshot={snapshot}
+        onSelect={(step) => setSelectedId(step.id)}
+      />
       {selected && (
         <StepRunInspector
           key={selected.id}

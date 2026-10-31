@@ -6,6 +6,7 @@ const unavailable = () => Effect.fail(new FlowError({ message: "Flows are not im
 export const flowRpcHandlers = {
   [FLOW_WS_METHODS.flowList]: () => Stream.fromEffect(unavailable()),
   [FLOW_WS_METHODS.flowRuns]: () => Stream.fromEffect(unavailable()),
+  [FLOW_WS_METHODS.flowRunForThread]: () => Effect.succeed(null),
   [FLOW_WS_METHODS.flowRun]: () => Stream.fromEffect(unavailable()),
   [FLOW_WS_METHODS.flowRunsPage]: unavailable,
   [FLOW_WS_METHODS.flowSave]: unavailable,

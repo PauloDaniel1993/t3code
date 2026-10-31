@@ -66,6 +66,7 @@ export function RightPanelSurfaceContent(props: {
   readonly activeSurfaceId: string | null;
   readonly threadRef: ScopedThreadRef;
   readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId | null;
   readonly visible: boolean;
   readonly composerDraftTarget: ScopedThreadRef | DraftId;
   readonly keybindings: ResolvedKeybindingsConfig;
@@ -171,11 +172,11 @@ export function RightPanelSurfaceContent(props: {
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
     case "flow":
-      return props.pullRequest.projectId ? (
+      return props.projectId ? (
         <Suspense fallback={null}>
           <FlowPanel
             environmentId={props.environmentId}
-            projectId={props.pullRequest.projectId}
+            projectId={props.projectId}
             threadRef={threadRef}
           />
         </Suspense>

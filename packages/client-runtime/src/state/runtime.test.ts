@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  ThreadId,
+  FlowRunId,
   type PreviewEvent,
   type TerminalAttachInput,
   type TerminalAttachStreamEvent,
@@ -33,6 +35,7 @@ import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
 import type * as RpcSession from "../rpc/session.ts";
+import { createFlowEnvironmentAtoms } from "../flows/index.ts";
 import { createPreviewEnvironmentAtoms } from "./preview.ts";
 import type { QueryPersistence } from "./queryPersistence.ts";
 import { createTerminalEnvironmentAtoms } from "./terminal.ts";
@@ -1340,3 +1343,46 @@ describe("persisted environment queries", () => {
     ),
   );
 });
+
+it.effect("caches thread flow lookups, including ordinary threads, without flow streams", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const harness = yield* makeEnvironmentQueryHarness(Effect.void, {
+        rpcSession: {
+          client: {
+            [WS_METHODS.flowRunForThread]: ({ threadId }: { threadId: string }) =>
+              Effect.sync(() => {
+                calls.push(threadId);
+                return threadId === "ordinary"
+                  ? null
+                  : { flowRunId: FlowRunId.make("flow-run"), role: "flow_run_thread" as const };
+              }),
+            [WS_METHODS.flowRuns]: () => {
+              throw new Error("Must not subscribe to project runs");
+            },
+            [WS_METHODS.flowRun]: () => {
+              throw new Error("Lookup must not subscribe to a run");
+            },
+          },
+        } as unknown as RpcSession.RpcSession,
+      });
+      const flows = createFlowEnvironmentAtoms(harness.runtime);
+      const registry = AtomRegistry.make();
+      yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+      for (const threadId of ["ordinary", "flow", "ordinary", "flow"]) {
+        const atom = flows.runForThread({
+          environmentId: QUERY_ENVIRONMENT.environmentId,
+          input: { threadId: ThreadId.make(threadId) },
+        });
+        const unmount = registry.mount(atom);
+        const value = yield* AtomRegistry.getResult(registry, atom, { suspendOnWaiting: true });
+        expect(value).toEqual(
+          threadId === "ordinary" ? null : { flowRunId: "flow-run", role: "flow_run_thread" },
+        );
+        unmount();
+      }
+      expect(calls).toEqual(["ordinary", "flow"]);
+    }),
+  ),
+);

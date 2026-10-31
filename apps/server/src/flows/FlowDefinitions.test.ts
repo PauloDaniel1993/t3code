@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { flowDefinitionRevision } from "@t3tools/shared/flow";
 import { FlowId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -47,7 +48,9 @@ it.effect(
         steps: [{ id: "a", kind: "agent" as const, prompt: "Work" }],
         edges: [],
       };
-      expect((yield* flows.write(root, id, definition)).definition).toEqual(definition);
+      const entry = yield* flows.write(root, id, definition);
+      expect(entry.definition).toEqual(definition);
+      expect(entry.revision).toBe(flowDefinitionRevision(definition));
       const first = yield* fs.readFileString(path.join(root, ".t3code/flow/test.json"));
       yield* flows.write(root, id, {
         edges: [],

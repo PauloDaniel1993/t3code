@@ -1,5 +1,6 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, memo, useContext, useState } from "react";
 import {
+  applyNodeChanges,
   Background,
   Controls,
   Handle,
@@ -16,16 +17,27 @@ import type {
   FlowStep,
   FlowStepRunStatus,
 } from "@t3tools/contracts";
-import { flowStepStatusById } from "@t3tools/client-runtime/flows";
+import { flowStepStatusById, flowStepCountsById } from "@t3tools/client-runtime/flows";
 import { useTheme } from "../../hooks/useTheme";
 import { Button } from "../ui/button";
-import { flowGraph, editLevel, findStep, newStep, type FlowNode } from "./flowGraph";
+import {
+  stepIdAtPath,
+  flowGraph,
+  dropTarget,
+  editLevel,
+  findStep,
+  newStep,
+  type FlowNode,
+} from "./flowGraph";
 import { Choice } from "./FlowFields";
 import { cn } from "../../lib/utils";
-
-export const FlowRunContext = createContext<ReadonlyMap<string, FlowStepRunStatus>>(new Map());
-export function FlowStepNode({ data, id }: NodeProps<FlowNode>) {
+const FlowRunContext = createContext<ReadonlyMap<string, FlowStepRunStatus>>(new Map());
+const FlowCountsContext = createContext<
+  ReadonlyMap<string, { total: number; succeeded: number; failed: number }>
+>(new Map());
+const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProps<FlowNode>) {
   const status = useContext(FlowRunContext).get(id);
+  const count = useContext(FlowCountsContext).get(id);
   const container = data.step.kind === "loop" || data.step.kind === "map";
   return (
     <div
@@ -33,6 +45,9 @@ export function FlowStepNode({ data, id }: NodeProps<FlowNode>) {
       className={cn(
         "h-full rounded-lg border bg-card px-3 py-2 text-xs text-card-foreground",
         container ? "min-h-full border-dashed" : "min-w-40",
+        selected && "ring-2 ring-ring",
+        (status === "skipped" || status === "cancelled") && "border-dashed opacity-60",
+        data.errors?.length && "border-destructive",
         status === "succeeded" && "border-success",
         (status === "failed" || status === "interrupted") && "border-destructive",
         (status === "running" || status === "waiting_report") && "border-primary",
@@ -44,10 +59,20 @@ export function FlowStepNode({ data, id }: NodeProps<FlowNode>) {
       <div className="text-muted-foreground">
         {data.step.kind} step{status ? ` · ${status.replaceAll("_", " ")}` : ""}
       </div>
+      {count && count.total > 1 && (
+        <div>
+          {count.succeeded}/{count.total} succeeded · {count.failed} failed
+        </div>
+      )}
+      {data.errors?.map((error) => (
+        <div role="alert" key={error} className="text-destructive">
+          {error}
+        </div>
+      ))}
       <Handle type="source" position={Position.Bottom} />
     </div>
   );
-}
+});
 const nodeTypes = { step: FlowStepNode };
 const kinds: ReadonlyArray<FlowStep["kind"]> = ["agent", "command", "approval", "loop", "map"];
 
@@ -55,6 +80,9 @@ export function FlowCanvas(props: {
   definition: FlowDefinition;
   snapshot: FlowRunSnapshot | null;
   locked: boolean;
+  selectedId: string | null;
+  errors: ReadonlyArray<{ path: string; message: string }>;
+  onDeselect: () => void;
   onChange: (definition: FlowDefinition) => void;
   onSelectStep: (id: string) => void;
   onSelectEdge: (id: string) => void;
@@ -69,6 +97,9 @@ function Canvas({
   definition,
   snapshot,
   locked,
+  selectedId,
+  errors,
+  onDeselect,
   onChange,
   onSelectStep,
   onSelectEdge,
@@ -76,17 +107,42 @@ function Canvas({
   const { resolvedTheme } = useTheme();
   const { screenToFlowPosition } = useReactFlow();
   const [parentId, setParentId] = useState<string | null>(null);
-  const graph = flowGraph(definition);
+  const [graphState, setGraphState] = useState(() => ({
+    definition,
+    graph: flowGraph(definition),
+  }));
+  let graph = graphState.graph;
+  if (definition !== graphState.definition) {
+    graph = flowGraph(definition, graph.nodes);
+    setGraphState({ definition, graph });
+  }
+  const nodes = graph.nodes.map((node) => {
+    const selected = selectedId === node.id;
+    const messages = errors
+      .filter((error) => stepIdAtPath(definition, error.path) === node.id)
+      .map((error) => error.message);
+    const unchanged =
+      selected === !!node.selected && messages.join("\n") === (node.data.errors ?? []).join("\n");
+    return unchanged ? node : { ...node, selected, data: { ...node.data, errors: messages } };
+  });
+  if (nodes.some((node, i) => node !== graph.nodes[i])) {
+    graph = { ...graph, nodes };
+    setGraphState({ definition, graph });
+  }
   const containers = graph.nodes.filter(
     (node) => node.data.step.kind === "loop" || node.data.step.kind === "map",
   );
   const parent = parentId && findStep(definition.steps, parentId) ? parentId : null;
-  const add = (kind: FlowStep["kind"], position?: { x: number; y: number }) => {
+  const add = (
+    kind: FlowStep["kind"],
+    position?: { x: number; y: number },
+    targetParent = parent,
+  ) => {
     if (locked) return;
     let index = 1;
     while (findStep(definition.steps, `${kind}-${index}`)) index++;
     const step = newStep(kind, `${kind}-${index}`);
-    const next = editLevel(definition, parent, (level) => ({
+    const next = editLevel(definition, targetParent, (level) => ({
       ...level,
       steps: [...level.steps, step],
     }));
@@ -95,100 +151,111 @@ function Canvas({
   };
   return (
     <FlowRunContext value={snapshot ? flowStepStatusById(snapshot) : new Map()}>
-      <div
-        className="flow-canvas h-full min-h-72"
-        onDragOver={(event) => {
-          if (!locked) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
-          }
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          const kind = kinds.find(
-            (candidate) => candidate === event.dataTransfer.getData("application/t3-flow-step"),
-          );
-          if (kind) {
-            const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-            let ancestor = graph.nodes.find((node) => node.id === parent);
-            const offset = { x: 0, y: 0 };
-            while (ancestor) {
-              offset.x += ancestor.position.x;
-              offset.y += ancestor.position.y;
-              const parentId = ancestor.parentId;
-              ancestor = graph.nodes.find((node) => node.id === parentId);
+      <FlowCountsContext value={snapshot ? flowStepCountsById(snapshot) : new Map()}>
+        <div
+          className="flow-canvas h-full min-h-72"
+          onDragOver={(event) => {
+            if (!locked) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
             }
-            add(kind, { x: position.x - offset.x, y: position.y - offset.y });
-          }
-        }}
-      >
-        <ReactFlow
-          nodes={graph.nodes}
-          edges={graph.edges}
-          nodeTypes={nodeTypes}
-          colorMode={resolvedTheme}
-          fitView
-          minZoom={0.1}
-          maxZoom={1.6}
-          nodesDraggable={!locked}
-          nodesConnectable={!locked}
-          edgesReconnectable={false}
-          deleteKeyCode={null}
-          onNodeClick={(_, node) => onSelectStep(node.id)}
-          onEdgeClick={(_, edge) => onSelectEdge(edge.id)}
-          onNodesChange={(changes) => {
-            if (locked) return;
-            const layout = { ...definition.layout };
-            let changed = false;
-            for (const change of changes)
-              if (change.type === "position" && change.position) {
-                layout[change.id] = change.position;
-                changed = true;
-              }
-            if (changed) onChange({ ...definition, layout });
           }}
-          onConnect={({ source, target }) => {
-            if (locked) return;
-            const sourceParent = graph.nodes.find((node) => node.id === source)?.parentId ?? null;
-            const targetParent = graph.nodes.find((node) => node.id === target)?.parentId ?? null;
-            if (sourceParent === targetParent)
-              onChange(
-                editLevel(definition, sourceParent, (level) => ({
-                  ...level,
-                  edges: [...level.edges, { from: source, to: target }],
-                })),
-              );
+          onDrop={(event) => {
+            event.preventDefault();
+            const kind = kinds.find(
+              (candidate) => candidate === event.dataTransfer.getData("application/t3-flow-step"),
+            );
+            if (kind) {
+              const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+              const target = dropTarget(graph.nodes, position);
+              add(kind, target.position, target.parentId);
+            }
           }}
         >
-          <Background />
-          <Controls showInteractive={false} position="top-right" />
-          {!locked && (
-            <Panel position="top-left">
-              <div className="flex flex-col gap-1 rounded-lg border border-border bg-popover p-2 text-xs shadow">
-                <Choice
-                  label="Add steps to"
-                  value={parent ?? "Flow"}
-                  values={["Flow", ...containers.map((node) => node.id)]}
-                  onChange={(value) => setParentId(value === "Flow" ? null : value)}
-                />
-                {kinds.map((kind) => (
-                  <div
-                    key={kind}
-                    draggable
-                    onDragStart={(event) =>
-                      event.dataTransfer.setData("application/t3-flow-step", kind)
-                    }
-                  >
-                    <Button variant="ghost" size="xs" onClick={() => add(kind)}>
-                      + {kind} step
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            </Panel>
-          )}
-        </ReactFlow>
-      </div>
+          <ReactFlow
+            nodes={graph.nodes}
+            edges={graph.edges.map((edge) => ({ ...edge, selected: selectedId === edge.id }))}
+            nodeTypes={nodeTypes}
+            colorMode={resolvedTheme}
+            fitView
+            minZoom={0.1}
+            maxZoom={1.6}
+            nodesDraggable={!locked}
+            nodesConnectable={!locked}
+            edgesReconnectable={false}
+            deleteKeyCode={null}
+            onNodeClick={(_, node) => onSelectStep(node.id)}
+            onEdgeClick={(_, edge) => onSelectEdge(edge.id)}
+            onNodesChange={(changes) => {
+              const selected = changes.find(
+                (change) => change.type === "select" && change.selected,
+              );
+              if (selected?.type === "select") onSelectStep(selected.id);
+              const nextNodes = applyNodeChanges(changes, graph.nodes);
+              setGraphState({ definition, graph: { ...graph, nodes: nextNodes } });
+              if (locked) return;
+              const layout = { ...definition.layout };
+              let changed = false;
+              for (const change of changes)
+                if (change.type === "position" && change.position && change.dragging !== true) {
+                  layout[change.id] = change.position;
+                  changed = true;
+                }
+              if (changed) onChange({ ...definition, layout });
+            }}
+            onEdgesChange={(changes) => {
+              const selected = changes.find(
+                (change) => change.type === "select" && change.selected,
+              );
+              if (selected?.type === "select") onSelectEdge(selected.id);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") onDeselect();
+            }}
+            onPaneClick={onDeselect}
+            onConnect={({ source, target }) => {
+              if (locked) return;
+              const sourceParent = graph.nodes.find((node) => node.id === source)?.parentId ?? null;
+              const targetParent = graph.nodes.find((node) => node.id === target)?.parentId ?? null;
+              if (sourceParent === targetParent)
+                onChange(
+                  editLevel(definition, sourceParent, (level) => ({
+                    ...level,
+                    edges: [...level.edges, { from: source, to: target }],
+                  })),
+                );
+            }}
+          >
+            <Background />
+            <Controls showInteractive={false} position="top-right" />
+            {!locked && (
+              <Panel position="top-left">
+                <div className="flex flex-col gap-1 rounded-lg border border-border bg-popover p-2 text-xs shadow">
+                  <Choice
+                    label="Add steps to"
+                    value={parent ?? "Flow"}
+                    values={["Flow", ...containers.map((node) => node.id)]}
+                    onChange={(value) => setParentId(value === "Flow" ? null : value)}
+                  />
+                  {kinds.map((kind) => (
+                    <div
+                      key={kind}
+                      draggable
+                      onDragStart={(event) =>
+                        event.dataTransfer.setData("application/t3-flow-step", kind)
+                      }
+                    >
+                      <Button variant="ghost" size="xs" onClick={() => add(kind)}>
+                        + {kind} step
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            )}
+          </ReactFlow>
+        </div>
+      </FlowCountsContext>
     </FlowRunContext>
   );
 }

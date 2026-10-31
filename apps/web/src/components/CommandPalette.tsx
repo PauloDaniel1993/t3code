@@ -1,5 +1,5 @@
-import { useFlowPanelRequest } from "./flows/flowPanelState";
 import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
+import { useFlowPanelRequest } from "./flows/flowPanelState";
 import { useNewThreadTaskAvailability } from "../hooks/useNewThreadTaskAvailability";
 import { openNewThreadTaskDialog } from "../newThreadTaskBus";
 import { NewThreadTaskHost } from "./NewThreadTaskHost";
@@ -1202,7 +1202,7 @@ function OpenCommandPaletteDialog(props: {
       actionItems.push({
         kind: "action",
         value: start ? "action:start-flow" : "action:flow-panel",
-        title: start ? "Start flow?" : "Open Flow panel",
+        title: start ? "Start flow…" : "Open Flow panel",
         searchTerms: ["flow", "graph", "steps"],
         icon: <ListPlusIcon className={ITEM_ICON_CLASS} />,
         run: async () => {

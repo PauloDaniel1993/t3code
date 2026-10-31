@@ -54,7 +54,7 @@ function CommandHarness() {
   });
   return (
     <>
-      <StepForm step={step} onChange={setStep} />
+      <StepForm onRename={(id) => setStep({ ...step, id })} step={step} onChange={setStep} />
       <output aria-label="Step JSON">{JSON.stringify(step)}</output>
     </>
   );
@@ -69,6 +69,35 @@ it("keeps focus while renaming command environment variables", async () => {
   await expect.element(screen.getByLabelText("Step JSON")).toHaveTextContent(
     JSON.stringify({
       id: "command",
+      kind: "command",
+      command: "echo $VALUE",
+      env: { VALUE_NAME: "{{inputs.issue}}" },
+    }),
+  );
+  const id = screen.getByRole("textbox", { name: "Step id", exact: true });
+  await userEvent.fill(id, "renamed");
+  await expect.element(screen.getByLabelText("Step JSON")).toHaveTextContent(
+    JSON.stringify({
+      id: "command",
+      kind: "command",
+      command: "echo $VALUE",
+      env: { VALUE_NAME: "{{inputs.issue}}" },
+    }),
+  );
+  await userEvent.keyboard("{Enter}");
+  await expect.element(screen.getByLabelText("Step JSON")).toHaveTextContent(
+    JSON.stringify({
+      id: "renamed",
+      kind: "command",
+      command: "echo $VALUE",
+      env: { VALUE_NAME: "{{inputs.issue}}" },
+    }),
+  );
+  await userEvent.fill(id, "committed-on-blur");
+  await userEvent.tab();
+  await expect.element(screen.getByLabelText("Step JSON")).toHaveTextContent(
+    JSON.stringify({
+      id: "committed-on-blur",
       kind: "command",
       command: "echo $VALUE",
       env: { VALUE_NAME: "{{inputs.issue}}" },

@@ -214,6 +214,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.flowRunsPage]: AuthOrchestrationReadScope,
   [WS_METHODS.flowRuns]: AuthOrchestrationReadScope,
   [WS_METHODS.flowRun]: AuthOrchestrationReadScope,
+  [WS_METHODS.flowRunForThread]: AuthOrchestrationReadScope,
   [WS_METHODS.flowStepRunOutput]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 

@@ -3164,6 +3164,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const rightPanelContent = activeThreadRef ? (
     <RightPanelSurfaceContent
+      projectId={activeProject?.id ?? null}
       surface={renderedRightPanelSurface}
       activeSurfaceId={activeRightPanelSurface?.id ?? null}
       threadRef={activeThreadRef}
@@ -3314,13 +3315,7 @@ export default function ChatView(props: ChatViewProps) {
           />
         </header>
 
-        {activeThreadRef && activeProject && (
-          <FlowRunThreadCard
-            threadRef={activeThreadRef}
-            projectId={activeProject.id}
-            metadata={serverProjection?.thread}
-          />
-        )}
+        {activeThreadRef && activeProject && <FlowRunThreadCard threadRef={activeThreadRef} />}
         <div className="relative flex min-h-0 min-w-0 flex-1">
           <ThreadFindCanvas
             findOptions={{

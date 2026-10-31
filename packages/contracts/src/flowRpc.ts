@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import { EnvironmentAuthorizationError } from "./auth.ts";
-import { ProjectId } from "./baseSchemas.ts";
+import { ProjectId, ThreadId } from "./baseSchemas.ts";
 import { FlowDefinition, FlowId, FlowInputs, FlowValidationResult } from "./flowDefinition.ts";
 import {
   FlowApprovalDecision,
@@ -25,6 +25,7 @@ export const FLOW_WS_METHODS = {
   flowRuns: "flow.runs",
   flowRunsPage: "flow.runsPage",
   flowRun: "flow.run",
+  flowRunForThread: "flow.runForThread",
   flowStepRunOutput: "flow.stepRunOutput",
   flowStop: "flow.stop",
   flowResume: "flow.resume",
@@ -34,10 +35,27 @@ export const FLOW_WS_METHODS = {
 export class FlowError extends Schema.TaggedError<FlowError>()("FlowError", {
   message: Schema.String,
 }) {}
+export class FlowRevisionConflict extends Schema.TaggedError<FlowRevisionConflict>()(
+  "FlowRevisionConflict",
+  {
+    code: Schema.Literal("revision_conflict"),
+    message: Schema.String,
+    currentRevision: Schema.NullOr(Schema.String),
+  },
+) {}
+export const FlowRunForThreadInput = Schema.Struct({ threadId: ThreadId });
+export const FlowRunForThreadResult = Schema.NullOr(
+  Schema.Struct({
+    flowRunId: FlowRunId,
+    role: Schema.Literals(["flow_run_thread", "step_thread"]),
+    stepRunId: Schema.optional(FlowStepRunId),
+  }),
+);
 export const FlowListInput = Schema.Struct({ projectId: ProjectId });
 export const FlowDefinitionEntry = Schema.Struct({
   flowId: FlowId,
   definition: Schema.NullOr(FlowDefinition),
+  revision: Schema.String,
   validation: FlowValidationResult,
 });
 export const FlowListResult = Schema.Struct({ flows: Schema.Array(FlowDefinitionEntry) });
@@ -45,6 +63,7 @@ export const FlowSaveInput = Schema.Struct({
   projectId: ProjectId,
   flowId: FlowId,
   definition: FlowDefinition,
+  baseRevision: Schema.NullOr(Schema.String),
 });
 export const FlowRenameInput = Schema.Struct({
   projectId: ProjectId,
@@ -81,7 +100,7 @@ export const FlowRpcs = [
   Rpc.make(FLOW_WS_METHODS.flowSave, {
     payload: FlowSaveInput,
     success: FlowDefinitionEntry,
-    error,
+    error: Schema.Union([error, FlowRevisionConflict]),
   }),
   Rpc.make(FLOW_WS_METHODS.flowRename, {
     payload: FlowRenameInput,
@@ -104,6 +123,11 @@ export const FlowRpcs = [
   Rpc.make(FLOW_WS_METHODS.flowRunsPage, {
     payload: FlowRunsPageInput,
     success: FlowRunsPage,
+    error,
+  }),
+  Rpc.make(FLOW_WS_METHODS.flowRunForThread, {
+    payload: FlowRunForThreadInput,
+    success: FlowRunForThreadResult,
     error,
   }),
   Rpc.make(FLOW_WS_METHODS.flowRun, {

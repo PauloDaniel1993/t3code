@@ -140,8 +140,12 @@ export const FlowStepRun = Schema.Struct({
       "Enclosing container step run, or null at the top level. Full iteration/item coordinates follow the parent chain.",
   }),
   stepPath: Schema.Array(Schema.String),
-  iteration: Schema.optional(NonNegativeInt),
-  itemIndex: Schema.optional(NonNegativeInt),
+  iteration: Schema.optional(NonNegativeInt).annotate({
+    description: "Zero-based iteration at this level.",
+  }),
+  itemIndex: Schema.optional(NonNegativeInt).annotate({
+    description: "Zero-based item index at this level.",
+  }),
   attempt: PositiveInt,
   status: FlowStepRunStatus,
   threadId: Schema.NullOr(ThreadId),

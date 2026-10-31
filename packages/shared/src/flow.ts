@@ -1,3 +1,4 @@
+import { sha256 } from "@noble/hashes/sha2";
 import * as SchemaParser from "effect/SchemaParser";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as Result from "effect/Result";
@@ -681,4 +682,23 @@ export function validateFlowDefinition(
   for (const id of Object.keys(definition.layout ?? {}))
     if (!ids.has(id)) fail(`$.layout.${id}`, "Unknown layout step");
   return { valid: errors.length === 0, errors };
+}
+
+function canonicalFlowValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalFlowValue);
+  if (typeof value === "object" && value !== null)
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, child]) => [key, canonicalFlowValue(child)]),
+    );
+  return value;
+}
+export function serializeFlowDefinition(value: unknown) {
+  return `${JSON.stringify(canonicalFlowValue(value), null, 2)}\n`;
+}
+export function flowDefinitionRevision(value: unknown) {
+  return Array.from(sha256(new TextEncoder().encode(serializeFlowDefinition(value))), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }

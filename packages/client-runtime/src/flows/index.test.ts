@@ -1,3 +1,6 @@
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
+import { FlowRevisionConflict, type FlowDefinitionEntry } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   FlowId,
@@ -9,13 +12,12 @@ import {
   type FlowStepRunState,
 } from "@t3tools/contracts";
 import {
-  FLOW_RUN_METADATA_KEY,
-  flowRunIdFromMetadata,
   flowStepRunList,
   flowStepStatusById,
   latestFlowRuns,
   applyFlowRunEvent,
   applyFlowRunsEvent,
+  createFlowDraft,
 } from "./index.ts";
 
 const summary = {
@@ -155,7 +157,11 @@ describe("flow views", () => {
     });
     expect(state?.stepRuns).toEqual([changed, step("b")]);
     expect(state?.approvals).toEqual([approval]);
+    expect(
+      applyFlowRunEvent(state, { type: "snapshot", ...structuredClone(original) })?.definition,
+    ).toBe(original.definition);
     expect(state?.definition).toBe(original.definition);
+    expect(state?.stepRuns[1]).toBe(original.stepRuns[1]);
     expect(applyFlowRunEvent(state, { type: "snapshot", ...original })).toEqual(original);
   });
   it("merges summary deltas and resets rows and cursor on a new snapshot", () => {
@@ -205,10 +211,85 @@ describe("flow views", () => {
     const newer = { ...summary, id: FlowRunId.make("newer"), createdAt: "2026-02-01T00:00:00Z" };
     expect(latestFlowRuns([newer, summary]).get(summary.flowId)).toBe(newer);
   });
-  it.each([undefined, null, {}, { flowRunId: 1 }, { flowRunId: " " }])(
-    "ignores invalid metadata %j",
-    (metadata) => expect(flowRunIdFromMetadata(metadata)).toBeNull(),
+});
+
+it("keeps parallel branches outside the container's subtree", () => {
+  const parent = step("loop");
+  const branch = step("branch", { createdAt: "2026-01-01T00:00:01Z" });
+  const child = step("child", {
+    parentStepRunId: parent.id,
+    stepPath: ["loop", "child"],
+    createdAt: "2026-01-01T00:00:02Z",
+  });
+  expect(
+    flowStepRunList({ ...base, summary, approvals: [], stepRuns: [child, branch, parent] }).map(
+      (row) => row.id,
+    ),
+  ).toEqual([parent.id, child.id, branch.id]);
+});
+it("retains a conflicting draft until explicit overwrite or reload", async () => {
+  const draft = createFlowDraft({ definition: base.definition, revision: "old" });
+  const edited = { ...base.definition, title: "Edited" };
+  draft.change(edited);
+  const conflict = AsyncResult.failure<typeof FlowDefinitionEntry.Type, FlowRevisionConflict>(
+    Cause.fail(
+      new FlowRevisionConflict({
+        code: "revision_conflict",
+        currentRevision: "external",
+        message: "Changed on disk",
+      }),
+    ),
   );
-  it("reads the shared metadata link", () =>
-    expect(flowRunIdFromMetadata({ [FLOW_RUN_METADATA_KEY]: "run" })).toBe("run"));
+  const inputs: unknown[] = [];
+  await draft.save(async (input) => {
+    inputs.push(input);
+    return conflict;
+  });
+  expect(inputs).toEqual([{ definition: edited, baseRevision: "old" }]);
+  expect(draft.getSnapshot()).toMatchObject({
+    definition: edited,
+    conflict: true,
+    revision: "old",
+  });
+  await draft.save(async (input) => {
+    inputs.push(input);
+    return conflict;
+  });
+  expect(inputs).toHaveLength(1);
+  await draft.save(async (input) => {
+    inputs.push(input);
+    return AsyncResult.success({
+      flowId: summary.flowId,
+      definition: edited,
+      revision: "saved",
+      validation: { valid: true, errors: [] },
+    });
+  }, "external");
+  expect(inputs[1]).toEqual({ definition: edited, baseRevision: "external" });
+  expect(draft.getSnapshot()).toMatchObject({ saved: edited, conflict: false, revision: "saved" });
+  draft.change(base.definition);
+  draft.reload({ definition: edited, revision: "new" });
+  expect(draft.getSnapshot().definition).toBe(draft.getSnapshot().saved);
+});
+it("flushes edits made during an in-flight save with the returned revision", async () => {
+  const draft = createFlowDraft({ definition: base.definition, revision: "old" });
+  const first = { ...base.definition, title: "First" };
+  const second = { ...base.definition, title: "Second" };
+  draft.change(first);
+  const inputs: unknown[] = [];
+  await draft.save(async (input) => {
+    inputs.push(input);
+    if (inputs.length === 1) draft.change(second);
+    return AsyncResult.success({
+      flowId: summary.flowId,
+      definition: input.definition,
+      revision: `r${inputs.length}`,
+      validation: { valid: true, errors: [] },
+    });
+  });
+  expect(inputs).toEqual([
+    { definition: first, baseRevision: "old" },
+    { definition: second, baseRevision: "r1" },
+  ]);
+  expect(draft.getSnapshot().saved).toBe(second);
 });

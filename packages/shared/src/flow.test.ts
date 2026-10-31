@@ -1,3 +1,4 @@
+import { flowDefinitionRevision, serializeFlowDefinition } from "./flow.ts";
 import { expect, it } from "vite-plus/test";
 import {
   capFlowCommandOutput,
@@ -242,4 +243,16 @@ it("checks map inputs and missing lists", () => {
   expect(resolveFlowMapItems("inputs.files", context)).toEqual(["a", "b"]);
   expect(() => resolveFlowMapItems("inputs.files", context, 1)).toThrow("maxItems");
   expect(() => resolveFlowMapItems("inputs.missing", context)).toThrow("available string[]");
+});
+
+it("hashes the canonical flow file independently of object key order", () => {
+  const left = { version: 1, title: "Flow", steps: [], edges: [], layout: { a: { x: 1, y: 2 } } };
+  const right = { layout: { a: { y: 2, x: 1 } }, edges: [], steps: [], title: "Flow", version: 1 };
+  expect(flowDefinitionRevision(left)).toBe(flowDefinitionRevision(right));
+  expect(flowDefinitionRevision({ ...left, title: "Changed" })).not.toBe(
+    flowDefinitionRevision(left),
+  );
+  expect(serializeFlowDefinition(left)).toBe(
+    `${JSON.stringify({ edges: [], layout: { a: { x: 1, y: 2 } }, steps: [], title: "Flow", version: 1 }, null, 2)}\n`,
+  );
 });

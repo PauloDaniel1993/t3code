@@ -1,9 +1,11 @@
 import type { FlowDefinition, FlowEdge, FlowStep } from "@t3tools/contracts";
-import type { Edge, Node } from "@xyflow/react";
+import { parseFlowReference } from "@t3tools/shared/flow";
+import { MarkerType, type Edge, type Node } from "@xyflow/react";
 
-export type FlowNode = Node<{ step: FlowStep }, "step">;
-export function flowGraph(definition: FlowDefinition) {
+export type FlowNode = Node<{ step: FlowStep; errors?: ReadonlyArray<string> }, "step">;
+export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<FlowNode> = []) {
   const nodes: FlowNode[] = [];
+  const oldNodes = new Map(previous.map((node) => [node.id, node]));
   const edges: Edge[] = [];
   const measure = (
     steps: ReadonlyArray<FlowStep>,
@@ -35,19 +37,33 @@ export function flowGraph(definition: FlowDefinition) {
   ) => {
     for (const { step, size, position } of measure(steps, parentId !== undefined).measured) {
       const container = step.kind === "loop" || step.kind === "map";
-      nodes.push({
+      const old = oldNodes.get(step.id);
+      const node: FlowNode = {
         id: step.id,
         type: "step",
         data: { step },
         position,
         ...(parentId ? { parentId, extent: "parent" as const } : {}),
         ...(container ? { style: size } : {}),
-      });
+        ...(old?.measured ? { measured: old.measured } : {}),
+      };
+      nodes.push(
+        old &&
+          old.data.step === step &&
+          old.parentId === parentId &&
+          old.position.x === position.x &&
+          old.position.y === position.y &&
+          old.style?.width === node.style?.width &&
+          old.style?.height === node.style?.height
+          ? old
+          : node,
+      );
       if (container) visit(step.steps, step.edges, step.id);
     }
     links.forEach((edge, index) =>
       edges.push({
         id: `${parentId ?? "$"}:${index}`,
+        markerEnd: { type: MarkerType.ArrowClosed },
         source: edge.from,
         target: edge.to,
         label: edge.on === "failure" ? "failure" : edge.when ? "condition" : undefined,
@@ -86,15 +102,145 @@ export function updateStep(
   id: string,
   update: (step: FlowStep) => FlowStep,
 ): ReadonlyArray<FlowStep> {
-  return steps.map((step) =>
-    step.id === id
-      ? update(step)
-      : step.kind === "loop" || step.kind === "map"
-        ? { ...step, steps: updateStep(step.steps, id, update) }
-        : step,
-  );
+  let found = false;
+  const visit = (level: ReadonlyArray<FlowStep>): ReadonlyArray<FlowStep> => {
+    const next = level.map((step) => {
+      if (found) return step;
+      if (step.id === id) {
+        found = true;
+        return update(step);
+      }
+      if (step.kind === "loop" || step.kind === "map") {
+        const children = visit(step.steps);
+        return children === step.steps ? step : { ...step, steps: children };
+      }
+      return step;
+    });
+    return next.every((step, i) => step === level[i]) ? level : next;
+  };
+  return visit(steps);
 }
+export function renameStep(definition: FlowDefinition, from: string, to: string): FlowDefinition {
+  if (from === to) return definition;
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(to))
+    throw new Error("Use a step id with lowercase letters, numbers and hyphens.");
+  if (findStep(definition.steps, to)) throw new Error("A step with that id already exists.");
+  const reference = (value: string) => {
+    try {
+      const parsed = parseFlowReference(value);
+      if (parsed.kind !== "step") return value;
+      let current = findStep(definition.steps, parsed.stepId);
+      const fields = parsed.fields.map((field) => {
+        if (current?.kind !== "loop") return field;
+        current = current.steps.find((child) => child.id === field);
+        return current && field === from ? to : field;
+      });
+      return `steps.${parsed.stepId === from ? to : parsed.stepId}.${parsed.previous ? "previous." : ""}output.${fields.join(".")}`;
+    } catch {
+      return value;
+    }
+  };
+  const template = (value: string) =>
+    value.replace(
+      /\{\{([^{}]+)\}\}/g,
+      (_match: string, ref: string) => `{{${reference(ref.trim())}}}`,
+    );
+  const condition = (
+    value: import("@t3tools/contracts").FlowCondition,
+  ): import("@t3tools/contracts").FlowCondition => {
+    if ("all" in value) return { all: value.all.map(condition) };
+    if ("any" in value) return { any: value.any.map(condition) };
+    if ("not" in value) return { not: condition(value.not) };
+    return { ...value, ref: reference(value.ref) };
+  };
+  const level = (
+    graph: Pick<FlowDefinition, "steps" | "edges">,
+  ): Pick<FlowDefinition, "steps" | "edges"> => ({
+    steps: graph.steps.map((step) => {
+      const base = { ...step, id: step.id === from ? to : step.id };
+      switch (base.kind) {
+        case "agent":
+          return {
+            ...base,
+            prompt: template(base.prompt),
+            ...(typeof base.thread === "object" && base.thread.sameAs === from
+              ? { thread: { sameAs: to } }
+              : {}),
+          };
+        case "approval":
+          return { ...base, prompt: template(base.prompt) };
+        case "command":
+          return {
+            ...base,
+            ...(base.env
+              ? {
+                  env: Object.fromEntries(
+                    Object.entries(base.env).map(([key, value]) => [key, template(value)]),
+                  ),
+                }
+              : {}),
+          };
+        case "loop":
+          return { ...base, ...level(base), until: condition(base.until) };
+        case "map":
+          return { ...base, ...level(base), over: reference(base.over) };
+      }
+    }),
+    edges: graph.edges.map((edge) => ({
+      ...edge,
+      from: edge.from === from ? to : edge.from,
+      to: edge.to === from ? to : edge.to,
+      ...(edge.when ? { when: condition(edge.when) } : {}),
+    })),
+  });
+  const layout = { ...definition.layout };
+  if (layout[from]) {
+    layout[to] = layout[from];
+    delete layout[from];
+  }
+  return { ...definition, ...level(definition), ...(definition.layout ? { layout } : {}) };
+}
+export function dropTarget(nodes: ReadonlyArray<FlowNode>, point: { x: number; y: number }) {
+  const positions = new Map<string, { x: number; y: number; depth: number }>();
+  let target: { parentId: string | null; position: { x: number; y: number }; depth: number } = {
+    parentId: null,
+    position: point,
+    depth: -1,
+  };
+  for (const node of nodes) {
+    const parent = node.parentId ? positions.get(node.parentId) : undefined;
+    const absolute = {
+      x: node.position.x + (parent?.x ?? 0),
+      y: node.position.y + (parent?.y ?? 0),
+      depth: (parent?.depth ?? -1) + 1,
+    };
+    positions.set(node.id, absolute);
+    if (
+      (node.data.step.kind === "loop" || node.data.step.kind === "map") &&
+      absolute.depth > target.depth &&
+      point.x >= absolute.x &&
+      point.y >= absolute.y &&
+      point.x <= absolute.x + Number(node.style?.width ?? 0) &&
+      point.y <= absolute.y + Number(node.style?.height ?? 0)
+    ) {
+      target = {
+        parentId: node.id,
+        position: { x: point.x - absolute.x, y: point.y - absolute.y },
+        depth: absolute.depth,
+      };
+    }
+  }
+  return { parentId: target.parentId, position: target.position };
+}
+
 export function removeStep(definition: FlowDefinition, id: string): FlowDefinition {
+  const removed = new Set<string>();
+  const collect = (step: FlowStep) => {
+    removed.add(step.id);
+    if (step.kind === "loop" || step.kind === "map") step.steps.forEach(collect);
+  };
+  const target = findStep(definition.steps, id);
+  if (target) collect(target);
   const remove = (
     steps: ReadonlyArray<FlowStep>,
     edges: ReadonlyArray<FlowEdge>,
@@ -106,9 +252,19 @@ export function removeStep(definition: FlowDefinition, id: string): FlowDefiniti
           ? { ...step, ...remove(step.steps, step.edges) }
           : step,
       ),
-    edges: edges.filter((edge) => edge.from !== id && edge.to !== id),
+    edges: edges.filter((edge) => !removed.has(edge.from) && !removed.has(edge.to)),
   });
-  return { ...definition, ...remove(definition.steps, definition.edges) };
+  return {
+    ...definition,
+    ...remove(definition.steps, definition.edges),
+    ...(definition.layout
+      ? {
+          layout: Object.fromEntries(
+            Object.entries(definition.layout).filter(([key]) => !removed.has(key)),
+          ),
+        }
+      : {}),
+  };
 }
 export function newStep(kind: FlowStep["kind"], id: string): FlowStep {
   switch (kind) {
@@ -123,11 +279,24 @@ export function newStep(kind: FlowStep["kind"], id: string): FlowStep {
         id,
         kind,
         maxIterations: 3,
-        until: { ref: "iteration", op: "gte", value: 3 },
+        until: { ref: "", op: "isEmpty" },
         steps: [],
         edges: [],
       };
     case "map":
       return { id, kind, over: "inputs.items", steps: [], edges: [] };
   }
+}
+
+export function stepIdAtPath(definition: FlowDefinition, path: string) {
+  const indices = [...path.matchAll(/steps\[(\d+)\]/g)].map((match) => Number(match[1]));
+  let steps = definition.steps;
+  let id: string | undefined;
+  for (const index of indices) {
+    const step = steps[index];
+    if (!step) break;
+    id = step.id;
+    if (step.kind === "map" || step.kind === "loop") steps = step.steps;
+  }
+  return id;
 }

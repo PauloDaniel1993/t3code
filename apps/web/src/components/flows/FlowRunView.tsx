@@ -9,7 +9,13 @@ import type {
   FlowStepOutput,
   FlowOutputFields,
 } from "@t3tools/contracts";
-import { flowStepRunList } from "@t3tools/client-runtime/flows";
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { reportFlowFailure } from "./flowErrors";
+import {
+  latestStepAttempts,
+  flowStepInstanceKey,
+  flowStepRunList,
+} from "@t3tools/client-runtime/flows";
 import { flowEnvironment } from "../../state/flows";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
@@ -66,7 +72,10 @@ export function FlowRunActions({
           disabled={!canStop || busy}
           onClick={async () => {
             setBusy(true);
-            await stop({ environmentId, input: { flowRunId: summary.id } });
+            reportFlowFailure(
+              await stop({ environmentId, input: { flowRunId: summary.id } }),
+              "Could not stop flow",
+            );
             setBusy(false);
           }}
         >
@@ -80,7 +89,10 @@ export function FlowRunActions({
           disabled={!canResume || busy}
           onClick={async () => {
             setBusy(true);
-            await resume({ environmentId, input: { flowRunId: summary.id } });
+            reportFlowFailure(
+              await resume({ environmentId, input: { flowRunId: summary.id } }),
+              "Could not resume flow",
+            );
             setBusy(false);
           }}
         >
@@ -91,7 +103,19 @@ export function FlowRunActions({
   );
 }
 
-export function StepRunInspector({
+export function StepRunInspector(props: {
+  environmentId: EnvironmentId;
+  snapshot: FlowRunSnapshot;
+  stepRun: FlowStepRunState;
+}) {
+  return (
+    <StepRunDetails
+      key={`${props.stepRun.id}:${props.stepRun.status}:${props.stepRun.finishedAt}`}
+      {...props}
+    />
+  );
+}
+function StepRunDetails({
   environmentId,
   snapshot,
   stepRun,
@@ -137,6 +161,7 @@ export function StepRunInspector({
           setBusy(true);
           const result = await fetchOutput({ environmentId, input: { stepRunId: stepRun.id } });
           if (result._tag === "Success") setOutput(outputText(result.value));
+          reportFlowFailure(result, "Could not fetch step output");
           setBusy(false);
         }}
       >
@@ -145,24 +170,28 @@ export function StepRunInspector({
       {output !== null && (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{output}</pre>
       )}
-      {(stepRun.status === "failed" || stepRun.status === "interrupted") && (
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={!canRetry || busy}
-          onClick={async () => {
-            setBusy(true);
-            await retry({ environmentId, input: { stepRunId: stepRun.id } });
-            setBusy(false);
-          }}
-        >
-          Retry step
-        </Button>
-      )}
+      {(stepRun.status === "failed" || stepRun.status === "interrupted") &&
+        latestStepAttempts(snapshot).get(flowStepInstanceKey(stepRun))?.id === stepRun.id && (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={!canRetry || busy}
+            onClick={async () => {
+              setBusy(true);
+              reportFlowFailure(
+                await retry({ environmentId, input: { stepRunId: stepRun.id } }),
+                "Could not retry step",
+              );
+              setBusy(false);
+            }}
+          >
+            Retry step
+          </Button>
+        )}
       {approval && (
         <>
           <p>{approval.prompt}</p>
-          <TextField label="Approval comment" value={comment} onChange={setComment} />{" "}
+          <TextField label="Approval comment" value={comment} onChange={setComment} />
           <div className="flex gap-2">
             {(["approve", "reject"] as const).map((decision) => (
               <Button
@@ -171,10 +200,11 @@ export function StepRunInspector({
                 disabled={!canAnswer || busy}
                 onClick={async () => {
                   setBusy(true);
-                  await answer({
+                  const result = await answer({
                     environmentId,
                     input: { stepRunId: stepRun.id, decision, ...(comment ? { comment } : {}) },
                   });
+                  reportFlowFailure(result, "Could not answer approval");
                   setBusy(false);
                 }}
               >
@@ -190,9 +220,11 @@ export function StepRunInspector({
 
 export function FlowRunTimeline({
   snapshot,
+  selectedId,
   onSelect,
 }: {
   snapshot: FlowRunSnapshot;
+  selectedId?: string | null;
   onSelect: (step: FlowStepRunState) => void;
 }) {
   const steps = flowStepRunList(snapshot);
@@ -207,16 +239,19 @@ export function FlowRunTimeline({
         const from = Date.parse(step.startedAt ?? step.createdAt);
         const to = Date.parse(step.finishedAt ?? step.startedAt ?? step.createdAt);
         return (
-          <li key={step.id} style={{ paddingInlineStart: step.depth * 12 }}>
+          <li key={step.id}>
             <button
               type="button"
               onClick={() => onSelect(step)}
-              className="flex w-full flex-col gap-1 rounded p-2 text-left text-xs hover:bg-accent"
+              aria-pressed={selectedId === step.id}
+              className="flex w-full flex-col gap-1 rounded p-2 text-left text-xs hover:bg-accent aria-pressed:bg-accent"
             >
-              <span>
+              <span style={{ paddingInlineStart: step.depth * 12 }}>
                 {step.stepId} · {step.status.replaceAll("_", " ")} · attempt {step.attempt}{" "}
                 {step.scopeLabel}
-                {step.finishedAt && step.startedAt ? ` · ${Math.max(0, to - from)} ms` : ""}
+                {step.finishedAt && step.startedAt
+                  ? ` · ${formatDuration(Math.max(0, to - from))}`
+                  : ""}
               </span>
               <span className="h-1.5 w-full rounded bg-muted">
                 <span

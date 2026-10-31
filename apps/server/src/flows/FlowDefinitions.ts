@@ -16,7 +16,11 @@ import {
   type FlowDefinition,
   type FlowValidationResult,
 } from "@t3tools/contracts";
-import { validateFlowDefinition } from "@t3tools/shared/flow";
+import {
+  validateFlowDefinition,
+  serializeFlowDefinition,
+  flowDefinitionRevision,
+} from "@t3tools/shared/flow";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import {
   makeWayfinderFiles,
@@ -65,17 +69,6 @@ export class FlowDefinitions extends Context.Service<
   }
 >()("t3/flows/FlowDefinitions") {}
 
-function stable(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stable);
-  if (typeof value === "object" && value !== null)
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([key, child]) => [key, stable(child)]),
-    );
-  return value;
-}
-
 const decodeId = Schema.decodeSync(FlowId);
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -118,6 +111,7 @@ const make = Effect.gen(function* () {
         if (parsed._tag === "None" || file.truncated)
           return {
             flowId: id,
+            revision: flowDefinitionRevision(file.contents),
             definition: null,
             validation: {
               valid: false,
@@ -128,6 +122,7 @@ const make = Effect.gen(function* () {
         const validation = yield* validate(value);
         return {
           flowId: id,
+          revision: flowDefinitionRevision(value),
           definition: validation.valid ? (value as FlowDefinition) : null,
           validation,
         };
@@ -184,7 +179,7 @@ const make = Effect.gen(function* () {
         "write",
         Effect.gen(function* () {
           const target = yield* writable(root, id);
-          const text = `${JSON.stringify(stable(definition), null, 2)}\n`;
+          const text = serializeFlowDefinition(definition);
           if (new TextEncoder().encode(text).length > 256 * 1024)
             return yield* new FlowDefinitionError({ operation: "file size", cause: null });
           const temp = yield* fs.makeTempFile({

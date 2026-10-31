@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   FlowId,
@@ -10,7 +10,15 @@ import {
   type FlowEdge,
   type FlowRunsPage,
 } from "@t3tools/contracts";
-import { applyFlowRunsEvent } from "@t3tools/client-runtime/flows";
+import * as Schema from "effect/Schema";
+import {
+  createFlowDraft,
+  latestStepRunById,
+  applyFlowRunsEvent,
+} from "@t3tools/client-runtime/flows";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { Checkbox } from "../ui/checkbox";
+import { reportFlowFailure } from "./flowErrors";
 import { coerceFlowInputs, validateFlowDefinition } from "@t3tools/shared/flow";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { serverEnvironment } from "../../state/server";
@@ -18,6 +26,7 @@ import { flowEnvironment } from "../../state/flows";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useStableCallback } from "../../hooks/useStableCallback";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
   Choice,
@@ -28,45 +37,58 @@ import {
   StepForm,
   ConditionForm,
 } from "./FlowFields";
+import { FlowModelContext } from "./FlowModelPicker";
 import { FlowCanvas } from "./FlowCanvas";
-import { editLevel, findStep, removeStep, updateStep } from "./flowGraph";
+import { editLevel, findStep, removeStep, renameStep, updateStep, stepIdAtPath } from "./flowGraph";
 import { FlowRunActions, FlowRunTimeline, StepRunInspector } from "./FlowRunView";
 import { flowDrafts, useFlowPanelRequest } from "./flowPanelState";
-
+const isFlowId = Schema.is(FlowId);
 export default function FlowPanel(props: {
   environmentId: EnvironmentId;
   projectId: ProjectId;
   threadRef: ScopedThreadRef;
 }) {
-  return <ProjectFlows key={`${props.environmentId}:${props.projectId}`} {...props} />;
+  return (
+    <FlowModelContext value={{ environmentId: props.environmentId, projectId: props.projectId }}>
+      <ProjectFlows key={`${props.environmentId}:${props.projectId}`} {...props} />
+    </FlowModelContext>
+  );
 }
 function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof FlowPanel>[0]) {
   const list = useEnvironmentQuery(flowEnvironment.list({ environmentId, input: { projectId } }));
   const request = useFlowPanelRequest((state) => state.requests[scopedThreadKey(threadRef)]);
-  const [selected, setSelected] = useState<FlowId | null>(null);
+  const [selected, setSelected] = useState<FlowId | null>(request?.flowId ?? null);
   const [newId, setNewId] = useState<string | null>(null);
   const save = useAtomCommand(flowEnvironment.save);
   const canSave = useAtomValue(flowEnvironment.save.permissionAtom(environmentId));
   const [busy, setBusy] = useState(false);
-  const [previousRequest, setPreviousRequest] = useState(request);
+  const [requestedRunId, setRequestedRunId] = useState<FlowRunId | null>(
+    request?.flowRunId ?? null,
+  );
+  const [previousRequest, setPreviousRequest] = useState<typeof request>(undefined);
   if (request !== previousRequest) {
     setPreviousRequest(request);
     if (request?.flowId) setSelected(request.flowId);
+    if (request) setRequestedRunId(request.flowRunId ?? null);
   }
   const requestedRun = useEnvironmentQuery(
-    request?.flowRunId
-      ? flowEnvironment.run({ environmentId, input: { flowRunId: request.flowRunId } })
+    requestedRunId
+      ? flowEnvironment.run({ environmentId, input: { flowRunId: requestedRunId } })
       : null,
   );
   const currentEntry = list.data?.flows.find((entry) => entry.flowId === selected);
   const entry =
-    request?.flowRunId && requestedRun.data && !currentEntry?.definition
+    requestedRunId &&
+    requestedRun.data &&
+    selected === requestedRun.data.summary.flowId &&
+    !currentEntry?.definition
       ? {
           flowId: requestedRun.data.summary.flowId,
           definition: requestedRun.data.definition,
+          revision: "",
           validation: { valid: true, errors: [] },
         }
-      : (currentEntry ?? list.data?.flows[0]);
+      : (currentEntry ?? (request?.flowId ? undefined : list.data?.flows[0]));
   return (
     <div className="flex h-full min-h-0 flex-col text-sm">
       <header className="flex flex-wrap items-end gap-2 border-b border-border p-2">
@@ -77,10 +99,20 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
           labels={Object.fromEntries(
             (list.data?.flows ?? []).map((entry) => [
               entry.flowId,
-              `${entry.definition?.title ?? entry.flowId}${entry.validation.valid ? "" : " ? Invalid"}`,
+              <span key={entry.flowId}>
+                {entry.definition?.title ?? entry.flowId}{" "}
+                {!entry.validation.valid && (
+                  <Badge variant="destructive" size="sm">
+                    Invalid
+                  </Badge>
+                )}
+              </span>,
             ]),
           )}
-          onChange={(id) => setSelected(FlowId.make(id))}
+          onChange={(id) => {
+            setRequestedRunId(null);
+            setSelected(FlowId.make(id));
+          }}
         />
         <Button size="xs" variant="outline" disabled={!canSave} onClick={() => setNewId("")}>
           New flow
@@ -99,7 +131,7 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
             disabled={
               !canSave ||
               busy ||
-              !/^[a-z0-9][a-z0-9-]{0,63}$/.test(newId) ||
+              !isFlowId(newId) ||
               !!list.data?.flows.some((flow) => flow.flowId === newId)
             }
             onClick={async () => {
@@ -108,6 +140,7 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
                 environmentId,
                 input: {
                   projectId,
+                  baseRevision: null,
                   flowId: FlowId.make(newId),
                   definition: {
                     version: 1,
@@ -122,6 +155,7 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
                 setSelected(result.value.flowId);
                 setNewId(null);
               }
+              reportFlowFailure(result, "Could not create flow");
               setBusy(false);
             }}
           >
@@ -132,7 +166,7 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
           </Button>
         </div>
       )}
-      {entry?.validation.valid === false && (
+      {entry?.validation.valid === false && !entry.definition && (
         <div role="alert" className="p-2 text-destructive">
           Invalid flow
           {entry.validation.errors.map((error) => (
@@ -149,6 +183,9 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
           projectId={projectId}
           flowId={entry.flowId}
           initial={entry.definition}
+          revision={entry.revision}
+          flowIds={list.data?.flows.map((flow) => flow.flowId) ?? []}
+          requestKey={scopedThreadKey(threadRef)}
           onRenamed={setSelected}
           request={request?.flowId && request.flowId !== entry.flowId ? undefined : request}
         />
@@ -168,6 +205,9 @@ function FlowEditor({
   projectId,
   flowId,
   initial,
+  revision,
+  flowIds,
+  requestKey,
   request,
   onRenamed,
 }: {
@@ -175,25 +215,26 @@ function FlowEditor({
   projectId: ProjectId;
   flowId: FlowId;
   initial: FlowDefinition;
+  revision: string;
+  flowIds: ReadonlyArray<string>;
+  requestKey: string;
   onRenamed: (flowId: FlowId) => void;
   request: ReturnType<typeof useFlowPanelRequest.getState>["requests"][string] | undefined;
 }) {
   const draftKey = JSON.stringify([environmentId, projectId, flowId]);
-  const [draft, setDraft] = useState(() => flowDrafts.get(draftKey) ?? initial);
-  const [saved, setSaved] = useState(initial);
-  const [lastInitial, setLastInitial] = useState(initial);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState(false);
-  if (initial !== lastInitial) {
-    setLastInitial(initial);
-    if (draft === saved) {
-      setDraft(initial);
-      setSaved(initial);
-    }
-  }
+  const [draftStore] = useState(
+    () => flowDrafts.get(draftKey) ?? createFlowDraft({ definition: initial, revision }),
+  );
+  const draftState = useSyncExternalStore(draftStore.subscribe, draftStore.getSnapshot);
+  const { definition: draft, saved, saving, error: saveError, conflict } = draftState;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reloads pristine drafts when the watched flow file changes
+  useEffect(() => {
+    const current = draftStore.getSnapshot();
+    if (current.definition === current.saved && current.revision !== revision)
+      draftStore.reload({ definition: initial, revision });
+  }, [draftStore, initial, revision]);
   const [tab, setTab] = useState<"design" | "runs">("design");
   const [flowRunId, setFlowRunId] = useState<FlowRunId | null>(request?.flowRunId ?? null);
-  const [showSchedule, setShowSchedule] = useState(false);
   const [showStart, setShowStart] = useState(request?.start ?? false);
   const [lastRequest, setLastRequest] = useState(request);
   if (request !== lastRequest) {
@@ -241,30 +282,50 @@ function FlowEditor({
   >([]);
   const validation = validateFlowDefinition(draft);
   const dirty = draft !== saved;
-  const persist = useStableCallback(async (definition: FlowDefinition = draft) => {
-    if (!canSave || saving || !dirty || !validation.valid) return;
-    setSaving(true);
-    setSaveError(false);
-    const result = await save({ environmentId, input: { projectId, flowId, definition } });
-    if (result._tag === "Success") {
-      setSaved(definition);
-      if (flowDrafts.get(draftKey) === definition) flowDrafts.delete(draftKey);
-    } else setSaveError(true);
-    setSaving(false);
+  const persist = useStableCallback(async (overwrite = false) => {
+    if (!canSave) return;
+    await draftStore.save(
+      async (input) => {
+        const result = await save({ environmentId, input: { projectId, flowId, ...input } });
+        reportFlowFailure(result, "Could not save flow");
+        return result;
+      },
+      overwrite
+        ? revision !== draftState.revision
+          ? revision
+          : draftState.conflictRevision
+        : undefined,
+    );
+    if (draftStore.getSnapshot().definition === draftStore.getSnapshot().saved)
+      flowDrafts.delete(draftKey);
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- debounces writes to the environment's flow file
   useEffect(() => {
-    if (!dirty || saving || saveError || !validation.valid) return;
+    if (!dirty || saving || saveError || conflict || !validation.valid) return;
     const timer = setTimeout(() => {
-      void persist(draft);
+      if (draftStore.getSnapshot().definition === draft) void persist();
     }, 650);
     return () => clearTimeout(timer);
-  }, [draft, dirty, saving, saveError, validation.valid, persist]);
+  }, [draft, dirty, saving, saveError, conflict, validation.valid, persist, draftStore]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- flushes the latest valid draft when this editor closes
+  useEffect(
+    () => () => {
+      void persist();
+    },
+    [persist],
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- acknowledges an external panel request after applying it
+  useEffect(() => {
+    if (request) useFlowPanelRequest.getState().consume(requestKey, request);
+  }, [request, requestKey]);
   const change = (definition: FlowDefinition) => {
-    flowDrafts.set(draftKey, definition);
-    setDraft(definition);
-    setSaveError(false);
+    flowDrafts.set(draftKey, draftStore);
+    draftStore.change(definition);
     setServerErrors([]);
+  };
+  const discard = () => {
+    draftStore.reload({ definition: initial, revision });
+    flowDrafts.delete(draftKey);
   };
   const [older, setOlder] = useState<FlowRunsPage>({ runs: [], nextCursor: null });
   const [loadedOlder, setLoadedOlder] = useState(false);
@@ -279,7 +340,7 @@ function FlowEditor({
   const selectedRun =
     snapshot?.stepRuns.find((step) => step.id === stepRunId) ??
     (selection?.kind === "step"
-      ? snapshot?.stepRuns.findLast((step) => step.stepPath.at(-1) === selection.id)
+      ? snapshot && latestStepRunById(snapshot).get(selection.id)
       : undefined);
   const displayed = snapshot?.definition ?? draft;
   const step = selection?.kind === "step" ? findStep(displayed.steps, selection.id) : undefined;
@@ -336,7 +397,7 @@ function FlowEditor({
         >
           Start
         </Button>
-        <Button size="xs" variant="ghost" onClick={() => setShowSchedule(!showSchedule)}>
+        <Button size="xs" variant="ghost" onClick={discard} disabled={!dirty || saving}>
           Schedule…
         </Button>
         <Button size="xs" variant="ghost" onClick={() => setSelection({ kind: "flow", id: "" })}>
@@ -351,23 +412,23 @@ function FlowEditor({
             .join(", ")}
         </div>
       )}
-      {showSchedule && (
-        <section
-          aria-label="Schedule flow"
-          className="flex flex-col gap-2 border-b border-border p-3"
-        >
-          <h3>Schedule {draft.title}</h3>
-          <p className="text-xs text-muted-foreground">
-            The scheduled-task form does not support flows yet. This flow cannot be scheduled from
-            this panel.
-          </p>
-          <Button size="xs" disabled>
-            Create schedule
+      {(conflict || (dirty && revision !== draftState.revision)) && (
+        <div role="alert" className="p-2 text-xs">
+          File changed on disk. Reload to discard this draft, or overwrite the current file.
+          <Button size="xs" variant="outline" disabled={saving} onClick={discard}>
+            Reload
           </Button>
-          <Button size="xs" variant="ghost" onClick={() => setShowSchedule(false)}>
-            Close
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={saving || !canSave}
+            onClick={() => {
+              void persist(true);
+            }}
+          >
+            Overwrite
           </Button>
-        </section>
+        </div>
       )}
       {showStart && (dirty || !validation.valid) && (
         <p className="p-2 text-xs">Save a valid flow before starting it.</p>
@@ -414,14 +475,15 @@ function FlowEditor({
             <Button
               key={run.id}
               size="sm"
-              variant="ghost"
+              variant={flowRunId === run.id ? "secondary" : "ghost"}
+              aria-pressed={flowRunId === run.id}
               onClick={() => {
                 setFlowRunId(run.id);
                 setStepRunId(null);
               }}
             >
               {run.flowTitle} · Flow run {run.runNumber} · {run.status.replaceAll("_", " ")} ·{" "}
-              {run.createdAt}
+              {formatRelativeTimeLabel(run.createdAt)}
             </Button>
           ))}
           {cursor && (
@@ -455,22 +517,31 @@ function FlowEditor({
               <Button size="xs" variant="outline" onClick={() => setTab("design")}>
                 View on canvas
               </Button>
-              <FlowRunTimeline snapshot={snapshot} onSelect={(step) => setStepRunId(step.id)} />
+              <FlowRunTimeline
+                selectedId={selectedRun?.id ?? null}
+                snapshot={snapshot}
+                onSelect={(step) => setStepRunId(step.id)}
+              />
             </>
           )}
         </div>
       ) : (
         <div className="relative min-h-0 flex-1">
-          {flowRunId && !snapshot?.definition ? (
-            <p className="p-3 text-xs text-muted-foreground">
-              This environment has not provided the flow-run definition snapshot. Use the Runs
-              timeline to inspect its steps.
-            </p>
+          {flowRunId && !snapshot ? (
+            <p className="p-3 text-xs text-muted-foreground">Loading flow run…</p>
           ) : (
             <FlowCanvas
               definition={displayed}
               snapshot={snapshot}
               locked={locked}
+              selectedId={
+                selection?.kind === "step" || selection?.kind === "edge" ? selection.id : null
+              }
+              errors={validation.errors}
+              onDeselect={() => {
+                setSelection(null);
+                setStepRunId(null);
+              }}
               onChange={change}
               onSelectStep={(id) => {
                 setSelection({ kind: "step", id });
@@ -526,7 +597,15 @@ function FlowEditor({
               {step && (
                 <>
                   <StepForm
+                    key={step.id}
+                    errors={[...validation.errors, ...serverErrors].filter(
+                      (error) => stepIdAtPath(draft, error.path) === step.id,
+                    )}
                     step={step}
+                    onRename={(id) => {
+                      change(renameStep(draft, step.id, id));
+                      setSelection({ kind: "step", id });
+                    }}
                     onChange={(next) => {
                       change({ ...draft, steps: updateStep(draft.steps, step.id, () => next) });
                       if (next.id !== step.id) setSelection({ kind: "step", id: next.id });
@@ -605,7 +684,9 @@ function FlowEditor({
                     label="Description"
                     value={draft.description ?? ""}
                     multiline
-                    onChange={(description) => change({ ...draft, description })}
+                    onChange={(description) =>
+                      change({ ...draft, description: description || undefined })
+                    }
                   />
                   <Choice
                     label="Workspace"
@@ -664,7 +745,11 @@ function FlowEditor({
           <TextField label="New flow id" value={renameId} onChange={setRenameId} />
           <Button
             size="xs"
-            disabled={!canRename || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(renameId)}
+            disabled={
+              !canRename ||
+              !isFlowId(renameId) ||
+              (renameId !== flowId && flowIds.includes(renameId))
+            }
             onClick={async () => {
               const result = await rename({
                 environmentId,
@@ -674,6 +759,7 @@ function FlowEditor({
                 setRenameId(null);
                 onRenamed(result.value.flowId);
               }
+              reportFlowFailure(result, "Could not rename flow");
             }}
           >
             Rename
@@ -687,12 +773,13 @@ function FlowEditor({
         <div className="flex flex-col gap-2 p-3">
           <p>Delete {flowId}? Existing flow runs remain available in their threads.</p>
           {targetedSchedules.length > 0 && (
-            <Choice
-              label="Disable schedules targeting this flow"
-              value={String(disableSchedules)}
-              values={["true", "false"]}
-              onChange={(value) => setDisableSchedules(value === "true")}
-            />
+            <label className="flex items-center gap-2 text-xs">
+              <Checkbox
+                checked={disableSchedules}
+                onCheckedChange={(checked) => setDisableSchedules(checked === true)}
+              />
+              Disable schedules targeting this flow
+            </label>
           )}
           <Button
             size="xs"
@@ -707,11 +794,16 @@ function FlowEditor({
                     environmentId,
                     input: { id: task.id, enabled: false },
                   });
-                  if (result._tag !== "Success") return;
+                  if (
+                    reportFlowFailure(result, "Could not disable schedule") ||
+                    result._tag !== "Success"
+                  )
+                    return;
                 }
               }
-              await remove({ environmentId, input: { projectId, flowId } });
-              setDeleteOpen(false);
+              const result = await remove({ environmentId, input: { projectId, flowId } });
+              if (result._tag === "Success") setDeleteOpen(false);
+              reportFlowFailure(result, "Could not delete flow");
             }}
           >
             Confirm delete
@@ -737,6 +829,7 @@ function FlowEditor({
         onClick={async () => {
           const result = await validate({ environmentId, input: { projectId, definition: draft } });
           if (result._tag === "Success") setServerErrors(result.value.errors);
+          reportFlowFailure(result, "Could not validate flow");
         }}
       >
         Validate with environment
@@ -793,18 +886,29 @@ function FlowStartForm({
           input: { projectId, flowId, inputs, ...(baseRef ? { baseRef } : {}) },
         });
         if (result._tag === "Success") onStarted(result.value.id);
+        else setError(reportFlowFailure(result, "Could not start flow"));
         setBusy(false);
       }}
     >
       <h3>Start flow</h3>
       {(definition.inputs ?? []).map((field) => (
         <div key={field.name}>
-          <TextField
-            label={`${field.name}${field.required ? " (required)" : ""} · ${field.type}`}
-            value={values[field.name] ?? ""}
-            multiline={field.type === "string[]"}
-            onChange={(value) => setValues({ ...values, [field.name]: value })}
-          />
+          {field.type === "boolean" ? (
+            <Choice
+              label={`${field.name}${field.required ? " (required)" : ""}`}
+              value={values[field.name] ?? ""}
+              values={["", "true", "false"]}
+              labels={{ "": "Not set", true: "True", false: "False" }}
+              onChange={(value) => setValues({ ...values, [field.name]: value })}
+            />
+          ) : (
+            <TextField
+              label={`${field.name}${field.required ? " (required)" : ""} · ${field.type}`}
+              value={values[field.name] ?? ""}
+              multiline={field.type === "string[]"}
+              onChange={(value) => setValues({ ...values, [field.name]: value })}
+            />
+          )}
           <p className="text-xs text-muted-foreground">{field.description}</p>
         </div>
       ))}

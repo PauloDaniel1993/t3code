@@ -1,5 +1,5 @@
 /* oxlint-disable react/no-array-index-key -- Form slots are controlled values; their editable names and condition shapes cannot serve as keys. */
-import type { ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import type {
   FlowCondition,
   FlowInput,
@@ -7,9 +7,10 @@ import type {
   FlowOutputField,
   FlowStep,
   FlowValue,
-  RuntimeMode,
   ProviderInteractionMode,
 } from "@t3tools/contracts";
+import { FlowModelContext, FlowModelPicker } from "./FlowModelPicker";
+import { RuntimeMode } from "@t3tools/contracts";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
@@ -22,11 +23,34 @@ import {
   SelectGroup,
 } from "../ui/select";
 
+const FieldErrors = createContext<ReadonlyArray<{ path: string; message: string }>>([]);
+const fieldPaths: Record<string, string> = {
+  "Step id": "id",
+  Prompt: "prompt",
+  "Approval prompt": "prompt",
+  Command: "command",
+  "Working directory": "cwd",
+  "Timeout (ms, default 600000)": "timeoutMs",
+  "Maximum iterations": "maxIterations",
+  "Over reference": "over",
+  Concurrency: "concurrency",
+  "Maximum items": "maxItems",
+  "Same as step": "thread.sameAs",
+  Reference: "ref",
+};
 function Field({ label, children }: { label: string; children: ReactNode }) {
+  const errors = useContext(FieldErrors).filter(
+    (error) => fieldPaths[label] && error.path.endsWith(`.${fieldPaths[label]}`),
+  );
   return (
     <label className="flex min-w-0 flex-col gap-1 text-xs">
       <span>{label}</span>
       {children}
+      {errors.map((error) => (
+        <span role="alert" key={`${error.path}:${error.message}`} className="text-destructive">
+          {error.message}
+        </span>
+      ))}
     </label>
   );
 }
@@ -41,7 +65,7 @@ export function Choice({
   label: string;
   value: string;
   values: ReadonlyArray<string>;
-  labels?: Readonly<Record<string, string>>;
+  labels?: Readonly<Record<string, ReactNode>>;
   onChange: (value: string) => void;
 }) {
   return (
@@ -449,6 +473,7 @@ export function ModelFields({
   value: FlowModel | undefined;
   onChange: (model: FlowModel | undefined) => void;
 }) {
+  const context = useContext(FlowModelContext);
   return (
     <fieldset className="flex flex-col gap-2">
       <legend>Model</legend>
@@ -462,72 +487,8 @@ export function ModelFields({
       />
       {value && (
         <>
-          <TextField
-            label="Provider instance"
-            value={value.providerInstanceId}
-            onChange={(providerInstanceId) => onChange({ ...value, providerInstanceId })}
-          />
-          <TextField
-            label="Model"
-            value={value.model}
-            onChange={(model) => onChange({ ...value, model })}
-          />
-          {Object.entries(value.options ?? {}).map(([key, option]) => (
-            <div key={key} className="flex flex-col gap-1">
-              <TextField
-                label="Option name"
-                value={key}
-                onChange={(name) => {
-                  const options = { ...value.options };
-                  delete options[key];
-                  options[name] = option;
-                  onChange({ ...value, options });
-                }}
-              />
-              <TextField
-                label={`Option ${key}`}
-                value={String(option)}
-                onChange={(next) =>
-                  onChange({
-                    ...value,
-                    options: {
-                      ...value.options,
-                      [key]: typeof option === "boolean" ? next === "true" : next,
-                    },
-                  })
-                }
-              />
-              <Choice
-                label="Option type"
-                value={typeof option}
-                values={["string", "boolean"]}
-                onChange={(type) =>
-                  onChange({
-                    ...value,
-                    options: { ...value.options, [key]: type === "boolean" ? false : "" },
-                  })
-                }
-              />
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => {
-                  const options = { ...value.options };
-                  delete options[key];
-                  onChange({ ...value, options });
-                }}
-              >
-                Remove option
-              </Button>
-            </div>
-          ))}
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() => onChange({ ...value, options: { ...value.options, option: "" } })}
-          >
-            Add model option
-          </Button>
+          <FlowModelPicker value={value} onChange={onChange} />
+          {!context && <p>Choose a connected environment to select a model.</p>}
         </>
       )}
     </fieldset>
@@ -552,7 +513,7 @@ export function AgentModes({
       <Choice
         label="Runtime mode"
         value={value.runtimeMode ?? "inherit"}
-        values={["inherit", "approval-required", "auto-accept-edits", "auto", "full-access"]}
+        values={["inherit", ...RuntimeMode.literals]}
         onChange={(mode) =>
           onChange({
             ...value,
@@ -584,165 +545,206 @@ export function AgentModes({
 export function StepForm({
   step,
   onChange,
+  onRename,
+  errors = [],
 }: {
+  onRename: (id: string) => void;
+  errors?: ReadonlyArray<{ path: string; message: string }>;
   step: FlowStep;
   onChange: (step: FlowStep) => void;
 }) {
+  const [id, setId] = useState(step.id);
+  const [idError, setIdError] = useState<string | null>(null);
+  const commitId = () => {
+    try {
+      onRename(id);
+      setIdError(null);
+    } catch (error) {
+      setIdError(error instanceof Error ? error.message : String(error));
+    }
+  };
   return (
-    <div className="flex flex-col gap-3">
-      <TextField label="Step id" value={step.id} onChange={(id) => onChange({ ...step, id })} />
-      {step.kind === "agent" && (
-        <>
+    <FieldErrors value={errors}>
+      <div className="flex flex-col gap-3">
+        <Field label="Step id">
+          <Input
+            size="compact"
+            aria-label="Step id"
+            value={id}
+            onChange={(event) => setId(event.target.value)}
+            onBlur={commitId}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitId();
+              }
+            }}
+          />
+        </Field>
+        {idError && (
+          <p role="alert" className="text-destructive">
+            {idError}
+          </p>
+        )}
+        {step.kind === "agent" && (
+          <>
+            <TextField
+              label="Prompt"
+              multiline
+              value={step.prompt}
+              onChange={(prompt) => onChange({ ...step, prompt })}
+            />
+            <ModelFields value={step.model} onChange={(model) => onChange({ ...step, model })} />
+            <AgentModes value={step} onChange={(modes) => onChange({ ...step, ...modes })} />
+            <Choice
+              label="Thread"
+              value={typeof step.thread === "object" ? "sameAs" : (step.thread ?? "new")}
+              values={["new", "continue", "sameAs"]}
+              onChange={(thread) =>
+                onChange({
+                  ...step,
+                  thread:
+                    thread === "sameAs"
+                      ? { sameAs: "" }
+                      : thread === "continue"
+                        ? "continue"
+                        : "new",
+                })
+              }
+            />
+            {typeof step.thread === "object" && (
+              <TextField
+                label="Same as step"
+                value={step.thread.sameAs}
+                onChange={(sameAs) => onChange({ ...step, thread: { sameAs } })}
+              />
+            )}
+            <OutputFieldsForm
+              fields={step.outputs ?? []}
+              onChange={(outputs) => onChange({ ...step, outputs })}
+            />
+          </>
+        )}
+        {step.kind === "command" && (
+          <>
+            <TextField
+              label="Command"
+              multiline
+              value={step.command}
+              onChange={(command) => onChange({ ...step, command })}
+            />
+            <p className="text-xs text-muted-foreground">
+              Command lines are literal. Put flow references in environment values and read them
+              from the shell.
+            </p>
+            {Object.entries(step.env ?? {}).map(([name, value], index) => (
+              <div key={index} className="flex flex-col gap-2">
+                <TextField
+                  label="Environment variable"
+                  value={name}
+                  onChange={(next) => {
+                    if (next !== name && Object.hasOwn(step.env ?? {}, next)) return;
+                    onChange({
+                      ...step,
+                      env: Object.fromEntries(
+                        Object.entries(step.env ?? {}).map(([key, entry]) => [
+                          key === name ? next : key,
+                          entry,
+                        ]),
+                      ),
+                    });
+                  }}
+                />
+                <TextField
+                  label={`Environment value ${name}`}
+                  multiline
+                  value={value}
+                  onChange={(next) => onChange({ ...step, env: { ...step.env, [name]: next } })}
+                />
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => {
+                    const env = { ...step.env };
+                    delete env[name];
+                    onChange({ ...step, env });
+                  }}
+                >
+                  Remove environment variable
+                </Button>
+              </div>
+            ))}
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => {
+                let name = "VALUE";
+                for (let i = 2; Object.hasOwn(step.env ?? {}, name); i++) name = `VALUE_${i}`;
+                onChange({ ...step, env: { ...step.env, [name]: "" } });
+              }}
+            >
+              Add environment variable
+            </Button>
+            <TextField
+              label="Working directory"
+              value={step.cwd ?? ""}
+              onChange={(cwd) => onChange({ ...step, cwd: cwd || undefined })}
+            />
+            <TextField
+              label="Timeout (ms, default 600000)"
+              value={step.timeoutMs === undefined ? "" : String(step.timeoutMs)}
+              onChange={(value) =>
+                onChange({ ...step, timeoutMs: value === "" ? undefined : Number(value) })
+              }
+            />
+          </>
+        )}
+        {step.kind === "approval" && (
           <TextField
-            label="Prompt"
+            label="Approval prompt"
             multiline
             value={step.prompt}
             onChange={(prompt) => onChange({ ...step, prompt })}
           />
-          <ModelFields value={step.model} onChange={(model) => onChange({ ...step, model })} />
-          <AgentModes value={step} onChange={(modes) => onChange({ ...step, ...modes })} />
-          <Choice
-            label="Thread"
-            value={typeof step.thread === "object" ? "sameAs" : (step.thread ?? "new")}
-            values={["new", "continue", "sameAs"]}
-            onChange={(thread) =>
-              onChange({
-                ...step,
-                thread:
-                  thread === "sameAs" ? { sameAs: "" } : thread === "continue" ? "continue" : "new",
-              })
-            }
-          />
-          {typeof step.thread === "object" && (
-            <TextField
-              label="Same as step"
-              value={step.thread.sameAs}
-              onChange={(sameAs) => onChange({ ...step, thread: { sameAs } })}
+        )}
+        {step.kind === "loop" && (
+          <>
+            <NumberField
+              label="Maximum iterations"
+              value={step.maxIterations}
+              onChange={(maxIterations) => onChange({ ...step, maxIterations })}
             />
-          )}
-          <OutputFieldsForm
-            fields={step.outputs ?? []}
-            onChange={(outputs) => onChange({ ...step, outputs })}
-          />
-        </>
-      )}
-      {step.kind === "command" && (
-        <>
-          <TextField
-            label="Command"
-            multiline
-            value={step.command}
-            onChange={(command) => onChange({ ...step, command })}
-          />
-          <p className="text-xs text-muted-foreground">
-            Command lines are literal. Put flow references in environment values and read them from
-            the shell.
-          </p>
-          {Object.entries(step.env ?? {}).map(([name, value], index) => (
-            <div key={index} className="flex flex-col gap-2">
-              <TextField
-                label="Environment variable"
-                value={name}
-                onChange={(next) => {
-                  if (next !== name && Object.hasOwn(step.env ?? {}, next)) return;
-                  onChange({
-                    ...step,
-                    env: Object.fromEntries(
-                      Object.entries(step.env ?? {}).map(([key, entry]) => [
-                        key === name ? next : key,
-                        entry,
-                      ]),
-                    ),
-                  });
-                }}
-              />
-              <TextField
-                label={`Environment value ${name}`}
-                multiline
-                value={value}
-                onChange={(next) => onChange({ ...step, env: { ...step.env, [name]: next } })}
-              />
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => {
-                  const env = { ...step.env };
-                  delete env[name];
-                  onChange({ ...step, env });
-                }}
-              >
-                Remove environment variable
-              </Button>
-            </div>
-          ))}
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() => {
-              let name = "VALUE";
-              for (let i = 2; Object.hasOwn(step.env ?? {}, name); i++) name = `VALUE_${i}`;
-              onChange({ ...step, env: { ...step.env, [name]: "" } });
-            }}
-          >
-            Add environment variable
-          </Button>
-          <TextField
-            label="Working directory"
-            value={step.cwd ?? ""}
-            onChange={(cwd) => onChange({ ...step, cwd: cwd || undefined })}
-          />
-          <NumberField
-            label="Timeout (ms)"
-            value={step.timeoutMs ?? 600000}
-            onChange={(timeoutMs) => onChange({ ...step, timeoutMs })}
-          />
-        </>
-      )}
-      {step.kind === "approval" && (
-        <TextField
-          label="Approval prompt"
-          multiline
-          value={step.prompt}
-          onChange={(prompt) => onChange({ ...step, prompt })}
-        />
-      )}
-      {step.kind === "loop" && (
-        <>
-          <NumberField
-            label="Maximum iterations"
-            value={step.maxIterations}
-            onChange={(maxIterations) => onChange({ ...step, maxIterations })}
-          />
-          <ConditionForm value={step.until} onChange={(until) => onChange({ ...step, until })} />
-        </>
-      )}
-      {step.kind === "map" && (
-        <>
-          <TextField
-            label="Over reference"
-            value={step.over}
-            onChange={(over) => onChange({ ...step, over })}
-          />
-          <NumberField
-            label="Concurrency"
-            value={step.concurrency ?? 1}
-            onChange={(concurrency) => onChange({ ...step, concurrency })}
-          />
-          <NumberField
-            label="Maximum items"
-            value={step.maxItems ?? 50}
-            onChange={(maxItems) => onChange({ ...step, maxItems })}
-          />
-          <Choice
-            label="On item failure"
-            value={step.onItemFailure ?? "fail"}
-            values={["fail", "continue"]}
-            onChange={(next) =>
-              onChange({ ...step, onItemFailure: next === "continue" ? "continue" : "fail" })
-            }
-          />
-        </>
-      )}
-    </div>
+            <ConditionForm value={step.until} onChange={(until) => onChange({ ...step, until })} />
+          </>
+        )}
+        {step.kind === "map" && (
+          <>
+            <TextField
+              label="Over reference"
+              value={step.over}
+              onChange={(over) => onChange({ ...step, over })}
+            />
+            <NumberField
+              label="Concurrency"
+              value={step.concurrency ?? 1}
+              onChange={(concurrency) => onChange({ ...step, concurrency })}
+            />
+            <NumberField
+              label="Maximum items"
+              value={step.maxItems ?? 50}
+              onChange={(maxItems) => onChange({ ...step, maxItems })}
+            />
+            <Choice
+              label="On item failure"
+              value={step.onItemFailure ?? "fail"}
+              values={["fail", "continue"]}
+              onChange={(next) =>
+                onChange({ ...step, onItemFailure: next === "continue" ? "continue" : "fail" })
+              }
+            />
+          </>
+        )}
+      </div>
+    </FieldErrors>
   );
 }
