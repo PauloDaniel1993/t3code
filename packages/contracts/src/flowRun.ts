@@ -145,7 +145,7 @@ export const FlowStepRun = Schema.Struct({
   attempt: PositiveInt,
   status: FlowStepRunStatus,
   threadId: Schema.NullOr(ThreadId),
-  output: Schema.NullOr(FlowStepOutput),
+  output: Schema.NullOr(OutputRef),
   error: Schema.NullOr(FlowRunError),
   ...Timings,
 });
