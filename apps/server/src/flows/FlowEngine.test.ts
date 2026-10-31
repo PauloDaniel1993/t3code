@@ -56,6 +56,63 @@ const graph = (
 ): FlowDefinition => ({ version: 1, title: "Test", steps, edges });
 
 describe("FlowEngine decision traces", () => {
+  it("retry invalidates later loop iterations before continuing from the failed iteration", () => {
+    const t = trace(
+      graph([
+        {
+          id: "loop",
+          kind: "loop",
+          maxIterations: 2,
+          until: { ref: "iteration", op: "eq", value: 1 },
+          steps: [agent("a"), agent("recovery")],
+          edges: [{ from: "a", to: "recovery", on: "failure" }],
+        },
+      ]),
+    );
+    t.settle("a", "failed");
+    const failedId = t.row("a").id;
+    t.settle("recovery");
+    t.settle("a");
+    expect(t.state.run.status).toBe("succeeded");
+    t.send({ type: "retry_step", at, stepRunId: failedId });
+    expect(t.state.run.status).toBe("running");
+    expect(t.row("a")).toMatchObject({ attempt: 2, iteration: 0, status: "running" });
+    t.settle("a");
+    t.settle("a");
+    expect(t.state.run.status).toBe("succeeded");
+    expect(t.state.run.activeStepRunIds).toEqual([]);
+  });
+
+  it("retry cancels and supersedes descendants of invalidated dependent containers", () => {
+    const t = trace(
+      graph(
+        [
+          agent("a"),
+          {
+            id: "loop",
+            kind: "loop",
+            maxIterations: 1,
+            until: { ref: "iteration", op: "eq", value: 0 },
+            steps: [agent("b")],
+            edges: [],
+          },
+        ],
+        [{ from: "a", to: "loop", on: "failure" }],
+      ),
+    );
+    t.settle("a", "failed");
+    expect(t.row("b").status).toBe("running");
+    t.send({ type: "retry_step", at, stepRunId: t.row("a").id });
+    expect(
+      t.state.stepRuns
+        .filter((s) => !s.superseded && s.status === "running")
+        .map((s) => s.stepPath.at(-1)),
+    ).toEqual(["a"]);
+    t.settle("a");
+    expect(t.state.run.status).toBe("succeeded");
+    expect(t.state.run.activeStepRunIds).toEqual([]);
+  });
+
   it("does not mistake a replayed turn completion for the reminder's completion", () => {
     const t = trace(
       graph([

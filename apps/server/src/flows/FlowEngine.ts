@@ -219,8 +219,14 @@ export function decide(
       actions.push({ type: "interrupt_turn", stepRunId: s.id, threadId: s.threadId });
     put({ ...s, status: "cancelled", error: fault(code), finishedAt: trigger.at });
   };
+  const supersede = (s: StepRun) => {
+    for (const child of state.stepRuns.filter((r) => r.parentId === s.id && !r.superseded))
+      supersede(child);
+    if (active(s)) cancel(s, "retry_dependency");
+    put({ ...get(s.id), superseded: true });
+  };
   const retry = (s: StepRun) => {
-    put({ ...s, superseded: true });
+    supersede(s);
     const next = {
       ...s,
       id: FlowStepRunId.make(`${s.id}:retry:${s.attempt + 1}`),
@@ -284,10 +290,18 @@ export function decide(
           r.id !== source.id &&
           ids.has(r.stepPath.at(-1)!),
       )) {
-        if (active(r)) cancel(r, "retry_dependency");
-        put({ ...get(r.id), superseded: true });
+        supersede(r);
       }
       if (parent) {
+        if (definition(parent).kind === "loop") {
+          for (const later of state.stepRuns.filter(
+            (r) =>
+              !r.superseded &&
+              r.parentId === parent.id &&
+              (r.iteration ?? 0) > (source.iteration ?? 0),
+          ))
+            supersede(later);
+        }
         put({ ...parent, status: "running", error: null, finishedAt: null, takenEdges: undefined });
         invalidate(parent);
       }
@@ -511,7 +525,9 @@ export function decide(
           if (step.kind === "loop") {
             let iteration = Math.max(
               0,
-              ...state.stepRuns.filter((r) => r.parentId === s.id).map((r) => r.iteration ?? 0),
+              ...state.stepRuns
+                .filter((r) => r.parentId === s.id && !r.superseded)
+                .map((r) => r.iteration ?? 0),
             );
             while (true) {
               const childScope = `${s.id}:${iteration}`;
