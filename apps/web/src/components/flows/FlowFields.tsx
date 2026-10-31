@@ -115,13 +115,17 @@ const optionLabels: Record<string, string> = {
   always: "Always",
   conditional: "Only when…",
 };
-function FlowSection({ children }: { children: ReactNode }) {
+export function FlowSection({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
-    <h4 className="border-t border-border/60 pt-3 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
-      {children}
-    </h4>
+    <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-3">
+      <h4 className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
+        {children}
+      </h4>
+      {action}
+    </div>
   );
 }
+
 export function Choice({
   label,
   value,
@@ -416,7 +420,19 @@ function OutputFieldsForm({
 }) {
   return (
     <fieldset className="flex flex-col gap-2">
-      <FlowSection>Output fields</FlowSection>
+      <FlowSection
+        action={
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => onChange([...fields, { name: "result", type: "string" }])}
+          >
+            + Field
+          </Button>
+        }
+      >
+        Output fields
+      </FlowSection>
       {fields.map((field, index) => {
         const update = (next: FlowOutputField) =>
           onChange(fields.map((entry, i) => (i === index ? next : entry)));
@@ -442,6 +458,14 @@ function OutputFieldsForm({
                   update({ name: field.name, type });
               }}
             />
+            <Button
+              variant="ghost-destructive"
+              size="icon-xs"
+              aria-label="Remove output"
+              onClick={() => onChange(fields.filter((_, i) => i !== index))}
+            >
+              <X />
+            </Button>
             {field.type === "enum" && (
               <div className="col-span-full">
                 <TextField
@@ -452,24 +476,9 @@ function OutputFieldsForm({
                 />
               </div>
             )}
-            <Button
-              variant="ghost-destructive"
-              size="icon-xs"
-              aria-label="Remove output"
-              onClick={() => onChange(fields.filter((_, i) => i !== index))}
-            >
-              <X />
-            </Button>
           </div>
         );
       })}
-      <Button
-        variant="ghost"
-        size="xs"
-        onClick={() => onChange([...fields, { name: "result", type: "string" }])}
-      >
-        Add output field
-      </Button>
     </fieldset>
   );
 }
@@ -483,12 +492,27 @@ export function InputFieldsForm({
 }) {
   return (
     <fieldset className="flex flex-col gap-2">
-      <FlowSection>Inputs</FlowSection>
+      <FlowSection
+        action={
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => onChange([...fields, { name: "input", type: "string" }])}
+          >
+            + Input
+          </Button>
+        }
+      >
+        Inputs
+      </FlowSection>
       {fields.map((field, index) => {
         const update = (next: FlowInput) =>
           onChange(fields.map((entry, i) => (i === index ? next : entry)));
         return (
-          <div key={index} className="grid grid-cols-[minmax(0,1fr)_100px_24px] items-end gap-2">
+          <div
+            key={index}
+            className="grid grid-cols-[minmax(0,1fr)_90px_auto_24px] items-end gap-2"
+          >
             <TextField
               label="Input name"
               value={field.name}
@@ -510,6 +534,12 @@ export function InputFieldsForm({
                 else update({ ...base, type: "string" });
               }}
             />
+            <Choice
+              label="Required"
+              value={String(field.required ?? false)}
+              values={["true", "false"]}
+              onChange={(next) => update({ ...field, required: next === "true" })}
+            />
             <Button
               variant="ghost-destructive"
               size="icon-xs"
@@ -528,12 +558,6 @@ export function InputFieldsForm({
                     label="Input description"
                     value={field.description ?? ""}
                     onChange={(description) => update({ ...field, description })}
-                  />
-                  <Choice
-                    label="Required"
-                    value={String(field.required ?? false)}
-                    values={["true", "false"]}
-                    onChange={(next) => update({ ...field, required: next === "true" })}
                   />
                   <Choice
                     label="Has default"
@@ -565,13 +589,6 @@ export function InputFieldsForm({
           </div>
         );
       })}
-      <Button
-        variant="ghost"
-        size="xs"
-        onClick={() => onChange([...fields, { name: "input", type: "string" }])}
-      >
-        Add flow input
-      </Button>
     </fieldset>
   );
 }
@@ -856,6 +873,7 @@ export function StepForm({
             />
             <Choice
               label="On item failure"
+              labels={{ fail: "Stop the flow", continue: "Continue other items" }}
               value={step.onItemFailure ?? "fail"}
               values={["fail", "continue"]}
               onChange={(next) =>

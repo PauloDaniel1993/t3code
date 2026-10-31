@@ -1,8 +1,9 @@
+import { Alert, AlertDescription } from "../ui/alert";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useState } from "react";
 import { useEnvironmentQuery } from "../../state/query";
 import { flowEnvironment } from "../../state/flows";
-import { Button } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
 import { FlowRunActions, FlowRunTimeline, StepRunInspector } from "./FlowRunView";
 import { useFlowPanelRequest } from "./flowPanelState";
 export function FlowRunThreadCard({ threadRef }: { threadRef: ScopedThreadRef }) {
@@ -23,19 +24,21 @@ export function FlowRunThreadCard({ threadRef }: { threadRef: ScopedThreadRef })
   if (!snapshot) return id && detail.error ? <p role="alert">{detail.error}</p> : null;
   if (lookup.data?.role === "step_thread")
     return (
-      <div className="border-b border-border p-2 text-xs">
-        <button
-          type="button"
-          className="text-primary underline"
-          onClick={() =>
-            useFlowPanelRequest
-              .getState()
-              .open(threadRef, { flowId: snapshot.summary.flowId, flowRunId: snapshot.summary.id })
-          }
-        >
-          Part of {snapshot.summary.flowTitle} · run {snapshot.summary.runNumber}
-        </button>
-      </div>
+      <Alert variant="info">
+        <AlertDescription>
+          <InlineButton
+            tone="default"
+            onClick={() =>
+              useFlowPanelRequest.getState().open(threadRef, {
+                flowId: snapshot.summary.flowId,
+                flowRunId: snapshot.summary.id,
+              })
+            }
+          >
+            Part of {snapshot.summary.flowTitle} · run {snapshot.summary.runNumber}
+          </InlineButton>
+        </AlertDescription>
+      </Alert>
     );
   const selected = snapshot.stepRuns.find((step) => step.id === selectedId);
   return (

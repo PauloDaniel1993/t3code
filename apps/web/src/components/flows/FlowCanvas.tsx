@@ -73,7 +73,7 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
               <TriangleAlert className="size-3.5 text-destructive" />
             </TooltipTrigger>
             <TooltipPopup>
-              <span id={`${id}-errors`}>{data.errors.join("; ")}</span>
+              <span>{data.errors.join("; ")}</span>
             </TooltipPopup>
           </Tooltip>
         ) : null}
@@ -104,6 +104,11 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
             </span>
           )}
         </div>
+      )}
+      {!!data.errors?.length && (
+        <span id={`${id}-errors`} className="sr-only">
+          {data.errors.join("; ")}
+        </span>
       )}
       <Handle type="source" position={Position.Bottom} />
     </div>
@@ -255,7 +260,11 @@ function Canvas({
           ref={wrapper}
           className="flow-canvas @container h-full"
           onDragLeave={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropParent(null);
+            if (
+              !(event.relatedTarget instanceof globalThis.Node) ||
+              !event.currentTarget.contains(event.relatedTarget)
+            )
+              setDropParent(null);
           }}
           onDragOver={(event) => {
             if (!locked) {
@@ -292,7 +301,7 @@ function Canvas({
             maxZoom={1.6}
             nodesDraggable={!locked}
             nodesConnectable={!locked}
-            edgesReconnectable={false}
+            edgesReconnectable={!locked}
             deleteKeyCode={null}
             onNodeClick={(_, node) => onSelectStep(node.id)}
             onEdgeClick={(_, edge) => onSelectEdge(edge.id)}
@@ -312,6 +321,26 @@ function Canvas({
                   changed = true;
                 }
               if (changed) onChange({ ...definition, layout });
+            }}
+            onReconnect={(edge, connection) => {
+              if (locked) return;
+              const parentId =
+                graph.nodes.find((node) => node.id === connection.source)?.parentId ?? null;
+              const targetParent =
+                graph.nodes.find((node) => node.id === connection.target)?.parentId ?? null;
+              const edgeParent = edge.id.slice(0, edge.id.lastIndexOf(":"));
+              if (parentId !== targetParent || (parentId ?? "$") !== edgeParent) return;
+              const index = Number(edge.id.slice(edge.id.lastIndexOf(":") + 1));
+              onChange(
+                editLevel(definition, parentId, (level) => ({
+                  ...level,
+                  edges: level.edges.map((entry, i) =>
+                    i === index
+                      ? { ...entry, from: connection.source, to: connection.target }
+                      : entry,
+                  ),
+                })),
+              );
             }}
             onEdgesChange={(changes) => {
               const selected = changes.find(

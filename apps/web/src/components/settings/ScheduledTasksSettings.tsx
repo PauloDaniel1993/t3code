@@ -1,3 +1,4 @@
+import { SettingsField as Field } from "../ui/settings-field";
 import { flowEnvironment } from "../../state/flows";
 import { ScheduledFlowSummary } from "../flows/ScheduledFlowSummary";
 import { ScheduledFlowFields } from "../flows/ScheduledFlowFields";
@@ -253,30 +254,6 @@ function WebhookFiltersField({
           </div>
         </div>
       ))}
-    </div>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  htmlFor,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  htmlFor?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <Label className="flex items-baseline justify-between" htmlFor={htmlFor}>
-        <span>{label}</span>
-        {hint ? (
-          <span className="font-normal text-2xs text-muted-foreground/80">{hint}</span>
-        ) : null}
-      </Label>
-      {children}
     </div>
   );
 }

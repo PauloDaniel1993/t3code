@@ -1,3 +1,25 @@
+import { cn } from "../../lib/utils";
+import { CalendarClock } from "lucide-react";
+import {
+  Dialog,
+  DialogPopup,
+  DialogHeader,
+  DialogTitle,
+  DialogPanel,
+  DialogFooter,
+} from "../ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogPopup,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+} from "../ui/alert-dialog";
+import { Alert, AlertTitle, AlertDescription, AlertAction } from "../ui/alert";
+import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from "../ui/collapsible";
+import { ScheduledTaskEditorDialog } from "../settings/ScheduledTasksSettings";
+import { SettingsScopeProvider } from "../settings/SettingsScopeContext";
 import { ArrowLeft, ChevronRight, Workflow } from "lucide-react";
 import { Empty, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent } from "../ui/empty";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
@@ -15,8 +37,8 @@ import { Menu, MenuTrigger, MenuPopup, MenuItem, MenuSeparator } from "../ui/men
 import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Popover, PopoverTrigger, PopoverPopup } from "../ui/popover";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { Link } from "@tanstack/react-router";
+import { useEffect, useEffectEvent, useRef, useState, useSyncExternalStore } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   FlowId,
@@ -54,6 +76,7 @@ import {
   AgentModes,
   StepForm,
   ConditionForm,
+  FlowSection,
 } from "./FlowFields";
 import { FlowModelContext } from "./FlowModelPicker";
 import { FlowCanvas } from "./FlowCanvas";
@@ -160,62 +183,79 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
         </div>
       </header>
       {list.error && (
-        <p role="alert" className="p-2">
-          {list.error}
-        </p>
+        <Alert variant="error">
+          <AlertDescription>{list.error}</AlertDescription>
+        </Alert>
       )}
       {newId !== null && (
-        <div className="flex flex-col gap-2 p-3">
-          <TextField label="New flow id" value={newId} onChange={setNewId} />
-          <Button
-            size="xs"
-            disabled={
-              !canSave ||
-              busy ||
-              !isFlowId(newId) ||
-              !!list.data?.flows.some((flow) => flow.flowId === newId)
-            }
-            onClick={async () => {
-              setBusy(true);
-              const result = await save({
-                environmentId,
-                input: {
-                  projectId,
-                  baseRevision: null,
-                  flowId: FlowId.make(newId),
-                  definition: {
-                    version: 1,
-                    title: newId,
-                    workspace: "worktree",
-                    steps: [],
-                    edges: [],
-                  },
-                },
-              });
-              if (result._tag === "Success") {
-                setSelected(result.value.flowId);
-                setNewId(null);
-              }
-              reportFlowFailure(result, "Could not create flow");
-              setBusy(false);
-            }}
-          >
-            Create flow
-          </Button>
-          <Button size="xs" variant="ghost" onClick={() => setNewId(null)}>
-            Cancel
-          </Button>
-        </div>
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setNewId(null);
+          }}
+        >
+          <DialogPopup>
+            <DialogHeader>
+              <DialogTitle>New flow</DialogTitle>
+            </DialogHeader>
+            <DialogPanel>
+              <TextField label="New flow id" value={newId} onChange={setNewId} />
+            </DialogPanel>
+            <DialogFooter>
+              {" "}
+              <Button size="xs" variant="ghost" onClick={() => setNewId(null)}>
+                Cancel
+              </Button>{" "}
+              <Button
+                size="xs"
+                disabled={
+                  !canSave ||
+                  busy ||
+                  !isFlowId(newId) ||
+                  !!list.data?.flows.some((flow) => flow.flowId === newId)
+                }
+                onClick={async () => {
+                  setBusy(true);
+                  const result = await save({
+                    environmentId,
+                    input: {
+                      projectId,
+                      baseRevision: null,
+                      flowId: FlowId.make(newId),
+                      definition: {
+                        version: 1,
+                        title: newId,
+                        workspace: "worktree",
+                        steps: [],
+                        edges: [],
+                      },
+                    },
+                  });
+                  if (result._tag === "Success") {
+                    setSelected(result.value.flowId);
+                    setNewId(null);
+                  }
+                  reportFlowFailure(result, "Could not create flow");
+                  setBusy(false);
+                }}
+              >
+                Create flow
+              </Button>
+            </DialogFooter>
+          </DialogPopup>
+        </Dialog>
       )}
       {entry?.validation.valid === false && !entry.definition && (
-        <div role="alert" className="p-2 text-destructive">
-          Invalid flow
-          {entry.validation.errors.map((error) => (
-            <p key={`${error.path}:${error.message}`}>
-              {error.path}: {error.message}
-            </p>
-          ))}
-        </div>
+        <Alert variant="error">
+          <AlertTitle>Invalid flow</AlertTitle>
+          <AlertDescription>
+            {entry.validation.errors.map((error) => (
+              <p key={`${error.path}:${error.message}`}>
+                {error.path}: {error.message}
+              </p>
+            ))}
+          </AlertDescription>
+        </Alert>
       )}
       {entry?.definition ? (
         <FlowEditor
@@ -277,7 +317,6 @@ function FlowEditor({
   onRenamed: (flowId: FlowId) => void;
   request: ReturnType<typeof useFlowPanelRequest.getState>["requests"][string] | undefined;
 }) {
-  const navigate = useNavigate();
   const canSchedule = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
@@ -311,6 +350,10 @@ function FlowEditor({
   const [stepRunId, setStepRunId] = useState<string | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const startAnchor = useRef<HTMLButtonElement>(null);
+  const [starting, setStarting] = useState(false);
+  const start = useAtomCommand(flowEnvironment.start);
   const [disableSchedules, setDisableSchedules] = useState(true);
   const schedules = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
@@ -420,9 +463,34 @@ function FlowEditor({
           : level.edges.filter((_, index) => index !== edgeIndex),
       })),
     );
+  const requestStart = async () => {
+    if (!canStart || dirty || saving || !validation.valid || starting) return;
+    if ((draft.inputs?.length ?? 0) > 0) {
+      setShowStart(true);
+      return;
+    }
+    setStarting(true);
+    const result = await start({ environmentId, input: { projectId, flowId, inputs: {} } });
+    if (result._tag === "Success") {
+      setFlowRunId(result.value.id);
+      setSelection(null);
+      setStepRunId(null);
+      setShowStart(false);
+    }
+    reportFlowFailure(result, "Could not start flow");
+    setStarting(false);
+  };
+  const startFromRequest = useEffectEvent(requestStart);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the flow requested by an external panel entry point
+  useEffect(() => {
+    if (request?.start) {
+      // oxlint-disable-next-line react/set-state-in-effect -- the external request is an explicit start action
+      void startFromRequest();
+    }
+  }, [request]);
   const locked = flowRunId !== null || !canSave;
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="@container flex min-h-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-2">
         <ToggleGroup
           variant="segmented"
@@ -439,7 +507,13 @@ function FlowEditor({
         </ToggleGroup>
         <div className="ml-auto flex min-w-0 items-center gap-1">
           {(saving || saveError || dirty) && (
-            <span role="status" className="truncate text-2xs text-muted-foreground">
+            <span
+              role="status"
+              className={cn(
+                "truncate text-2xs text-muted-foreground",
+                saveError && "text-destructive",
+              )}
+            >
               {saving ? "Saving…" : saveError ? "Save failed" : "Unsaved"}
             </span>
           )}
@@ -462,7 +536,9 @@ function FlowEditor({
                     variant="ghost"
                     aria-label={`${problems.length} problems`}
                     onClick={() => {
-                      const id = stepIdAtPath(draft, problems[0]!.path);
+                      const id = problems
+                        .map((problem) => stepIdAtPath(draft, problem.path))
+                        .find((id) => Boolean(id));
                       setTab("design");
                       setSelection(id ? { kind: "step", id } : { kind: "flow", id: "" });
                     }}
@@ -471,16 +547,17 @@ function FlowEditor({
               >
                 <Badge variant="error" size="sm">
                   <TriangleAlert />
-                  {problems.length} problems
+                  {problems.length}
+                  <span className="@max-[28rem]:hidden"> problems</span>
                 </Badge>
               </PopoverTrigger>
               <PopoverPopup width="md">
                 <div className="flex max-h-64 flex-col gap-1 overflow-auto">
                   {problems.map((problem) => (
-                    <Button
+                    <button
+                      type="button"
+                      className="rounded-md px-2 py-1 text-left text-xs hover:bg-accent"
                       key={`${problem.path}:${problem.message}`}
-                      size="xs"
-                      variant="ghost"
                       onClick={() => {
                         const id = stepIdAtPath(draft, problem.path);
                         setTab("design");
@@ -488,7 +565,7 @@ function FlowEditor({
                       }}
                     >
                       {problem.path}: {problem.message}
-                    </Button>
+                    </button>
                   ))}
                 </div>
               </PopoverPopup>
@@ -506,12 +583,7 @@ function FlowEditor({
               </MenuItem>
               <MenuItem
                 disabled={!canSchedule || dirty || saving || !validation.valid}
-                onClick={() =>
-                  void navigate({
-                    to: "/settings/scheduled-tasks",
-                    search: { environmentId, projectId, flowId },
-                  })
-                }
+                onClick={() => setScheduleOpen(true)}
               >
                 Schedule…
               </MenuItem>
@@ -539,89 +611,167 @@ function FlowEditor({
           </Menu>
           <Button
             size="xs"
-            disabled={!canStart || dirty || saving || !validation.valid}
-            onClick={() => setShowStart(!showStart)}
+            ref={startAnchor}
+            disabled={!canStart || dirty || saving || !validation.valid || starting}
+            onClick={() => void requestStart()}
           >
             Start
           </Button>
         </div>
       </div>
       {targetedSchedules.length > 0 && (
-        <div className="p-2 text-xs">
-          Schedules:{" "}
+        <div className="flex flex-wrap gap-1 px-2 py-1">
           {targetedSchedules.map((task) => (
-            <Link
+            <Badge
               key={task.id}
-              className="mr-2 underline"
-              to="/settings/scheduled-tasks"
-              search={{ environmentId, taskId: task.id }}
+              variant="secondary"
+              size="sm"
+              render={
+                <Link to="/settings/scheduled-tasks" search={{ environmentId, taskId: task.id }} />
+              }
             >
+              <CalendarClock />
               {task.title}
-              {task.enabled ? "" : " (disabled)"}
-            </Link>
+              {!task.enabled && <span className="text-muted-foreground"> · disabled</span>}
+            </Badge>
           ))}
         </div>
       )}
+      {scheduleOpen && (
+        <SettingsScopeProvider search={{ machine: environmentId }} onChange={() => {}}>
+          <ScheduledTaskEditorDialog
+            initialEnvironmentId={environmentId}
+            initialProjectId={projectId}
+            preset={{ projectId, flowId }}
+            task={null}
+            onClose={() => setScheduleOpen(false)}
+          />
+        </SettingsScopeProvider>
+      )}
       {(conflict || (dirty && revision !== draftState.revision)) && (
-        <div role="alert" className="p-2 text-xs">
-          File changed on disk. Reload to discard this draft, or overwrite the current file.
-          <Button size="xs" variant="outline" disabled={saving} onClick={discard}>
-            Reload
-          </Button>
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={saving || !canSave}
-            onClick={() => {
-              void persist(true);
-            }}
-          >
-            Overwrite
-          </Button>
-        </div>
+        <Alert variant="warning">
+          <AlertTitle>File changed on disk</AlertTitle>
+          <AlertDescription>
+            Reload to discard this draft, or overwrite the current file.
+          </AlertDescription>
+          <AlertAction>
+            <Button size="xs" variant="outline" disabled={saving} onClick={discard}>
+              Reload
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={saving || !canSave}
+              onClick={() => {
+                void persist(true);
+              }}
+            >
+              Overwrite
+            </Button>
+          </AlertAction>
+        </Alert>
       )}
       {showStart && (dirty || !validation.valid) && (
-        <p className="p-2 text-xs">Save a valid flow before starting it.</p>
+        <Alert variant="warning">
+          <AlertDescription>Save a valid flow before starting it.</AlertDescription>
+        </Alert>
       )}
-      {showStart && !dirty && validation.valid && (
-        <FlowStartForm
-          environmentId={environmentId}
-          projectId={projectId}
-          flowId={flowId}
-          definition={draft}
-          onStarted={(id) => {
-            setFlowRunId(id);
-            setShowStart(false);
-          }}
-          onClose={() => setShowStart(false)}
-        />
-      )}
-      {flowRunId && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-2 text-xs">
-          <span>
-            Viewing run{" "}
-            {snapshot?.summary.runNumber ??
-              runs.find((run) => run.id === flowRunId)?.runNumber ??
-              "..."}
-          </span>
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={() => {
-              setFlowRunId(null);
-              setStepRunId(null);
+      {showStart &&
+        !dirty &&
+        validation.valid &&
+        (draft.inputs?.length ?? 0) > 0 &&
+        ((draft.inputs?.length ?? 0) > 3 ? (
+          <Dialog
+            open
+            onOpenChange={(open) => {
+              if (!open) setShowStart(false);
             }}
           >
-            Back to editing
-          </Button>
-          {snapshot && <FlowRunActions environmentId={environmentId} summary={snapshot.summary} />}
-        </div>
+            <DialogPopup>
+              <DialogHeader>
+                <DialogTitle>Start flow</DialogTitle>
+              </DialogHeader>
+              <DialogPanel>
+                <FlowStartForm
+                  environmentId={environmentId}
+                  projectId={projectId}
+                  flowId={flowId}
+                  definition={draft}
+                  onStarted={(id) => {
+                    setFlowRunId(id);
+                    setShowStart(false);
+                    setSelection(null);
+                  }}
+                  onClose={() => setShowStart(false)}
+                />
+              </DialogPanel>
+            </DialogPopup>
+          </Dialog>
+        ) : (
+          <Popover
+            open
+            onOpenChange={(open) => {
+              if (!open) setShowStart(false);
+            }}
+          >
+            <PopoverPopup anchor={startAnchor} width="md" align="end">
+              <FlowStartForm
+                environmentId={environmentId}
+                projectId={projectId}
+                flowId={flowId}
+                definition={draft}
+                onStarted={(id) => {
+                  setFlowRunId(id);
+                  setShowStart(false);
+                  setSelection(null);
+                }}
+                onClose={() => setShowStart(false)}
+              />
+            </PopoverPopup>
+          </Popover>
+        ))}
+      {flowRunId && (
+        <Alert variant="info" controlAlignment="center">
+          <AlertTitle>
+            <span>
+              Viewing run{" "}
+              {snapshot?.summary.runNumber ??
+                runs.find((run) => run.id === flowRunId)?.runNumber ??
+                "..."}
+            </span>
+          </AlertTitle>
+          <AlertDescription>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => {
+                  setFlowRunId(null);
+                  setStepRunId(null);
+                }}
+              >
+                Back to editing
+              </Button>
+              {snapshot && (
+                <FlowRunActions environmentId={environmentId} summary={snapshot.summary} />
+              )}
+            </div>
+          </AlertDescription>
+        </Alert>
       )}
-      {detail.error && <p role="alert">{detail.error}</p>}
+      {detail.error && (
+        <Alert variant="error">
+          <AlertDescription>{detail.error}</AlertDescription>
+        </Alert>
+      )}
       <div className="relative flex min-h-0 flex-1 flex-col">
         {tab === "runs" ? (
           <div className="min-h-0 flex-1 overflow-auto p-2">
-            {history.error && <p role="alert">{history.error}</p>}
+            {history.error && (
+              <Alert variant="error">
+                <AlertDescription>{history.error}</AlertDescription>
+              </Alert>
+            )}
             {!flowRunId && runs.length === 0 && (
               <Empty size="compact">
                 <EmptyMedia variant="icon">
@@ -633,7 +783,7 @@ function FlowEditor({
                   <Button
                     size="xs"
                     disabled={!canStart || dirty || !validation.valid}
-                    onClick={() => setShowStart(true)}
+                    onClick={() => void requestStart()}
                   >
                     Start
                   </Button>
@@ -836,36 +986,39 @@ function FlowEditor({
                 )}
                 {edge && (
                   <>
-                    <TextField
-                      label="From step"
-                      value={edge.from}
-                      onChange={(from) => editEdge({ ...edge, from })}
-                    />
-                    <TextField
-                      label="To step"
-                      value={edge.to}
-                      onChange={(to) => editEdge({ ...edge, to })}
-                    />
-                    <Choice
-                      label="When step"
-                      value={edge.on ?? "success"}
-                      values={["success", "failure"]}
-                      onChange={(value) =>
-                        editEdge({ ...edge, on: value === "failure" ? "failure" : undefined })
-                      }
-                    />
-                    <Choice
-                      label="Edge condition"
-                      value={edge.when ? "conditional" : "always"}
-                      values={["always", "conditional"]}
-                      onChange={(value) =>
-                        editEdge({
-                          ...edge,
-                          when:
-                            value === "conditional" ? { ref: "", op: "eq", value: "" } : undefined,
-                        })
-                      }
-                    />
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="truncate">{edge.from}</span>
+                      <span aria-hidden>→</span>
+                      <span className="truncate">{edge.to}</span>
+                    </div>
+                    <ToggleGroup
+                      variant="segmented"
+                      size="segmented"
+                      value={[edge.on ?? "success"]}
+                      onValueChange={(values) => {
+                        if (values[0])
+                          editEdge({
+                            ...edge,
+                            on: values[0] === "failure" ? "failure" : undefined,
+                          });
+                      }}
+                      aria-label="Follow on"
+                    >
+                      <Toggle value="success">Success</Toggle>
+                      <Toggle value="failure">Failure</Toggle>
+                    </ToggleGroup>
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={!!edge.when}
+                        onCheckedChange={(checked) =>
+                          editEdge({
+                            ...edge,
+                            when: checked ? { ref: "", op: "eq", value: "" } : undefined,
+                          })
+                        }
+                      />
+                      Only when…
+                    </label>
                     {edge.when && (
                       <ConditionForm
                         value={edge.when}
@@ -886,6 +1039,7 @@ function FlowEditor({
                 )}
                 {selection?.kind === "flow" && (
                   <>
+                    <FlowSection>General</FlowSection>
                     <TextField
                       label="Title"
                       value={draft.title}
@@ -908,10 +1062,12 @@ function FlowEditor({
                       }
                     />
                     {draft.workspace === "root" && (
-                      <p>
-                        Flow runs share the project folder. Concurrent flow runs can change the same
-                        files.
-                      </p>
+                      <Alert variant="warning">
+                        <AlertDescription>
+                          Flow runs share the project folder. Concurrent flow runs can change the
+                          same files.
+                        </AlertDescription>
+                      </Alert>
                     )}
                     <InputFieldsForm
                       fields={draft.inputs ?? []}
@@ -929,9 +1085,10 @@ function FlowEditor({
                         change({ ...draft, defaults: { ...draft.defaults, ...modes } })
                       }
                     />
+                    <FlowSection>Danger zone</FlowSection>
                     <Button
                       size="xs"
-                      variant="outline"
+                      variant="ghost"
                       disabled={!canRename || dirty}
                       onClick={() => setRenameId(flowId)}
                     >
@@ -939,7 +1096,7 @@ function FlowEditor({
                     </Button>
                     <Button
                       size="xs"
-                      variant="outline"
+                      variant="ghost-destructive"
                       disabled={!canDelete || dirty}
                       onClick={() => setDeleteOpen(true)}
                     >
@@ -953,77 +1110,103 @@ function FlowEditor({
         )}
       </div>
       {renameId !== null && (
-        <div className="flex flex-col gap-2 p-3">
-          <TextField label="New flow id" value={renameId} onChange={setRenameId} />
-          <Button
-            size="xs"
-            disabled={
-              !canRename ||
-              !isFlowId(renameId) ||
-              (renameId !== flowId && flowIds.includes(renameId))
-            }
-            onClick={async () => {
-              const result = await rename({
-                environmentId,
-                input: { projectId, flowId, newFlowId: FlowId.make(renameId) },
-              });
-              if (result._tag === "Success") {
-                setRenameId(null);
-                onRenamed(result.value.flowId);
-              }
-              reportFlowFailure(result, "Could not rename flow");
-            }}
-          >
-            Rename
-          </Button>
-          <Button size="xs" variant="ghost" onClick={() => setRenameId(null)}>
-            Cancel
-          </Button>
-        </div>
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setRenameId(null);
+          }}
+        >
+          <DialogPopup>
+            <DialogHeader>
+              <DialogTitle>Rename flow file</DialogTitle>
+            </DialogHeader>
+            <DialogPanel>
+              <TextField label="New flow id" value={renameId} onChange={setRenameId} />
+            </DialogPanel>
+            <DialogFooter>
+              {" "}
+              <Button size="xs" variant="ghost" onClick={() => setRenameId(null)}>
+                Cancel
+              </Button>{" "}
+              <Button
+                size="xs"
+                disabled={
+                  !canRename ||
+                  !isFlowId(renameId) ||
+                  (renameId !== flowId && flowIds.includes(renameId))
+                }
+                onClick={async () => {
+                  const result = await rename({
+                    environmentId,
+                    input: { projectId, flowId, newFlowId: FlowId.make(renameId) },
+                  });
+                  if (result._tag === "Success") {
+                    setRenameId(null);
+                    onRenamed(result.value.flowId);
+                  }
+                  reportFlowFailure(result, "Could not rename flow");
+                }}
+              >
+                Rename
+              </Button>
+            </DialogFooter>
+          </DialogPopup>
+        </Dialog>
       )}
       {deleteOpen && (
-        <div className="flex flex-col gap-2 p-3">
-          <p>Delete {flowId}? Existing flow runs remain available in their threads.</p>
-          {targetedSchedules.length > 0 && (
-            <label className="flex items-center gap-2 text-xs">
-              <Checkbox
-                checked={disableSchedules}
-                onCheckedChange={(checked) => setDisableSchedules(checked === true)}
-              />
-              Disable schedules targeting this flow
-            </label>
-          )}
-          <Button
-            size="xs"
-            disabled={
-              !canDelete ||
-              (disableSchedules && targetedSchedules.length > 0 && !canDisableSchedules)
-            }
-            onClick={async () => {
-              if (disableSchedules) {
-                for (const task of targetedSchedules) {
-                  const result = await setEnabled({
-                    environmentId,
-                    input: { id: task.id, enabled: false },
-                  });
-                  if (
-                    reportFlowFailure(result, "Could not disable schedule") ||
-                    result._tag !== "Success"
-                  )
-                    return;
+        <AlertDialog open onOpenChange={setDeleteOpen}>
+          <AlertDialogPopup>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete flow</AlertDialogTitle>
+              <AlertDialogDescription>
+                Delete {flowId}? Existing flow runs remain available in their threads.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {targetedSchedules.length > 0 && (
+              <label className="flex items-center gap-2 text-xs">
+                <Checkbox
+                  checked={disableSchedules}
+                  onCheckedChange={(checked) => setDisableSchedules(checked === true)}
+                />
+                Disable schedules targeting this flow
+              </label>
+            )}
+            <AlertDialogFooter>
+              {" "}
+              <Button size="xs" variant="ghost" onClick={() => setDeleteOpen(false)}>
+                Cancel
+              </Button>{" "}
+              <Button
+                variant="destructive"
+                size="xs"
+                disabled={
+                  !canDelete ||
+                  (disableSchedules && targetedSchedules.length > 0 && !canDisableSchedules)
                 }
-              }
-              const result = await remove({ environmentId, input: { projectId, flowId } });
-              if (result._tag === "Success") setDeleteOpen(false);
-              reportFlowFailure(result, "Could not delete flow");
-            }}
-          >
-            Confirm delete
-          </Button>
-          <Button size="xs" variant="ghost" onClick={() => setDeleteOpen(false)}>
-            Cancel
-          </Button>
-        </div>
+                onClick={async () => {
+                  if (disableSchedules) {
+                    for (const task of targetedSchedules) {
+                      const result = await setEnabled({
+                        environmentId,
+                        input: { id: task.id, enabled: false },
+                      });
+                      if (
+                        reportFlowFailure(result, "Could not disable schedule") ||
+                        result._tag !== "Success"
+                      )
+                        return;
+                    }
+                  }
+                  const result = await remove({ environmentId, input: { projectId, flowId } });
+                  if (result._tag === "Success") setDeleteOpen(false);
+                  reportFlowFailure(result, "Could not delete flow");
+                }}
+              >
+                Confirm delete
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
       )}
     </div>
   );
@@ -1061,7 +1244,7 @@ function FlowStartForm({
   const allowed = useAtomValue(flowEnvironment.start.permissionAtom(environmentId));
   return (
     <form
-      className="flex max-h-80 flex-col gap-2 overflow-auto border-b border-border p-3"
+      className="flex max-h-[60vh] flex-col gap-3 overflow-auto"
       onSubmit={async (event) => {
         event.preventDefault();
         let inputs;
@@ -1081,7 +1264,7 @@ function FlowStartForm({
         setBusy(false);
       }}
     >
-      <h3>Start flow</h3>
+      <h3 className="text-sm font-medium">Start flow</h3>
       {(definition.inputs ?? []).map((field) => (
         <div key={field.name}>
           {field.type === "boolean" ? (
@@ -1094,7 +1277,8 @@ function FlowStartForm({
             />
           ) : (
             <TextField
-              label={`${field.name}${field.required ? " (required)" : ""} · ${field.type}`}
+              label={field.name}
+              hint={`${field.type} · ${field.required ? "required" : "optional"}`}
               value={values[field.name] ?? ""}
               multiline={field.type === "string[]"}
               onChange={(value) => setValues({ ...values, [field.name]: value })}
@@ -1103,14 +1287,21 @@ function FlowStartForm({
           <p className="text-xs text-muted-foreground">{field.description}</p>
         </div>
       ))}
-      <TextField label="Base branch (optional)" value={baseRef} onChange={setBaseRef} />
+      <Collapsible>
+        <CollapsibleTrigger render={<Button size="xs" variant="ghost" />}>
+          Advanced
+        </CollapsibleTrigger>
+        <CollapsiblePanel>
+          <TextField label="Base branch" hint="optional" value={baseRef} onChange={setBaseRef} />
+        </CollapsiblePanel>
+      </Collapsible>
       {error && <p role="alert">{error}</p>}
-      <div className="flex gap-2">
-        <Button size="xs" type="submit" disabled={!allowed || busy}>
-          Start flow
-        </Button>
+      <div className="flex justify-end gap-2">
         <Button size="xs" variant="ghost" onClick={onClose}>
           Cancel
+        </Button>
+        <Button size="xs" type="submit" disabled={!allowed || busy}>
+          Start flow
         </Button>
       </div>
     </form>

@@ -1,3 +1,6 @@
+import { InlineButton } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { FlowStepStatus } from "./FlowStepStatus";
 import { useEffect, useEffectEvent, useState } from "react";
 import { findScheduledFlowRun } from "./scheduledFlowRun";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -74,13 +77,20 @@ export function ScheduledFlowSummary({
   return (
     <span className="flex flex-wrap gap-2">
       <span>Runs flow: {entry?.definition?.title ?? task.prompt.replace(/^Run flow: /, "")}</span>
-      {definitions.data && !entry && <span role="status">Flow not found</span>}
-      {entry && !entry.validation.valid && <span role="status">Invalid flow</span>}
+      {definitions.data && !entry && (
+        <Badge variant="error" size="sm">
+          Flow not found
+        </Badge>
+      )}
+      {entry && !entry.validation.valid && (
+        <Badge variant="error" size="sm">
+          Invalid flow
+        </Badge>
+      )}
       {history?.error && <span role="status">Could not load flow run: {history.error}</span>}
       {latest && (
-        <button
-          type="button"
-          className="text-primary underline"
+        <InlineButton
+          tone="default"
           onClick={() => {
             useFlowPanelRequest
               .getState()
@@ -94,8 +104,8 @@ export function ScheduledFlowSummary({
             });
           }}
         >
-          Flow run {latest.runNumber}: {latest.status.replaceAll("_", " ")}
-        </button>
+          Flow run {latest.runNumber} <FlowStepStatus status={latest.status} />
+        </InlineButton>
       )}
     </span>
   );
