@@ -1,3 +1,4 @@
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -221,6 +222,10 @@ function FlowEditor({
   onRenamed: (flowId: FlowId) => void;
   request: ReturnType<typeof useFlowPanelRequest.getState>["requests"][string] | undefined;
 }) {
+  const navigate = useNavigate();
+  const canSchedule = useAtomValue(
+    serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
+  );
   const draftKey = JSON.stringify([environmentId, projectId, flowId]);
   const [draftStore] = useState(
     () => flowDrafts.get(draftKey) ?? createFlowDraft({ definition: initial, revision }),
@@ -397,7 +402,17 @@ function FlowEditor({
         >
           Start
         </Button>
-        <Button size="xs" variant="ghost" onClick={discard} disabled={!dirty || saving}>
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={() =>
+            void navigate({
+              to: "/settings/scheduled-tasks",
+              search: { environmentId, projectId, flowId },
+            })
+          }
+          disabled={!canSchedule || dirty || saving || !validation.valid}
+        >
           Schedule…
         </Button>
         <Button size="xs" variant="ghost" onClick={() => setSelection({ kind: "flow", id: "" })}>
@@ -407,9 +422,17 @@ function FlowEditor({
       {targetedSchedules.length > 0 && (
         <div className="p-2 text-xs">
           Schedules:{" "}
-          {targetedSchedules
-            .map((task) => `${task.title}${task.enabled ? "" : " (disabled)"}`)
-            .join(", ")}
+          {targetedSchedules.map((task) => (
+            <Link
+              key={task.id}
+              className="mr-2 underline"
+              to="/settings/scheduled-tasks"
+              search={{ environmentId, taskId: task.id }}
+            >
+              {task.title}
+              {task.enabled ? "" : " (disabled)"}
+            </Link>
+          ))}
         </div>
       )}
       {(conflict || (dirty && revision !== draftState.revision)) && (

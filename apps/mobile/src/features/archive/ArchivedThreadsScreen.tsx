@@ -1,3 +1,4 @@
+import { FlowRunStatusChip } from "../threads/FlowRunCard";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { Button } from "../../components/ui/Button";
 import type {
@@ -218,6 +219,10 @@ function ArchivedThreadRow(props: {
           >
             {props.thread.title}
           </Text>
+          <FlowRunStatusChip
+            threadRef={{ environmentId: props.thread.environmentId, threadId: props.thread.id }}
+            projectId={props.thread.projectId}
+          />
           <Text className="min-w-[30px] text-right text-xs tabular-nums text-foreground-tertiary">
             {timestamp}
           </Text>

@@ -116,7 +116,8 @@ export function flowStepRunList(snapshot: FlowRunSnapshot) {
       seen.add(step.id);
       const container = step.parentStepRunId ? byId.get(step.parentStepRunId) : undefined;
       const count =
-        container?.outputFields?.kind === "map" ? container.outputFields.items.length : undefined;
+        container?.itemCount ??
+        (container?.outputFields?.kind === "map" ? container.outputFields.items.length : undefined);
       const nextIterations =
         step.iteration === undefined
           ? iterations

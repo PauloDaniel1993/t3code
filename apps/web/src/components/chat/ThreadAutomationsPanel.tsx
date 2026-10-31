@@ -1,7 +1,11 @@
+import { ScheduledFlowSummary } from "../flows/ScheduledFlowSummary";
+import { flowEnvironment } from "../../state/flows";
+import { useThreadShell } from "../../state/entities";
+import { SettingsScopeProvider } from "../settings/SettingsScopeContext";
+import { ScheduledTaskEditorDialog } from "../settings/ScheduledTasksSettings";
 import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
-import { useNavigate } from "@tanstack/react-router";
-import { CalendarClockIcon, PencilIcon, PlayIcon, Settings2Icon } from "lucide-react";
+import { CalendarClockIcon, PencilIcon, PlayIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 import {
   AuthOrchestrationOperateScope,
@@ -59,6 +63,25 @@ export function ThreadAutomationsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
+  const [editor, setEditor] = useState<{ task: ScheduledTask | null } | null>(null);
+  const thread = useThreadShell(props);
+  const lookup = useEnvironmentQuery(
+    flowEnvironment.runForThread({
+      environmentId: props.environmentId,
+      input: { threadId: props.threadId },
+    }),
+  );
+  const flowRun = useEnvironmentQuery(
+    lookup.data
+      ? flowEnvironment.run({
+          environmentId: props.environmentId,
+          input: { flowRunId: lookup.data.flowRunId },
+        })
+      : null,
+  );
+  const canCreate = useAtomValue(
+    serverEnvironment.upsertScheduledTask.permissionAtom(props.environmentId),
+  );
   const canOperate = useAtomValue(
     serverEnvironment.runScheduledTaskNow.permissionAtom(props.environmentId),
   );
@@ -71,14 +94,15 @@ export function ThreadAutomationsPanel(props: {
   const runTaskNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
     label: "thread automation run now",
   });
-  const navigate = useNavigate();
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
 
   const boundTasks = (tasksQuery.data?.tasks ?? []).filter(
-    (task) => task.threadId === props.threadId,
+    (task) =>
+      task.threadId === props.threadId ||
+      (task.flow &&
+        task.projectId === thread?.projectId &&
+        task.flow.flowId === flowRun.data?.summary.flowId),
   );
-
-  if (tasksQuery.error === null && boundTasks.length === 0) return null;
 
   const reportFailure = (title: string, error: unknown) => {
     toastManager.add(
@@ -137,22 +161,28 @@ export function ThreadAutomationsPanel(props: {
                 size="icon-xs"
                 variant="ghost"
                 part="icon"
-                aria-label="Manage scheduled tasks"
-                onClick={() =>
-                  void navigate({
-                    to: "/settings/scheduled-tasks",
-                    search: { environmentId: props.environmentId },
-                  })
-                }
+                aria-label="New scheduled task"
+                disabled={!canCreate}
+                onClick={() => setEditor({ task: null })}
               >
-                <Settings2Icon className="size-3.5" />
+                <PlusIcon className="size-3.5" />
               </ThreadDetailsControl>
             }
           />
-          <TooltipPopup>Manage scheduled tasks</TooltipPopup>
+          <TooltipPopup>New scheduled task</TooltipPopup>
         </Tooltip>
       }
     >
+      {editor && (
+        <SettingsScopeProvider search={{ machine: props.environmentId }} onChange={() => {}}>
+          <ScheduledTaskEditorDialog
+            initialEnvironmentId={props.environmentId}
+            task={editor.task}
+            initialProjectId={thread?.projectId}
+            onClose={() => setEditor(null)}
+          />
+        </SettingsScopeProvider>
+      )}
       <ul className="m-0 list-none p-0">
         {boundTasks.map((task) => (
           <li
@@ -178,6 +208,9 @@ export function ThreadAutomationsPanel(props: {
                   {task.title}
                 </span>
                 <p className="truncate text-2xs text-muted-foreground">{taskScheduleLine(task)}</p>
+                {task.flow && (
+                  <ScheduledFlowSummary environmentId={props.environmentId} task={task} />
+                )}
               </TooltipTrigger>
               <TooltipPopup side="left">
                 <p className="font-medium">{task.title}</p>
@@ -192,12 +225,7 @@ export function ThreadAutomationsPanel(props: {
                     variant="ghost"
                     part="icon"
                     aria-label={`Edit ${task.title}`}
-                    onClick={() =>
-                      void navigate({
-                        to: "/settings/scheduled-tasks",
-                        search: { environmentId: props.environmentId, taskId: task.id },
-                      })
-                    }
+                    onClick={() => setEditor({ task })}
                   >
                     <PencilIcon className="size-3.5" />
                   </ThreadDetailsControl>
@@ -236,6 +264,11 @@ export function ThreadAutomationsPanel(props: {
           </li>
         ))}
       </ul>
+      {boundTasks.length === 0 && tasksQuery.error === null && (
+        <p className="px-2.5 py-1.5 text-xs text-muted-foreground">
+          No automations for this thread.
+        </p>
+      )}
       {/* Kept last: the details card treats a section whose last child is empty as empty. */}
       {tasksQuery.error !== null ? (
         <p className="px-2.5 py-1.5 text-2xs text-destructive">

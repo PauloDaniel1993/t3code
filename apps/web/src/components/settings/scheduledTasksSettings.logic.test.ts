@@ -1,5 +1,7 @@
 import {
   EnvironmentId,
+  FlowId,
+  ThreadId,
   ProjectId,
   DEFAULT_SERVER_SETTINGS,
   type ServerConfig,
@@ -21,6 +23,7 @@ import {
   matchesScheduledTaskScope,
   scheduleFromDraft,
   taskToDraft,
+  scheduledTaskTargetFromDraft,
 } from "./scheduledTasksSettings.logic";
 
 const laptopId = EnvironmentId.make("laptop");
@@ -324,4 +327,32 @@ it("rejects dedupe templates without a request placeholder", () => {
   const draft = taskToDraft({ ...legacyTask, schedule: { type: "webhook", signature: null } });
   expect(scheduleFromDraft({ ...draft, replayKey: "literal" })).toBeNull();
   expect(scheduleFromDraft({ ...draft, coalesceKey: "{{body.bad" })).toBeNull();
+});
+
+describe("scheduled task target round trip", () => {
+  it.each([
+    {
+      inputs: { issue: "{{body.issue.title}}", enabled: "false", count: "3", paths: "a\nb" },
+      baseRef: "release",
+    },
+    { inputs: {}, baseRef: undefined },
+  ])("preserves flow templates and base ref: %j", (target) => {
+    const flow = { flowId: FlowId.make("review"), ...target };
+    const draft = taskToDraft({ ...legacyTask, threadId: ThreadId.make("old-thread"), flow });
+    expect(scheduledTaskTargetFromDraft(draft, "Review changes")).toEqual({
+      prompt: "Run flow: Review changes",
+      threadId: null,
+      flow,
+    });
+    expect(scheduledTaskTargetFromDraft({ ...draft, targetMode: "prompt" })).toEqual({
+      prompt: legacyTask.prompt,
+      threadId: ThreadId.make("old-thread"),
+    });
+  });
+  it("leaves prompt tasks unchanged", () => {
+    expect(scheduledTaskTargetFromDraft(taskToDraft(legacyTask))).toEqual({
+      prompt: legacyTask.prompt,
+      threadId: null,
+    });
+  });
 });

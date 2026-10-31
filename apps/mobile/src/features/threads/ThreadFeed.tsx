@@ -1,3 +1,5 @@
+import { flowEnvironment } from "../../state/flows";
+import { FlowRunCard } from "./FlowRunCard";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
@@ -2523,6 +2525,14 @@ export const ThreadFeed = memo(function ThreadFeed({
 }: ThreadFeedProps & { readonly ref?: Ref<ThreadFeedHandle> }) {
   const { listRef, onEndFollowEnabledChange, onHeaderMaterialVisibilityChange } = props;
   const workflowOpening = useWorkflowOpening(props.detailRef);
+  const flowMembership = useEnvironmentQuery(
+    props.detailRef
+      ? flowEnvironment.runForThread({
+          environmentId: props.detailRef.environmentId,
+          input: { threadId: props.detailRef.threadId },
+        })
+      : null,
+  );
   const guestShare = useThreadGuestShare(props.detailRef);
   const deviceType = useDeviceType();
   const duoColumns = useNativeWorkspaceColumnsSupported() && isDuoDevice(deviceType);
@@ -3786,6 +3796,7 @@ export const ThreadFeed = memo(function ThreadFeed({
             ListHeaderComponent={
               <>
                 {usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />}
+                {props.detailRef ? <FlowRunCard threadRef={props.detailRef} /> : null}
                 {setupAnchorIndex < 0 && props.worktreeSetup ? (
                   <WorktreeSetupCard key={props.threadId} {...props.worktreeSetup} />
                 ) : null}
@@ -3812,7 +3823,8 @@ export const ThreadFeed = memo(function ThreadFeed({
             }}
           />
         </View>
-        {presentedFeed.length === 0 &&
+        {!flowMembership.data &&
+        presentedFeed.length === 0 &&
         !props.worktreeSetup &&
         props.activeWorkStartedAt === null &&
         props.contentPresentation.kind === "ready" ? (

@@ -1,3 +1,4 @@
+import { ScheduledFlowLabel } from "./ScheduledFlowLabel";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -695,6 +696,7 @@ function TaskForm({
 
   const save = async () => {
     if (
+      draft.task?.flow !== undefined ||
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
       submissionPending.current ||
       saving ||
@@ -784,6 +786,20 @@ function TaskForm({
     }
     onSaved();
   };
+
+  if (draft.task?.flow)
+    return (
+      <View className="gap-3">
+        <Text className="text-foreground">{draft.task.title}</Text>
+        <ScheduledFlowLabel environmentId={environmentId} task={draft.task} />
+        <Text className="text-foreground-muted">
+          {describeSchedule(draft.task)} · {draft.task.enabled ? "Enabled" : "Paused"}
+        </Text>
+        <Text className="text-foreground-muted">
+          Flow schedules are read-only on mobile. Manage them in the Flow panel on web or desktop.
+        </Text>
+      </View>
+    );
 
   return (
     <View className="gap-5">
@@ -1349,7 +1365,7 @@ function EnvironmentTasks({
           >
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Edit ${task.title}`}
+              accessibilityLabel={`${task.flow ? "View" : "Edit"} ${task.title}`}
               onPress={() => {
                 onEdit(task);
               }}
@@ -1366,60 +1382,63 @@ function EnvironmentTasks({
                     ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
                     : ""}
               </Text>
+              {task.flow ? <ScheduledFlowLabel environmentId={environmentId} task={task} /> : null}
               {task.lastRunError ? (
                 <Text className="text-sm text-danger-foreground" numberOfLines={2}>
                   Last run failed: {task.lastRunError}
                 </Text>
               ) : null}
             </Pressable>
-            <Menu
-              actions={[
-                { id: "edit", title: "Edit" },
-                {
-                  id: "toggle",
-                  title: task.enabled ? "Pause" : "Resume",
-                  attributes: { disabled: !canOperate },
-                },
-                ...(task.schedule.type === "webhook"
-                  ? []
-                  : [{ id: "run", title: "Run now", attributes: { disabled: !canOperate } }]),
-                {
-                  id: "delete",
-                  title: "Delete",
-                  attributes: { destructive: true, disabled: !canOperate },
-                },
-              ]}
-              onPressAction={({ nativeEvent }) => {
-                const action = nativeEvent.event;
-                if (action === "edit") {
-                  onEdit(task);
-                } else if (action === "delete") {
-                  Dialog.alert("Delete task?", task.title, [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Delete",
-                      style: "destructive",
-                      onPress: () => void act(task, "delete"),
-                    },
-                  ]);
-                } else if (action === "toggle" || action === "run") {
-                  void act(task, action);
-                }
-              }}
-            >
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Actions for ${task.title}`}
-                className="h-11 w-11 items-center justify-center"
+            {task.flow ? null : (
+              <Menu
+                actions={[
+                  { id: "edit", title: "Edit" },
+                  {
+                    id: "toggle",
+                    title: task.enabled ? "Pause" : "Resume",
+                    attributes: { disabled: !canOperate },
+                  },
+                  ...(task.schedule.type === "webhook"
+                    ? []
+                    : [{ id: "run", title: "Run now", attributes: { disabled: !canOperate } }]),
+                  {
+                    id: "delete",
+                    title: "Delete",
+                    attributes: { destructive: true, disabled: !canOperate },
+                  },
+                ]}
+                onPressAction={({ nativeEvent }) => {
+                  const action = nativeEvent.event;
+                  if (action === "edit") {
+                    onEdit(task);
+                  } else if (action === "delete") {
+                    Dialog.alert("Delete task?", task.title, [
+                      { text: "Cancel", style: "cancel" },
+                      {
+                        text: "Delete",
+                        style: "destructive",
+                        onPress: () => void act(task, "delete"),
+                      },
+                    ]);
+                  } else if (action === "toggle" || action === "run") {
+                    void act(task, action);
+                  }
+                }}
               >
-                <SymbolView
-                  name="ellipsis"
-                  size={18}
-                  tintColorClassName="accent-icon"
-                  type="monochrome"
-                />
-              </Pressable>
-            </Menu>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Actions for ${task.title}`}
+                  className="h-11 w-11 items-center justify-center"
+                >
+                  <SymbolView
+                    name="ellipsis"
+                    size={18}
+                    tintColorClassName="accent-icon"
+                    type="monochrome"
+                  />
+                </Pressable>
+              </Menu>
+            )}
           </View>
         ))
       )}

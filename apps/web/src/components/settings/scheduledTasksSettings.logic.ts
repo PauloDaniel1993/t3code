@@ -1,6 +1,8 @@
 import { isWebhookDedupeTemplate } from "@t3tools/contracts";
 import {
   EnvironmentId,
+  FlowId,
+  type ScheduledTaskUpsertInput,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   type ProjectId,
   ScheduledTaskId,
@@ -46,6 +48,12 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
     ...(typeof raw.environmentId === "string" && raw.environmentId.trim()
       ? { environmentId: EnvironmentId.make(raw.environmentId) }
       : {}),
+    ...(typeof raw.flowId === "string" && raw.flowId.trim()
+      ? { flowId: FlowId.make(raw.flowId) }
+      : {}),
+    ...(typeof raw.projectId === "string" && raw.projectId.trim()
+      ? { projectId: raw.projectId as ProjectId }
+      : {}),
     ...(typeof raw.taskId === "string" && raw.taskId.trim()
       ? { taskId: ScheduledTaskId.make(raw.taskId) }
       : {}),
@@ -56,6 +64,8 @@ export type ScheduleMode = "fixed" | "interval" | "webhook";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
+  readonly targetMode?: "prompt" | "flow";
+  readonly flow?: ScheduledTask["flow"];
   readonly editingId: string | null;
   readonly title: string;
   readonly prompt: string;
@@ -202,6 +212,8 @@ export function taskToDraft(task: ScheduledTask): DraftState {
       ? new Set(schedule.weekdays)
       : new Set([0, 1, 2, 3, 4, 5, 6]);
   return {
+    targetMode: task.flow ? "flow" : "prompt",
+    flow: task.flow,
     editingId: task.id,
     title: task.title,
     prompt: task.prompt,
@@ -284,4 +296,21 @@ export function scheduledTaskDefaultModel(
   );
   const fallback = models.find(({ model }) => model.isDefault) ?? models[0];
   return fallback ? { instanceId: fallback.instanceId, model: fallback.model.slug } : null;
+}
+
+export function scheduledTaskTargetFromDraft(
+  draft: Pick<DraftState, "targetMode" | "flow" | "prompt" | "threadId">,
+  flowTitle?: string,
+): Pick<ScheduledTaskUpsertInput, "prompt" | "threadId" | "flow"> {
+  if (draft.targetMode === "flow" && draft.flow) {
+    return {
+      prompt: `Run flow: ${flowTitle ?? draft.flow.flowId}`,
+      threadId: null,
+      flow: draft.flow,
+    };
+  }
+  return {
+    prompt: draft.prompt.trim(),
+    threadId: draft.threadId ? (draft.threadId as ScheduledTaskUpsertInput["threadId"]) : null,
+  };
 }
