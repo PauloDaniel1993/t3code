@@ -1,5 +1,4 @@
 import * as NodeModule from "node:module";
-import * as NodePath from "node:path";
 import "vite-plus/test/config";
 import { defineConfig, mergeConfig } from "vite-plus";
 
@@ -18,10 +17,9 @@ import {
 export { shouldBundleCliDependency };
 
 // jsonc-parser's UMD main hides its requires from the bundler; its ESM build only loads when bundled.
-const jsoncParserEsm = NodePath.join(
-  NodePath.dirname(NodeModule.createRequire(import.meta.url).resolve("jsonc-parser/package.json")),
-  "lib/esm/main.js",
-);
+const jsoncParserEsm = NodeModule.createRequire(import.meta.url)
+  .resolve("jsonc-parser")
+  .replace(/umd([\\/]main\.js)$/, "esm$1");
 
 const repoEnv = loadRepoEnv();
 const cliBuildChannel = /^[^-+]+-(?:nightly|preview)\./.test(packageJson.version)
