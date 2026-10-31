@@ -5,19 +5,27 @@ export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE IF NOT EXISTS flow_runs (
     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, flow_id TEXT NOT NULL,
+    run_number INTEGER NOT NULL, flow_title TEXT NOT NULL,
     flow_run_thread_id TEXT NOT NULL UNIQUE, definition_snapshot TEXT NOT NULL,
     inputs TEXT NOT NULL, base_ref TEXT, workspace TEXT NOT NULL,
     status TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL,
     started_at TEXT, finished_at TEXT, scheduled_task_id TEXT, summary_json TEXT NOT NULL
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS flow_runs_project ON flow_runs(project_id, created_at)`;
+  yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS flow_runs_number ON flow_runs(project_id, flow_id, run_number)`;
+  yield* sql`CREATE TABLE IF NOT EXISTS flow_run_numbers (
+    project_id TEXT NOT NULL, flow_id TEXT NOT NULL, last_number INTEGER NOT NULL,
+    PRIMARY KEY (project_id, flow_id)
+  )`;
   yield* sql`CREATE TABLE IF NOT EXISTS flow_step_runs (
     id TEXT PRIMARY KEY, flow_run_id TEXT NOT NULL REFERENCES flow_runs(id) ON DELETE CASCADE,
+    parent_step_run_id TEXT REFERENCES flow_step_runs(id) ON DELETE CASCADE,
     step_path TEXT NOT NULL, iteration INTEGER, item_index INTEGER, attempt INTEGER NOT NULL,
     status TEXT NOT NULL, thread_id TEXT, output TEXT, error TEXT,
     created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, state_json TEXT NOT NULL
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS flow_steps_run ON flow_step_runs(flow_run_id)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS flow_steps_parent ON flow_step_runs(parent_step_run_id)`;
   yield* sql`CREATE TABLE IF NOT EXISTS flow_approvals (
     step_run_id TEXT PRIMARY KEY REFERENCES flow_step_runs(id) ON DELETE CASCADE,
     prompt TEXT NOT NULL, decision TEXT, comment TEXT, answered_by TEXT, answered_at TEXT

@@ -2,6 +2,7 @@ import {
   FlowStepRunId,
   type FlowApproval,
   type FlowDefinition,
+  type FlowCommandOutput,
   type FlowInputs,
   type FlowModel,
   type RuntimeMode,
@@ -15,15 +16,16 @@ import {
 import {
   evaluateFlowCondition,
   renderFlowTemplate,
-  resolveFlowReference,
+  renderFlowCommandEnv,
+  resolveFlowMapItems,
   validateFlowReport,
   type FlowReferenceContext,
 } from "@t3tools/shared/flow";
 
 export interface StepRun extends FlowStepRun {
-  readonly parentId: FlowStepRunId | null;
   readonly scope: string;
   readonly superseded?: boolean | undefined;
+  readonly cancelReason?: "stopped" | "flow_failed" | "retry_dependency" | undefined;
   readonly reportReceived?: boolean | undefined;
   readonly reminderSent?: boolean | undefined;
   readonly lastSettledTurnId?: string | undefined;
@@ -67,7 +69,7 @@ export type Trigger = { readonly at: string } & (
   | {
       readonly type: "command_finished";
       readonly stepRunId: FlowStepRunId;
-      readonly output?: FlowStepOutput;
+      readonly output?: typeof FlowCommandOutput.Type;
       readonly error?: ErrorInfo;
     }
   | {
@@ -99,6 +101,7 @@ export type Action =
       readonly type: "start_command";
       readonly stepRunId: FlowStepRunId;
       readonly command: string;
+      readonly env: Readonly<Record<string, string>>;
       readonly cwd?: string;
       readonly timeoutMs: number;
     }
@@ -133,7 +136,10 @@ const active = (s: StepRun) =>
   !s.superseded && ["pending", "running", "waiting_report", "waiting_approval"].includes(s.status);
 const terminal = (s: StepRun) => !active(s);
 const failed = (s: StepRun) => s.status === "failed" || s.status === "interrupted";
-const fault = (code: string): ErrorInfo => ({ code, message: code.replaceAll("_", " ") });
+const fault = (code: ErrorInfo["code"], message = code.replaceAll("_", " ")): ErrorInfo => ({
+  code,
+  message,
+});
 
 export function decide(
   initial: State,
@@ -160,7 +166,7 @@ export function decide(
   };
   const ancestors = (s: StepRun) => {
     const chain = [s];
-    while (chain.at(-1)!.parentId) chain.push(get(chain.at(-1)!.parentId!));
+    while (chain.at(-1)!.parentStepRunId) chain.push(get(chain.at(-1)!.parentStepRunId!));
     return chain;
   };
   const previousRun = (s: StepRun) => {
@@ -183,7 +189,7 @@ export function decide(
   };
   const context = (scope: string, parent: StepRun | null): FlowReferenceContext => {
     const inherited = parent
-      ? context(parent.scope, parent.parentId ? get(parent.parentId) : null)
+      ? context(parent.scope, parent.parentStepRunId ? get(parent.parentStepRunId) : null)
       : { inputs: state.inputs };
     const steps = { ...inherited.steps };
     for (const s of state.stepRuns.filter((r) => r.scope === scope && !r.superseded)) {
@@ -208,19 +214,25 @@ export function decide(
       ...s,
       output,
       status: error ? "failed" : "succeeded",
-      error: error ?? null,
+      error: error ?? s.error,
       finishedAt: trigger.at,
     });
-  const cancel = (s: StepRun, code: string) => {
+  const cancel = (s: StepRun, reason: NonNullable<StepRun["cancelReason"]>) => {
     const step = definition(s);
     if (step.kind === "command")
       actions.push({ type: "kill_command", stepRunId: s.id, threadId: s.threadId });
     if (step.kind === "agent")
       actions.push({ type: "interrupt_turn", stepRunId: s.id, threadId: s.threadId });
-    put({ ...s, status: "cancelled", error: fault(code), finishedAt: trigger.at });
+    put({
+      ...s,
+      status: "cancelled",
+      error: fault("turn_cancelled", reason),
+      cancelReason: reason,
+      finishedAt: trigger.at,
+    });
   };
   const supersede = (s: StepRun) => {
-    for (const child of state.stepRuns.filter((r) => r.parentId === s.id && !r.superseded))
+    for (const child of state.stepRuns.filter((r) => r.parentStepRunId === s.id && !r.superseded))
       supersede(child);
     if (active(s)) cancel(s, "retry_dependency");
     put({ ...get(s.id), superseded: true });
@@ -239,6 +251,7 @@ export function decide(
       finishedAt: null,
       threadId: null,
       reportReceived: false,
+      cancelReason: undefined,
       reminderSent: false,
       lastSettledTurnId: undefined,
       takenEdges: undefined,
@@ -260,7 +273,7 @@ export function decide(
   }
   if (trigger.type === "resume") {
     if (state.run.status !== "cancelled") return { transitions, actions };
-    for (const s of state.stepRuns.filter((s) => !s.superseded && s.error?.code === "stopped")) {
+    for (const s of state.stepRuns.filter((s) => !s.superseded && s.cancelReason === "stopped")) {
       const kind = definition(s).kind;
       if (kind === "loop" || kind === "map")
         put({ ...s, status: "running", error: null, finishedAt: null });
@@ -271,7 +284,7 @@ export function decide(
     if (!s || !failed(s)) return { transitions, actions };
     // Invalidate only dependent work; independent completed branches remain durable.
     const invalidate = (source: StepRun) => {
-      const parent = source.parentId ? get(source.parentId) : null;
+      const parent = source.parentStepRunId ? get(source.parentStepRunId) : null;
       const graph = parent ? definition(parent) : state.definition;
       if (!("edges" in graph)) return;
       const ids = new Set([source.stepPath.at(-1)!]);
@@ -297,7 +310,7 @@ export function decide(
           for (const later of state.stepRuns.filter(
             (r) =>
               !r.superseded &&
-              r.parentId === parent.id &&
+              r.parentStepRunId === parent.id &&
               (r.iteration ?? 0) > (source.iteration ?? 0),
           ))
             supersede(later);
@@ -309,7 +322,7 @@ export function decide(
     invalidate(s);
     retry(s);
     for (const cancelled of state.stepRuns.filter(
-      (r) => !r.superseded && r.error?.code === "flow_failed",
+      (r) => !r.superseded && r.cancelReason === "flow_failed",
     )) {
       const kind = definition(cancelled).kind;
       if (kind === "map" || kind === "loop")
@@ -339,7 +352,8 @@ export function decide(
       const result = validateFlowReport(step.outputs ?? [], trigger.fields);
       if (!result.valid) throw new Error(JSON.stringify(result.errors));
       const output = {
-        text: s.output && "text" in s.output ? s.output.text : "",
+        kind: "agent",
+        text: s.output?.kind === "agent" ? s.output.text : "",
         ...trigger.fields,
       } as FlowStepOutput;
       put({ ...s, output, reportReceived: true });
@@ -347,7 +361,11 @@ export function decide(
     if (trigger.type === "step_thread_settled" && step.kind === "agent") {
       if (s.lastSettledTurnId === trigger.turnId) return { transitions, actions };
       put({ ...s, lastSettledTurnId: trigger.turnId });
-      const output = { ...s.output, text: trigger.text };
+      const output: FlowStepOutput = {
+        ...(s.output?.kind === "agent" ? s.output : {}),
+        kind: "agent",
+        text: trigger.text,
+      };
       if (trigger.error) complete(get(s.id), output, trigger.error);
       else if (!step.outputs?.length || s.reportReceived) complete(get(s.id), output);
       else if (s.reminderSent) complete(get(s.id), output, fault("missing_report"));
@@ -378,6 +396,7 @@ export function decide(
         },
       });
       complete(s, {
+        kind: "approval",
         decision: trigger.decision,
         ...(trigger.comment === undefined ? {} : { comment: trigger.comment }),
       });
@@ -403,7 +422,7 @@ export function decide(
           flowRunId: state.run.id,
           stepPath: path,
           scope,
-          parentId: parent?.id ?? null,
+          parentStepRunId: parent?.id ?? null,
           ...(parent && definition(parent).kind === "loop" ? { iteration: index } : {}),
           ...(parent && definition(parent).kind === "map" ? { itemIndex: index } : {}),
           attempt: attempts + 1,
@@ -466,8 +485,20 @@ export function decide(
                     )
                   : undefined;
                 const threadId = (previous ?? same)?.threadId ?? null;
-                if (sameAs && !threadId) throw new Error("Referenced thread unavailable");
-                put({ ...s, threadId });
+                if (
+                  threadId &&
+                  state.stepRuns.some((r) => r.id !== s.id && active(r) && r.threadId === threadId)
+                ) {
+                  complete(s, null, fault("other", "Thread already has an active flow step"));
+                  continue;
+                }
+                put({
+                  ...s,
+                  threadId,
+                  ...(sameAs && !threadId
+                    ? { error: fault("other", `sameAs target ${sameAs} had no thread`) }
+                    : {}),
+                });
                 actions.push({
                   type: threadId ? "continue_thread" : "launch_step_thread",
                   stepRunId: s.id,
@@ -482,7 +513,14 @@ export function decide(
                 actions.push({
                   type: "start_command",
                   stepRunId: s.id,
-                  command: render(step.command),
+                  command: step.command,
+                  env: renderFlowCommandEnv(
+                    step.env ?? {},
+                    ctx,
+                    (id) =>
+                      state.stepRuns.findLast((r) => r.stepPath.at(-1) === id && r.threadId)
+                        ?.threadId ?? id,
+                  ),
                   ...(step.cwd ? { cwd: step.cwd } : {}),
                   timeoutMs: step.timeoutMs ?? 600_000,
                 });
@@ -499,17 +537,14 @@ export function decide(
                   },
                 });
               } else if (step.kind === "map") {
-                const items = resolveFlowReference(step.over, ctx);
-                if (
-                  !Array.isArray(items) ||
-                  !items.every((item): item is string => typeof item === "string")
-                )
-                  throw new Error("Map reference must be a string array");
-                if (items.length > (step.maxItems ?? 50)) complete(s, null, fault("max_items"));
-                else put({ ...s, items });
+                try {
+                  put({ ...s, items: resolveFlowMapItems(step.over, ctx, step.maxItems) });
+                } catch {
+                  complete(s, null, fault("max_items"));
+                }
               }
             } catch {
-              complete(get(s.id), null, fault("invalid_reference"));
+              complete(get(s.id), null, fault("other", "invalid reference"));
             }
           }
           changed = true;
@@ -526,7 +561,7 @@ export function decide(
             let iteration = Math.max(
               0,
               ...state.stepRuns
-                .filter((r) => r.parentId === s.id && !r.superseded)
+                .filter((r) => r.parentStepRunId === s.id && !r.superseded)
                 .map((r) => r.iteration ?? 0),
             );
             while (true) {
@@ -534,7 +569,7 @@ export function decide(
               const result = runScope(step.steps, step.edges, childScope, s, iteration);
               if (result === "active") break;
               if (result === "failed") {
-                complete(s, null, fault("child_failed"));
+                complete(s, null, fault("other", "child failed"));
                 break;
               }
               try {
@@ -542,13 +577,14 @@ export function decide(
                 if (condition || iteration + 1 >= step.maxIterations) {
                   complete(s, {
                     ...outputs(childScope),
+                    kind: "loop",
                     iterations: iteration + 1,
                     exitReason: condition ? "condition" : "maxIterations",
                   });
                   break;
                 }
               } catch {
-                complete(s, null, fault("invalid_reference"));
+                complete(s, null, fault("other", "invalid reference"));
                 break;
               }
               iteration++;
@@ -571,12 +607,12 @@ export function decide(
                   outputs: outputs(childScope),
                 });
               if (result === "failed" && step.onItemFailure !== "continue") {
-                complete(s, null, fault("child_failed"));
+                complete(s, null, fault("other", "child failed"));
                 break;
               }
             }
             if (get(s.id).status === "running" && results.length === s.items?.length)
-              complete(s, { items: results });
+              complete(s, { kind: "map", items: results });
           }
           s = get(s.id);
         }
@@ -591,7 +627,7 @@ export function decide(
               )
                 taken.push(i);
           } catch {
-            s = { ...s, status: "failed", error: fault("invalid_reference") };
+            s = { ...s, status: "failed", error: fault("other", "invalid reference") };
           }
           put({ ...s, takenEdges: taken });
           changed = true;
@@ -603,8 +639,9 @@ export function decide(
     );
     if (unhandled) {
       for (const running of state.stepRuns.filter(active)) {
-        let owner = running.parentId ? get(running.parentId) : null;
-        while (owner && owner.scope !== scope) owner = owner.parentId ? get(owner.parentId) : null;
+        let owner = running.parentStepRunId ? get(running.parentStepRunId) : null;
+        while (owner && owner.scope !== scope)
+          owner = owner.parentStepRunId ? get(owner.parentStepRunId) : null;
         if (running.scope === scope || owner) cancel(running, "flow_failed");
       }
       return "failed";
@@ -614,8 +651,9 @@ export function decide(
   const result = runScope(state.definition.steps, state.definition.edges, "root", null);
   // A failed container cannot leave commands or agent turns running in its descendants.
   for (const s of state.stepRuns.filter(active)) {
-    let parent = s.parentId ? get(s.parentId) : null;
-    while (parent && !failed(parent)) parent = parent.parentId ? get(parent.parentId) : null;
+    let parent = s.parentStepRunId ? get(s.parentStepRunId) : null;
+    while (parent && !failed(parent))
+      parent = parent.parentStepRunId ? get(parent.parentStepRunId) : null;
     if (result === "failed" || parent) cancel(s, "flow_failed");
   }
   const activeStepRunIds = state.stepRuns.filter(active).map((s) => s.id);
@@ -633,7 +671,7 @@ export function decide(
     activeStepRunIds,
     startedAt: state.run.startedAt ?? trigger.at,
     finishedAt: result === "active" ? null : trigger.at,
-    error: result === "failed" ? fault("step_failed") : null,
+    error: result === "failed" ? fault("other", "step failed") : null,
   } satisfies FlowRunSummary;
   if (JSON.stringify(run) !== JSON.stringify(state.run)) {
     emit({ type: "run", run });

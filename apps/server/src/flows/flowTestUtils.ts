@@ -20,6 +20,8 @@ export function initialState(definition: FlowDefinition, inputs: FlowInputs = {}
       id: FlowRunId.make("flow-run-1"),
       projectId: ProjectId.make("project-1"),
       flowId: FlowId.make("flow"),
+      runNumber: 1,
+      flowTitle: definition.title,
       flowRunThreadId: ThreadId.make("parent"),
       status: "starting",
       activeStepRunIds: [],

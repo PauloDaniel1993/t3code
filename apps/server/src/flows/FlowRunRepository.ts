@@ -14,6 +14,8 @@ import {
   FlowStepRunId,
   FlowStepOutput,
   type FlowRunId,
+  type FlowRunsCursor,
+  type FlowRunsPage,
   type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -34,7 +36,7 @@ export class FlowPersistenceError extends Schema.TaggedError<FlowPersistenceErro
 export class FlowRunRepository extends Context.Service<
   FlowRunRepository,
   {
-    readonly create: (state: State) => Effect.Effect<void, FlowPersistenceError>;
+    readonly create: (state: State) => Effect.Effect<FlowRunSummary, FlowPersistenceError>;
     readonly read: (id: FlowRunId) => Effect.Effect<State | null, FlowPersistenceError>;
     readonly apply: (
       id: FlowRunId,
@@ -42,7 +44,8 @@ export class FlowRunRepository extends Context.Service<
     ) => Effect.Effect<void, FlowPersistenceError>;
     readonly list: (
       projectId: ProjectId,
-    ) => Effect.Effect<ReadonlyArray<FlowRunSummary>, FlowPersistenceError>;
+      before?: FlowRunsCursor,
+    ) => Effect.Effect<FlowRunsPage, FlowPersistenceError>;
     readonly stepOutput: (
       id: FlowStepRunId,
     ) => Effect.Effect<StepRun["output"], FlowPersistenceError>;
@@ -52,9 +55,9 @@ export class FlowRunRepository extends Context.Service<
 
 const StoredStepRun = Schema.Struct({
   ...FlowStepRun.fields,
-  parentId: Schema.NullOr(FlowStepRunId),
   scope: Schema.String,
   superseded: Schema.optional(Schema.Boolean),
+  cancelReason: Schema.optional(Schema.Literals(["stopped", "flow_failed", "retry_dependency"])),
   reportReceived: Schema.optional(Schema.Boolean),
   reminderSent: Schema.optional(Schema.Boolean),
   lastSettledTurnId: Schema.optional(Schema.String),
@@ -96,7 +99,7 @@ const make = Effect.gen(function* () {
         }>`SELECT flow_run_id FROM flow_step_runs WHERE id = ${s.id}`;
         if (existing[0] && existing[0].flow_run_id !== id)
           return yield* new FlowPersistenceError({ operation: "step ownership", cause: null });
-        yield* sql`INSERT INTO flow_step_runs ${sql.insert({ id: s.id, flow_run_id: id, step_path: JSON.stringify(s.stepPath), iteration: s.iteration ?? null, item_index: s.itemIndex ?? null, attempt: s.attempt, status: s.status, thread_id: s.threadId, output: JSON.stringify(s.output), error: JSON.stringify(s.error), created_at: s.createdAt, started_at: s.startedAt, finished_at: s.finishedAt, state_json: JSON.stringify(s) })}
+        yield* sql`INSERT INTO flow_step_runs ${sql.insert({ id: s.id, flow_run_id: id, parent_step_run_id: s.parentStepRunId, step_path: JSON.stringify(s.stepPath), iteration: s.iteration ?? null, item_index: s.itemIndex ?? null, attempt: s.attempt, status: s.status, thread_id: s.threadId, output: JSON.stringify(s.output), error: JSON.stringify(s.error), created_at: s.createdAt, started_at: s.startedAt, finished_at: s.finishedAt, state_json: JSON.stringify(s) })}
           ON CONFLICT(id) DO UPDATE SET status = excluded.status, thread_id = excluded.thread_id, output = excluded.output, error = excluded.error, started_at = excluded.started_at, finished_at = excluded.finished_at, state_json = excluded.state_json`;
       } else {
         const a = t.approval;
@@ -171,15 +174,25 @@ const make = Effect.gen(function* () {
   return FlowRunRepository.of({
     create: Effect.fn("FlowRunRepository.create")(function* (state) {
       const r = state.run;
-      yield* protect(
+      return yield* protect(
         "create",
         sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`INSERT INTO flow_runs ${sql.insert({ id: r.id, project_id: r.projectId, flow_id: r.flowId, flow_run_thread_id: r.flowRunThreadId, definition_snapshot: JSON.stringify(state.definition), inputs: JSON.stringify(state.inputs), base_ref: state.baseRef, workspace: state.workspace, status: r.status, error: JSON.stringify(r.error), created_at: r.createdAt, started_at: r.startedAt, finished_at: r.finishedAt, scheduled_task_id: r.scheduledTaskId ?? null, summary_json: JSON.stringify(r) })}`;
+            const [number] = yield* sql<{ last_number: number }>`INSERT INTO flow_run_numbers
+              (project_id, flow_id, last_number) VALUES (${r.projectId}, ${r.flowId}, 1)
+              ON CONFLICT(project_id, flow_id) DO UPDATE SET last_number = last_number + 1
+              RETURNING last_number`;
+            const summary = {
+              ...r,
+              runNumber: number!.last_number,
+              flowTitle: state.definition.title,
+            };
+            yield* sql`INSERT INTO flow_runs ${sql.insert({ id: r.id, project_id: r.projectId, flow_id: r.flowId, run_number: summary.runNumber, flow_title: summary.flowTitle, flow_run_thread_id: r.flowRunThreadId, definition_snapshot: JSON.stringify(state.definition), inputs: JSON.stringify(state.inputs), base_ref: state.baseRef, workspace: state.workspace, status: r.status, error: JSON.stringify(r.error), created_at: r.createdAt, started_at: r.startedAt, finished_at: r.finishedAt, scheduled_task_id: r.scheduledTaskId ?? null, summary_json: JSON.stringify(summary) })}`;
             yield* write(r.id, [
               ...state.stepRuns.map((step): Transition => ({ type: "step", step })),
               ...state.approvals.map((approval): Transition => ({ type: "approval", approval })),
             ]);
+            return summary;
           }),
         ),
       );
@@ -188,14 +201,26 @@ const make = Effect.gen(function* () {
     apply: Effect.fn("FlowRunRepository.apply")((id, transitions) =>
       protect("apply", sql.withTransaction(write(id, transitions))),
     ),
-    list: Effect.fn("FlowRunRepository.list")(function* (projectId) {
+    list: Effect.fn("FlowRunRepository.list")(function* (projectId, before) {
       const rows = yield* protect(
         "list",
-        sql<{
-          summary_json: string;
-        }>`SELECT summary_json FROM flow_runs WHERE project_id = ${projectId} ORDER BY created_at DESC, id`,
+        before
+          ? sql<{
+              summary_json: string;
+            }>`SELECT summary_json FROM flow_runs WHERE project_id = ${projectId}
+            AND (created_at < ${before.createdAt} OR (created_at = ${before.createdAt} AND id < ${before.id}))
+            ORDER BY created_at DESC, id DESC LIMIT 51`
+          : sql<{
+              summary_json: string;
+            }>`SELECT summary_json FROM flow_runs WHERE project_id = ${projectId}
+            ORDER BY created_at DESC, id DESC LIMIT 51`,
       );
-      return yield* parse(() => rows.map((row) => decodeRun(row.summary_json)));
+      const runs = yield* parse(() => rows.slice(0, 50).map((row) => decodeRun(row.summary_json)));
+      const last = runs.at(-1);
+      return {
+        runs,
+        nextCursor: rows.length > 50 && last ? { createdAt: last.createdAt, id: last.id } : null,
+      };
     }),
     stepOutput: Effect.fn("FlowRunRepository.stepOutput")(function* (id) {
       const rows = yield* protect(

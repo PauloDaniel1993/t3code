@@ -89,6 +89,26 @@ it.live("captures stdout lines, stderr, nonzero exit and output tail", () =>
     expect(result.timedOut).toBe(false);
     expect(result.lines).toEqual(["first"]);
     expect(result.text).toContain("problem");
+    expect(result).toMatchObject({ kind: "command", lineCount: 1 });
+    const value = "$(echo unexpected); & | literal";
+    const environment = yield* runner.run({
+      workspace: root,
+      env: { FLOW_VALUE: value },
+      command:
+        platform === "win32"
+          ? "[Console]::Out.WriteLine($env:FLOW_VALUE)"
+          : 'printf "%s\\n" "$FLOW_VALUE"',
+    });
+    expect(environment.lines).toEqual([value]);
+    const manyLines = yield* runner.run({
+      workspace: root,
+      command:
+        platform === "win32"
+          ? "1..250 | ForEach-Object { [Console]::Out.WriteLine($_) }"
+          : "for i in $(seq 1 250); do printf '%s\\n' \"$i\"; done",
+    });
+    expect(manyLines.lines).toHaveLength(200);
+    expect(manyLines.lineCount).toBe(250);
     const large =
       platform === "win32"
         ? "[Console]::Out.Write(('x' * 20000) + 'TAIL')"

@@ -29,6 +29,7 @@ export class FlowCommandRunner extends Context.Service<
   {
     readonly run: (input: {
       readonly command: string;
+      readonly env?: Readonly<Record<string, string>>;
       readonly workspace: string;
       readonly cwd?: string;
       readonly timeoutMs?: number;
@@ -82,7 +83,26 @@ const make = Effect.gen(function* () {
             ? ["/d", "/s", "/c", input.command]
             : ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", input.command];
       let tail = "";
-      let stdout = "";
+      const lines: string[] = [];
+      let line = "";
+      let nonEmpty = false;
+      let lineCount = 0;
+      const finishLine = () => {
+        if (nonEmpty) {
+          lineCount++;
+          if (lines.length < 200) lines.push(line.replace(/\r$/, ""));
+        }
+        line = "";
+        nonEmpty = false;
+      };
+      const stdout = (text: string) => {
+        const parts = text.split("\n");
+        for (const [index, part] of parts.entries()) {
+          if (index > 0) finishLine();
+          nonEmpty ||= part.trim().length > 0;
+          if (line.length < 4096) line += part.slice(0, 4096 - line.length);
+        }
+      };
       const outDecoder = new TextDecoder();
       const errDecoder = new TextDecoder();
       const append = (text: string) => {
@@ -93,6 +113,7 @@ const make = Effect.gen(function* () {
           command: shell,
           args,
           cwd,
+          env: input.env,
           timeout: input.timeoutMs ?? 600_000,
           timeoutBehavior: "timedOutResult",
           outputMode: "truncate",
@@ -100,17 +121,22 @@ const make = Effect.gen(function* () {
           onStdoutChunk: (chunk) => {
             const text = outDecoder.decode(chunk, { stream: true });
             append(text);
-            if (stdout.split(/\r?\n/).length <= 200) stdout = (stdout + text).slice(0, 200 * 4096);
+            stdout(text);
           },
           onStderrChunk: (chunk) => append(errDecoder.decode(chunk, { stream: true })),
         })
         .pipe(Effect.mapError((cause) => new FlowCommandError({ cause })));
-      append(outDecoder.decode());
+      const remaining = outDecoder.decode();
+      append(remaining);
+      stdout(remaining);
+      finishLine();
       append(errDecoder.decode());
       return {
+        kind: "command",
         exitCode: result.code,
         timedOut: result.timedOut,
-        ...capFlowCommandOutput(tail, stdout),
+        ...capFlowCommandOutput(tail, lines.join("\n")),
+        lineCount,
       };
     }),
   });

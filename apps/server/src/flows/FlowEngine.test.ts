@@ -20,7 +20,7 @@ function trace(definition: FlowDefinition, inputs: FlowInputs = {}) {
   const row = (id: string) =>
     state.stepRuns.findLast((s) => !s.superseded && s.stepPath.at(-1) === id)!;
   let turn = 0;
-  const settle = (id: string, error?: string) =>
+  const settle = (id: string, error?: "turn_failed") =>
     send({
       type: "step_thread_settled",
       turnId: `turn-${turn++}`,
@@ -34,7 +34,7 @@ function trace(definition: FlowDefinition, inputs: FlowInputs = {}) {
       type: "command_finished",
       at,
       stepRunId: row(id).id,
-      output: { text: id, exitCode: code, timedOut, lines: [id] },
+      output: { kind: "command", lineCount: 1, text: id, exitCode: code, timedOut, lines: [id] },
     });
   send({ type: "start", at });
   return {
@@ -56,6 +56,143 @@ const graph = (
 ): FlowDefinition => ({ version: 1, title: "Test", steps, edges });
 
 describe("FlowEngine decision traces", () => {
+  it.each([false, true])("sameAs falls back when target has no thread, skipped=%s", (skipped) => {
+    const t = trace(
+      graph(
+        [
+          agent("entry"),
+          agent("target"),
+          {
+            id: "reuse",
+            kind: "agent",
+            thread: { sameAs: "target" },
+            prompt: "{{steps.target.output.text}}",
+          },
+        ],
+        [
+          { from: "entry", to: "target", when: { ref: "inputs.take", op: "eq", value: true } },
+          { from: "target", to: "reuse" },
+          { from: "entry", to: "reuse" },
+        ],
+      ),
+      { take: !skipped },
+    );
+    t.settle("entry");
+    if (!skipped) t.settle("target");
+    expect(t.row("reuse")).toMatchObject({
+      status: "running",
+      threadId: null,
+      error: { code: "other", message: "sameAs target target had no thread" },
+    });
+    expect(t.actions.find((a) => a.type === "launch_step_thread")).toMatchObject({
+      prompt: skipped ? "" : "target result",
+    });
+  });
+
+  it("keeps commands literal and renders environment values", () => {
+    const t = trace(
+      graph([
+        {
+          id: "cmd",
+          kind: "command",
+          command: "echo $INPUT",
+          env: { INPUT: "{{inputs.value}}", LINES: "{{inputs.lines}}" },
+        },
+      ]),
+      { value: "$(touch surprise)", lines: ["one", "two"] },
+    );
+    expect(t.actions[0]).toMatchObject({
+      type: "start_command",
+      command: "echo $INPUT",
+      env: { INPUT: "$(touch surprise)", LINES: "one\ntwo" },
+    });
+  });
+
+  it("never starts concurrent steps on the same existing thread", () => {
+    const t = trace(
+      graph(
+        [
+          agent("entry"),
+          { id: "left", kind: "agent", prompt: "left", thread: { sameAs: "entry" } },
+          { id: "right", kind: "agent", prompt: "right", thread: { sameAs: "entry" } },
+        ],
+        [
+          { from: "entry", to: "left" },
+          { from: "entry", to: "right" },
+        ],
+      ),
+    );
+    t.send({
+      type: "thread_started",
+      at,
+      stepRunId: t.row("entry").id,
+      threadId: ThreadId.make("shared"),
+    });
+    t.settle("entry");
+    expect(t.actions.filter((action) => action.type === "continue_thread")).toHaveLength(1);
+    expect(t.row("right").error?.message).toBe("Thread already has an active flow step");
+    expect(t.state.run.status).toBe("failed");
+  });
+
+  it("rejects a truncated command list before starting map children", () => {
+    const t = trace(
+      graph(
+        [
+          command("cmd"),
+          {
+            id: "map",
+            kind: "map",
+            over: "steps.cmd.output.lines",
+            maxItems: 500,
+            steps: [agent("child")],
+            edges: [],
+          },
+        ],
+        [{ from: "cmd", to: "map" }],
+      ),
+    );
+    t.send({
+      type: "command_finished",
+      at,
+      stepRunId: t.row("cmd").id,
+      output: {
+        kind: "command",
+        lineCount: 300,
+        lines: ["one"],
+        text: "",
+        exitCode: 0,
+        timedOut: false,
+      },
+    });
+    expect(t.row("map").status).toBe("failed");
+    expect(t.row("map").error?.code).toBe("max_items");
+    expect(t.state.stepRuns.some((s) => s.stepPath.at(-1) === "child")).toBe(false);
+  });
+
+  it("nested children carry only their own coordinates and their exact parent", () => {
+    const t = trace(
+      graph([
+        {
+          id: "outer",
+          kind: "loop",
+          maxIterations: 2,
+          until: { ref: "iteration", op: "eq", value: 1 },
+          steps: [
+            { id: "map", kind: "map", over: "inputs.items", steps: [agent("child")], edges: [] },
+          ],
+          edges: [],
+        },
+      ]),
+      { items: ["one"] },
+    );
+    const first = t.row("child");
+    expect(first).toMatchObject({ parentStepRunId: t.row("map").id, itemIndex: 0 });
+    expect(first.iteration).toBeUndefined();
+    t.settle("child");
+    const second = t.row("child");
+    expect(second.parentStepRunId).not.toBe(first.parentStepRunId);
+    expect(t.row("map")).toMatchObject({ parentStepRunId: t.row("outer").id, iteration: 1 });
+  });
   it("retry invalidates later loop iterations before continuing from the failed iteration", () => {
     const t = trace(
       graph([
@@ -69,7 +206,7 @@ describe("FlowEngine decision traces", () => {
         },
       ]),
     );
-    t.settle("a", "failed");
+    t.settle("a", "turn_failed");
     const failedId = t.row("a").id;
     t.settle("recovery");
     t.settle("a");
@@ -100,7 +237,7 @@ describe("FlowEngine decision traces", () => {
         [{ from: "a", to: "loop", on: "failure" }],
       ),
     );
-    t.settle("a", "failed");
+    t.settle("a", "turn_failed");
     expect(t.row("b").status).toBe("running");
     t.send({ type: "retry_step", at, stepRunId: t.row("a").id });
     expect(
@@ -211,7 +348,7 @@ describe("FlowEngine decision traces", () => {
       ]),
       { items: ["one"] },
     );
-    t.settle("a", "failed");
+    t.settle("a", "turn_failed");
     expect(t.row("cmd").status).toBe("cancelled");
     expect(t.actions.map((a) => a.type)).toContain("kill_command");
     expect(t.state.run.status).toBe("succeeded");
@@ -232,7 +369,7 @@ describe("FlowEngine decision traces", () => {
         agent("parallel"),
       ]),
     );
-    t.settle("a", "failed");
+    t.settle("a", "turn_failed");
     expect(t.row("parallel").status).toBe("cancelled");
     t.send({ type: "retry_step", at, stepRunId: t.row("a").id });
     expect(t.row("parallel").status).toBe("running");
@@ -350,7 +487,7 @@ describe("FlowEngine decision traces", () => {
         ],
       ),
     );
-    t.settle("a", "provider_failed");
+    t.settle("a", "turn_failed");
     expect(t.state.run.status).toBe(handled ? "running" : "failed");
     expect(t.row("success").status).toBe("skipped");
     if (handled) {
@@ -375,7 +512,7 @@ describe("FlowEngine decision traces", () => {
     expect(t.actions.filter((a) => a.type === "send_reminder")).toHaveLength(1);
     t.send({ type: "report_received", at, stepRunId: t.row("a").id, fields: { ok: true } });
     t.settle("a");
-    expect(t.row("a").output).toEqual({ text: "a result", ok: true });
+    expect(t.row("a").output).toEqual({ kind: "agent", text: "a result", ok: true });
     expect(t.state.run.status).toBe("succeeded");
     const missing = trace(graph([step]));
     missing.settle("a");
@@ -415,9 +552,10 @@ describe("FlowEngine decision traces", () => {
       t.settle("a");
     }
     expect(t.row("loop").output).toEqual({
+      kind: "loop",
       iterations: maxIterations,
       exitReason: "maxIterations",
-      a: { text: "a result" },
+      a: { kind: "agent", text: "a result" },
     });
   });
 
@@ -511,7 +649,7 @@ describe("FlowEngine decision traces", () => {
         at,
         stepRunId: leaves()[1]!.id,
         text: "second",
-        error: { code: "failed", message: "failed" },
+        error: { code: "turn_failed", message: "failed" },
       });
       if (onItemFailure === "fail") {
         expect(t.state.run.status).toBe("failed");
@@ -533,10 +671,11 @@ describe("FlowEngine decision traces", () => {
           text: "first",
         });
         expect(t.row("map").output).toEqual({
+          kind: "map",
           items: [
-            { status: "succeeded", outputs: { a: { text: "first" } } },
-            { status: "failed", outputs: { a: { text: "second" } } },
-            { status: "succeeded", outputs: { a: { text: "third" } } },
+            { status: "succeeded", outputs: { a: { kind: "agent", text: "first" } } },
+            { status: "failed", outputs: { a: { kind: "agent", text: "second" } } },
+            { status: "succeeded", outputs: { a: { kind: "agent", text: "third" } } },
           ],
         });
       }
@@ -603,7 +742,7 @@ describe("FlowEngine decision traces", () => {
       graph([agent("a"), agent("b"), agent("independent")], [{ from: "a", to: "b" }]),
     );
     t.settle("independent");
-    t.settle("a", "provider_failed");
+    t.settle("a", "turn_failed");
     t.send({ type: "retry_step", at, stepRunId: t.row("a").id });
     expect(t.row("a").attempt).toBe(2);
     expect(t.row("independent").attempt).toBe(1);

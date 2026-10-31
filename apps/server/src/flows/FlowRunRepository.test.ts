@@ -3,7 +3,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
-import { FlowStepRunId } from "@t3tools/contracts";
+import { FlowRunId, FlowStepRunId, ThreadId, ProjectId } from "@t3tools/contracts";
 import FlowMigration from "../persistence/ForkMigrations/013_FlowRuns.ts";
 import ScheduleMigration from "../persistence/ForkMigrations/014_ScheduledTaskFlow.ts";
 import * as FlowRunRepository from "./FlowRunRepository.ts";
@@ -39,7 +39,7 @@ it.effect(
       yield* repository.apply(state.run.id, decision.transitions);
       const expected = applyTransitions(state, decision.transitions);
       expect(yield* repository.read(state.run.id)).toEqual(expected);
-      expect(yield* repository.list(state.run.projectId)).toEqual([expected.run]);
+      expect((yield* repository.list(state.run.projectId)).runs).toEqual([expected.run]);
       const step = expected.stepRuns[0]!;
       const answer = decide(expected, {
         type: "approval_answered",
@@ -49,7 +49,10 @@ it.effect(
         answeredBy: "tester",
       });
       yield* repository.apply(state.run.id, answer.transitions);
-      expect(yield* repository.stepOutput(step.id)).toEqual({ decision: "approve" });
+      expect(yield* repository.stepOutput(step.id)).toEqual({
+        kind: "approval",
+        decision: "approve",
+      });
       const rollback = yield* repository
         .apply(state.run.id, [
           { type: "run", run: { ...expected.run, status: "failed" } },
@@ -67,6 +70,77 @@ it.effect(
       expect(yield* sql`SELECT * FROM flow_approvals`).toEqual([]);
       yield* repository.create(state);
       yield* repository.deleteForThread(state.run.flowRunThreadId);
-      expect(yield* repository.list(state.run.projectId)).toEqual([]);
+      expect((yield* repository.list(state.run.projectId)).runs).toEqual([]);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "allocates stable per-flow numbers and pages tied timestamps without losing nested identity",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
+      yield* FlowMigration;
+      const repository = yield* FlowRunRepository.FlowRunRepository;
+      const initial = initialState({
+        version: 1,
+        title: "Snapshot title",
+        steps: [
+          {
+            id: "loop",
+            kind: "loop",
+            maxIterations: 1,
+            until: { ref: "iteration", op: "eq", value: 0 },
+            steps: [{ id: "gate", kind: "approval", prompt: "Approve?" }],
+            edges: [],
+          },
+        ],
+        edges: [],
+      });
+      for (let i = 1; i <= 52; i++) {
+        const id = String(i).padStart(3, "0");
+        const summary = yield* repository.create({
+          ...initial,
+          run: {
+            ...initial.run,
+            id: FlowRunId.make(id),
+            flowRunThreadId: ThreadId.make(id),
+            flowTitle: "Stale title",
+            runNumber: 99,
+          },
+        });
+        expect(summary).toMatchObject({ runNumber: i, flowTitle: "Snapshot title" });
+      }
+      const page = yield* repository.list(initial.run.projectId);
+      expect(page.runs).toHaveLength(50);
+      expect(page.runs[0]?.runNumber).toBe(52);
+      expect(page.nextCursor).not.toBeNull();
+      const older = yield* repository.list(initial.run.projectId, page.nextCursor!);
+      expect(older.runs.map((r) => r.runNumber)).toEqual([2, 1]);
+      expect(older.nextCursor).toBeNull();
+      yield* repository.deleteForThread(ThreadId.make("052"));
+      const summary = yield* repository.create(initial);
+      expect(summary.runNumber).toBe(53);
+      const state = { ...initial, run: summary };
+      const decision = decide(state, { type: "start", at: summary.createdAt });
+      yield* repository.apply(summary.id, decision.transitions);
+      const restored = yield* repository.read(summary.id);
+      const parent = restored?.stepRuns.find((s) => s.stepPath.at(-1) === "loop");
+      const child = restored?.stepRuns.find((s) => s.stepPath.at(-1) === "gate");
+      expect(child).toMatchObject({ parentStepRunId: parent?.id, iteration: 0 });
+      expect(
+        yield* sql`SELECT parent_step_run_id FROM flow_step_runs WHERE id = ${child!.id}`,
+      ).toEqual([{ parent_step_run_id: parent!.id }]);
+      const otherProject = yield* repository.create({
+        ...initial,
+        run: {
+          ...initial.run,
+          id: FlowRunId.make("other"),
+          flowRunThreadId: ThreadId.make("other"),
+          projectId: ProjectId.make("other"),
+        },
+      });
+      expect(otherProject.runNumber).toBe(1);
     }).pipe(Effect.provide(testLayer)),
 );
