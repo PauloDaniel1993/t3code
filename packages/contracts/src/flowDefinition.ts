@@ -115,6 +115,9 @@ export const FlowCommandStep = Schema.Struct({
   id: FlowStepId,
   kind: Schema.Literal("command"),
   command: Schema.String,
+  env: Schema.optional(
+    Schema.Record(Schema.String.check(Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/)), Schema.String),
+  ),
   cwd: Schema.optional(Schema.String),
   timeoutMs: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
 });

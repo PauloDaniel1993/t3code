@@ -1,6 +1,6 @@
-import { FlowScheduledTarget } from "./flowDefinition.ts";
 import * as Schema from "effect/Schema";
 
+import { FlowScheduledTarget } from "./flowDefinition.ts";
 import {
   CommandId,
   ForwardCompatibleArray,
@@ -196,7 +196,6 @@ export const ScheduledTaskWebhookEndpoint = Schema.Struct({
 export type ScheduledTaskWebhookEndpoint = typeof ScheduledTaskWebhookEndpoint.Type;
 
 export const ScheduledTask = Schema.Struct({
-  flow: Schema.optional(FlowScheduledTarget),
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
   prompt: TrimmedNonEmptyString,
@@ -218,6 +217,7 @@ export const ScheduledTask = Schema.Struct({
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
+  flow: Schema.optional(FlowScheduledTarget),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -230,7 +230,6 @@ export const ScheduledTaskListResult = Schema.Struct({
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 
 export const ScheduledTaskUpsertInput = Schema.Struct({
-  flow: Schema.optional(FlowScheduledTarget),
   id: Schema.optional(ScheduledTaskId),
   requireExisting: Schema.optional(Schema.Boolean).annotate({
     description: "Reject the save if the task no longer exists, for edits from a client form.",
@@ -248,6 +247,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  flow: Schema.optional(FlowScheduledTarget),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

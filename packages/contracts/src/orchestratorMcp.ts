@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { FlowScheduledTarget } from "./flowDefinition.ts";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { AuthMcpClientAccess } from "./auth.ts";
@@ -680,6 +681,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  flow: Schema.optional(FlowScheduledTarget),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
 
@@ -713,6 +715,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
       "Public URL for the sender. Absent: no T3 Connect tunnel. The user must enable T3 Connect remote access.",
   }),
   webhookSignature: Schema.optional(Schema.Literals(["none", "set"])),
+  flow: Schema.optional(FlowScheduledTarget),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -750,6 +753,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
         "Launch strategy for an unbound task only. Omitted preserves the strategy on ordinary edits; unbinding without a strategy selects a fresh worktree from origin/main. Bound tasks reject this field.",
     }),
   ),
+  flow: Schema.optional(FlowScheduledTarget),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

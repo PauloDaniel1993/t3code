@@ -7,6 +7,7 @@ export const flowRpcHandlers = {
   [FLOW_WS_METHODS.flowList]: () => Stream.fromEffect(unavailable()),
   [FLOW_WS_METHODS.flowRuns]: () => Stream.fromEffect(unavailable()),
   [FLOW_WS_METHODS.flowRun]: () => Stream.fromEffect(unavailable()),
+  [FLOW_WS_METHODS.flowRunsPage]: unavailable,
   [FLOW_WS_METHODS.flowSave]: unavailable,
   [FLOW_WS_METHODS.flowRename]: unavailable,
   [FLOW_WS_METHODS.flowDelete]: unavailable,

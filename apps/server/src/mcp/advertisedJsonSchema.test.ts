@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
+import { FlowMcpInput } from "@t3tools/contracts";
 import { Tool } from "effect/ai";
 
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
@@ -41,5 +42,26 @@ it("drops JSON noise, merges tagged unions, and keeps null where it is required"
       },
     },
     required: ["beforeRunId", "every"],
+  });
+});
+
+it("advertises t3_flow as a top-level object", () => {
+  expect(advertisedJsonSchema(Tool.make("t3_flow", { parameters: FlowMcpInput }))).toMatchObject({
+    type: "object",
+    required: ["action"],
+    properties: {
+      action: {
+        enum: [
+          "list",
+          "validate",
+          "start",
+          "read_run",
+          "stop",
+          "resume",
+          "retry_step",
+          "answer_approval",
+        ],
+      },
+    },
   });
 });

@@ -8,7 +8,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { FlowId, FlowValue } from "./flowDefinition.ts";
+import { FlowDefinition, FlowId, FlowInputs, FlowValue } from "./flowDefinition.ts";
 
 export const FlowRunId = TrimmedNonEmptyString.pipe(Schema.brand("FlowRunId"));
 export type FlowRunId = typeof FlowRunId.Type;
@@ -37,41 +37,38 @@ export const FlowStepRunStatus = Schema.Literals([
 export type FlowStepRunStatus = typeof FlowStepRunStatus.Type;
 export const FlowApprovalDecision = Schema.Literals(["approve", "reject"]);
 const OutputRef = Schema.suspend((): Schema.Codec<FlowStepOutput> => FlowStepOutput);
-export const FlowAgentOutput = Schema.StructWithRest(Schema.Struct({ text: Schema.String }), [
-  Schema.Record(Schema.String, FlowValue),
-]);
+export const FlowAgentOutput = Schema.StructWithRest(
+  Schema.Struct({ kind: Schema.Literal("agent"), text: Schema.String }),
+  [Schema.Record(Schema.String, FlowValue)],
+);
 export const FlowCommandOutput = Schema.Struct({
+  kind: Schema.Literal("command"),
+  lineCount: NonNegativeInt,
   exitCode: Schema.NullOr(Schema.Int),
   timedOut: Schema.Boolean,
   text: Schema.String,
   lines: Schema.Array(Schema.String),
 });
 export const FlowApprovalOutput = Schema.Struct({
+  kind: Schema.Literal("approval"),
   decision: FlowApprovalDecision,
   comment: Schema.optional(Schema.String),
 });
 export const FlowLoopOutput = Schema.StructWithRest(
   Schema.Struct({
+    kind: Schema.Literal("loop"),
     iterations: NonNegativeInt,
     exitReason: Schema.Literals(["condition", "maxIterations"]),
   }),
   [
     Schema.Record(
-      Schema.String,
-      Schema.Union([OutputRef, NonNegativeInt, Schema.Literals(["condition", "maxIterations"])]),
+      Schema.String.check(Schema.isPattern(/^(?!(?:kind|iterations|exitReason)$).+$/)),
+      OutputRef,
     ),
   ],
-).check(
-  Schema.makeFilter((output) =>
-    Object.entries(output).every(
-      ([key, value]) =>
-        key === "iterations" ||
-        key === "exitReason" ||
-        (typeof value === "object" && value !== null),
-    ),
-  ),
 );
 export const FlowMapOutput = Schema.Struct({
+  kind: Schema.Literal("map"),
   items: Schema.Array(
     Schema.Struct({ status: FlowStepRunStatus, outputs: Schema.Record(Schema.String, OutputRef) }),
   ),
@@ -84,22 +81,33 @@ export const FlowStepOutput = Schema.Union([
   FlowAgentOutput,
 ]);
 export type FlowStepOutput =
-  | ({ readonly text: string } & Readonly<Record<string, FlowValue>>)
+  | ({ readonly kind: "agent"; readonly text: string } & Readonly<Record<string, FlowValue>>)
   | typeof FlowCommandOutput.Type
   | typeof FlowApprovalOutput.Type
   | {
+      readonly kind: "loop";
       readonly iterations: number;
       readonly exitReason: "condition" | "maxIterations";
-      readonly [key: string]: FlowStepOutput | number | "condition" | "maxIterations";
+      readonly [key: string]: FlowStepOutput | number | "loop" | "condition" | "maxIterations";
     }
   | {
+      readonly kind: "map";
       readonly items: ReadonlyArray<{
         readonly status: FlowStepRunStatus;
         readonly outputs: Readonly<Record<string, FlowStepOutput>>;
       }>;
     };
 export const FlowRunError = Schema.Struct({
-  code: Schema.String,
+  code: Schema.Literals([
+    "missing_report",
+    "interrupted",
+    "command_timeout",
+    "command_error",
+    "turn_failed",
+    "turn_cancelled",
+    "max_items",
+    "other",
+  ]),
   message: Schema.String,
   path: Schema.optional(Schema.String),
 });
@@ -112,6 +120,8 @@ export const FlowRunSummary = Schema.Struct({
   id: FlowRunId,
   projectId: ProjectId,
   flowId: FlowId,
+  runNumber: PositiveInt,
+  flowTitle: Schema.String,
   flowRunThreadId: ThreadId,
   status: FlowRunStatus,
   activeStepRunIds: Schema.Array(FlowStepRunId),
@@ -123,6 +133,10 @@ export type FlowRunSummary = typeof FlowRunSummary.Type;
 export const FlowStepRun = Schema.Struct({
   id: FlowStepRunId,
   flowRunId: FlowRunId,
+  parentStepRunId: Schema.NullOr(FlowStepRunId).annotate({
+    description:
+      "Enclosing container step run, or null at the top level. Full iteration/item coordinates follow the parent chain.",
+  }),
   stepPath: Schema.Array(Schema.String),
   iteration: Schema.optional(NonNegativeInt),
   itemIndex: Schema.optional(NonNegativeInt),
@@ -143,55 +157,64 @@ export const FlowApproval = Schema.Struct({
   answeredAt: Schema.NullOr(IsoDateTime),
 });
 export type FlowApproval = typeof FlowApproval.Type;
-const FieldsRef = Schema.suspend((): Schema.Codec<FlowOutputFields> => FlowOutputFields);
 export const FlowOutputFields = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("agent"),
-    fields: Schema.Record(Schema.String.check(Schema.isPattern(/^(?!text$).+$/)), FlowValue),
+    fields: Schema.Record(
+      Schema.String.check(Schema.isPattern(/^(?!(?:text|kind)$).+$/)),
+      FlowValue,
+    ),
   }),
-  Schema.Struct({ kind: Schema.Literal("command") }),
-  Schema.Struct({ kind: Schema.Literal("approval"), ...FlowApprovalOutput.fields }),
+  Schema.Struct({
+    kind: Schema.Literal("command"),
+    exitCode: Schema.NullOr(Schema.Int),
+    timedOut: Schema.Boolean,
+    lineCount: NonNegativeInt,
+  }),
+  FlowApprovalOutput,
   Schema.Struct({
     kind: Schema.Literal("loop"),
     iterations: NonNegativeInt,
     exitReason: Schema.Literals(["condition", "maxIterations"]),
-    steps: Schema.Record(Schema.String, FieldsRef),
   }),
   Schema.Struct({
     kind: Schema.Literal("map"),
-    items: Schema.Array(
-      Schema.Struct({
-        status: FlowStepRunStatus,
-        outputs: Schema.Record(Schema.String, FieldsRef),
-      }),
-    ),
+    items: Schema.Array(Schema.Struct({ status: FlowStepRunStatus })),
   }),
 ]);
-export type FlowOutputFields =
-  | { readonly kind: "agent"; readonly fields: Readonly<Record<string, FlowValue>> }
-  | { readonly kind: "command" }
-  | ({ readonly kind: "approval" } & typeof FlowApprovalOutput.Type)
-  | {
-      readonly kind: "loop";
-      readonly iterations: number;
-      readonly exitReason: "condition" | "maxIterations";
-      readonly steps: Readonly<Record<string, FlowOutputFields>>;
-    }
-  | {
-      readonly kind: "map";
-      readonly items: ReadonlyArray<{
-        readonly status: FlowStepRunStatus;
-        readonly outputs: Readonly<Record<string, FlowOutputFields>>;
-      }>;
-    };
+export type FlowOutputFields = typeof FlowOutputFields.Type;
 export const FlowStepRunState = Schema.Struct({
   ...FlowStepRun.mapFields(({ output: _output, ...fields }) => fields).fields,
   outputFields: Schema.NullOr(FlowOutputFields),
 });
 export type FlowStepRunState = typeof FlowStepRunState.Type;
 export const FlowRunSnapshot = Schema.Struct({
+  definition: FlowDefinition,
+  inputs: FlowInputs,
   summary: FlowRunSummary,
   stepRuns: Schema.Array(FlowStepRunState),
   approvals: Schema.Array(FlowApproval),
 });
 export type FlowRunSnapshot = typeof FlowRunSnapshot.Type;
+
+export const FlowRunEvent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("snapshot"), ...FlowRunSnapshot.fields }),
+  Schema.Struct({
+    type: Schema.Literal("upsert"),
+    summary: Schema.optional(FlowRunSummary),
+    stepRuns: Schema.Array(FlowStepRunState),
+    approvals: Schema.Array(FlowApproval),
+  }),
+]);
+export type FlowRunEvent = typeof FlowRunEvent.Type;
+export const FlowRunsCursor = Schema.Struct({ createdAt: IsoDateTime, id: FlowRunId });
+export const FlowRunsPage = Schema.Struct({
+  runs: Schema.Array(FlowRunSummary).check(Schema.isMaxLength(50)),
+  nextCursor: Schema.NullOr(FlowRunsCursor),
+});
+export type FlowRunsPage = typeof FlowRunsPage.Type;
+export const FlowRunsEvent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("snapshot"), ...FlowRunsPage.fields }),
+  Schema.Struct({ type: Schema.Literal("upsert"), runs: Schema.Array(FlowRunSummary) }),
+]);
+export type FlowRunsEvent = typeof FlowRunsEvent.Type;

@@ -39,11 +39,6 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 export const RPC_REQUIRED_SCOPES = {
   ...CLIENT_GUARDED_RPC_SCOPES,
-  [WS_METHODS.flowList]: AuthOrchestrationReadScope,
-  [WS_METHODS.flowValidate]: AuthOrchestrationReadScope,
-  [WS_METHODS.flowRuns]: AuthOrchestrationReadScope,
-  [WS_METHODS.flowRun]: AuthOrchestrationReadScope,
-  [WS_METHODS.flowStepRunOutput]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
@@ -214,6 +209,12 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,
+  [WS_METHODS.flowList]: AuthOrchestrationReadScope,
+  [WS_METHODS.flowValidate]: AuthOrchestrationReadScope,
+  [WS_METHODS.flowRunsPage]: AuthOrchestrationReadScope,
+  [WS_METHODS.flowRuns]: AuthOrchestrationReadScope,
+  [WS_METHODS.flowRun]: AuthOrchestrationReadScope,
+  [WS_METHODS.flowStepRunOutput]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {

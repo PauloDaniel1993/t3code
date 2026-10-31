@@ -6,7 +6,10 @@ import { FlowDefinition, FlowId, FlowInputs, FlowValidationResult } from "./flow
 import {
   FlowApprovalDecision,
   FlowRunId,
-  FlowRunSnapshot,
+  FlowRunEvent,
+  FlowRunsCursor,
+  FlowRunsEvent,
+  FlowRunsPage,
   FlowRunSummary,
   FlowStepOutput,
   FlowStepRunId,
@@ -20,6 +23,7 @@ export const FLOW_WS_METHODS = {
   flowValidate: "flow.validate",
   flowStart: "flow.start",
   flowRuns: "flow.runs",
+  flowRunsPage: "flow.runsPage",
   flowRun: "flow.run",
   flowStepRunOutput: "flow.stepRunOutput",
   flowStop: "flow.stop",
@@ -58,6 +62,7 @@ export const FlowStartInput = Schema.Struct({
   inputs: FlowInputs,
   baseRef: Schema.optional(Schema.String),
 });
+export const FlowRunsPageInput = Schema.Struct({ projectId: ProjectId, before: FlowRunsCursor });
 export const FlowRunInput = Schema.Struct({ flowRunId: FlowRunId });
 export const FlowStepRunInput = Schema.Struct({ stepRunId: FlowStepRunId });
 export const FlowAnswerApprovalInput = Schema.Struct({
@@ -92,13 +97,18 @@ export const FlowRpcs = [
   Rpc.make(FLOW_WS_METHODS.flowStart, { payload: FlowStartInput, success: FlowRunSummary, error }),
   Rpc.make(FLOW_WS_METHODS.flowRuns, {
     payload: FlowListInput,
-    success: Schema.Struct({ runs: Schema.Array(FlowRunSummary) }),
+    success: FlowRunsEvent,
     error,
     stream: true,
   }),
+  Rpc.make(FLOW_WS_METHODS.flowRunsPage, {
+    payload: FlowRunsPageInput,
+    success: FlowRunsPage,
+    error,
+  }),
   Rpc.make(FLOW_WS_METHODS.flowRun, {
     payload: FlowRunInput,
-    success: FlowRunSnapshot,
+    success: FlowRunEvent,
     error,
     stream: true,
   }),

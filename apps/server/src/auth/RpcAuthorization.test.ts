@@ -5,6 +5,7 @@ import {
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
@@ -40,6 +41,25 @@ import * as RpcAuthorization from "./RpcAuthorization.ts";
 describe("RPC authorization scopes", () => {
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
+  });
+
+  it.each([
+    [WS_METHODS.flowList, AuthOrchestrationReadScope],
+    [WS_METHODS.flowValidate, AuthOrchestrationReadScope],
+    [WS_METHODS.flowRuns, AuthOrchestrationReadScope],
+    [WS_METHODS.flowRunsPage, AuthOrchestrationReadScope],
+    [WS_METHODS.flowRun, AuthOrchestrationReadScope],
+    [WS_METHODS.flowStepRunOutput, AuthOrchestrationReadScope],
+    [WS_METHODS.flowSave, AuthFilesystemWriteScope],
+    [WS_METHODS.flowRename, AuthFilesystemWriteScope],
+    [WS_METHODS.flowDelete, AuthFilesystemWriteScope],
+    [WS_METHODS.flowStart, AuthOrchestrationOperateScope],
+    [WS_METHODS.flowStop, AuthOrchestrationOperateScope],
+    [WS_METHODS.flowResume, AuthOrchestrationOperateScope],
+    [WS_METHODS.flowRetryStep, AuthOrchestrationOperateScope],
+    [WS_METHODS.flowAnswerApproval, AuthOrchestrationOperateScope],
+  ])("authorizes %s with %s", (method, scope) => {
+    expect(requiredScopeForRpcMethod(method)).toBe(scope);
   });
 
   it("requires operate access to stop a workflow", () => {

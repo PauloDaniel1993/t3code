@@ -37,6 +37,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.flowValidate]: "flow",
   [WS_METHODS.flowStart]: "flow",
   [WS_METHODS.flowRuns]: "flow",
+  [WS_METHODS.flowRunsPage]: "flow",
   [WS_METHODS.flowRun]: "flow",
   [WS_METHODS.flowStepRunOutput]: "flow",
   [WS_METHODS.flowStop]: "flow",

@@ -1,4 +1,3 @@
-import { flowRpcHandlers } from "./flows/FlowRpcHandlers.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -214,6 +213,7 @@ import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspaceFolderFiles from "./workspace/WorkspaceFolderFiles.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
+import { flowRpcHandlers } from "./flows/FlowRpcHandlers.ts";
 import { makeWayfinderRpcHandlers } from "./wayfinder/WayfinderRpcHandlers.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";

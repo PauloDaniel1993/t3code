@@ -7,6 +7,7 @@ const decodeDefinition = Schema.decodeUnknownSync(FlowDefinition);
 const decodeCondition = Schema.decodeUnknownSync(FlowCondition);
 const decodeFields = Schema.decodeUnknownSync(FlowOutputFields, { onExcessProperty: "error" });
 const decodeOutput = Schema.decodeUnknownSync(FlowStepOutput);
+const encodeOutput = Schema.encodeSync(FlowStepOutput);
 
 it("decodes nested loop and map steps and condition combinators", () => {
   const value = {
@@ -42,30 +43,39 @@ it("decodes nested loop and map steps and condition combinators", () => {
   ).toThrow();
 });
 it.each([
-  { text: "done", verdict: "approve", issues: ["one"] },
-  { exitCode: 1, timedOut: false, text: "failure", lines: ["failure"] },
-  { decision: "approve", comment: "okay" },
+  { kind: "agent", text: "done", decision: "approve", verdict: "approve", issues: ["one"] },
   {
+    kind: "command",
+    lineCount: 1,
+    exitCode: 1,
+    timedOut: false,
+    text: "failure",
+    lines: ["failure"],
+  },
+  { kind: "approval", decision: "approve", comment: "okay" },
+  {
+    kind: "loop",
     iterations: 2,
     exitReason: "condition",
-    inner: { items: [{ status: "succeeded", outputs: { agent: { text: "done" } } }] },
-  },
-])("decodes step outputs $", (value) => expect(decodeOutput(value)).toEqual(value));
-
-it("keeps nested streamed output fields separate from full output", () => {
-  const value = {
-    kind: "loop",
-    iterations: 1,
-    exitReason: "condition",
-    steps: {
-      review: { kind: "agent", fields: { verdict: "approve" } },
-      test: { kind: "command" },
+    inner: {
+      kind: "map",
+      items: [{ status: "succeeded", outputs: { agent: { kind: "agent", text: "done" } } }],
     },
-  };
-  expect(decodeFields(value)).toEqual(value);
-  expect(() =>
-    decodeFields({ ...value, steps: { test: { kind: "command", text: "large log" } } }),
-  ).toThrow();
+  },
+])("decodes step outputs $", (value) => expect(encodeOutput(decodeOutput(value))).toEqual(value));
+
+it("streams output metadata without duplicating container children or text", () => {
+  for (const value of [
+    { kind: "loop", iterations: 1, exitReason: "condition" },
+    { kind: "map", items: [{ status: "succeeded" }] },
+    { kind: "command", exitCode: 1, timedOut: false, lineCount: 300 },
+  ])
+    expect(decodeFields(value)).toEqual(value);
   expect(() => decodeFields({ kind: "agent", fields: { text: "large message" } })).toThrow();
-  expect(() => decodeOutput({ iterations: 1, exitReason: "condition", inner: 12 })).toThrow();
+  expect(() =>
+    decodeFields({ kind: "loop", iterations: 1, exitReason: "condition", steps: {} }),
+  ).toThrow();
+  expect(() =>
+    decodeOutput({ kind: "loop", iterations: 1, exitReason: "condition", inner: 12 }),
+  ).toThrow();
 });

@@ -16,14 +16,6 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
-  [WS_METHODS.flowSave]: AuthFilesystemWriteScope,
-  [WS_METHODS.flowRename]: AuthFilesystemWriteScope,
-  [WS_METHODS.flowDelete]: AuthFilesystemWriteScope,
-  [WS_METHODS.flowStart]: AuthOrchestrationOperateScope,
-  [WS_METHODS.flowStop]: AuthOrchestrationOperateScope,
-  [WS_METHODS.flowResume]: AuthOrchestrationOperateScope,
-  [WS_METHODS.flowRetryStep]: AuthOrchestrationOperateScope,
-  [WS_METHODS.flowAnswerApproval]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,
@@ -81,6 +73,14 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksUnlink]: AuthAccessWriteScope,
   // A link lets every agent here reach the other environment: Settings' bar.
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
+  [WS_METHODS.flowSave]: AuthFilesystemWriteScope,
+  [WS_METHODS.flowRename]: AuthFilesystemWriteScope,
+  [WS_METHODS.flowDelete]: AuthFilesystemWriteScope,
+  [WS_METHODS.flowStart]: AuthOrchestrationOperateScope,
+  [WS_METHODS.flowStop]: AuthOrchestrationOperateScope,
+  [WS_METHODS.flowResume]: AuthOrchestrationOperateScope,
+  [WS_METHODS.flowRetryStep]: AuthOrchestrationOperateScope,
+  [WS_METHODS.flowAnswerApproval]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

@@ -31,7 +31,8 @@ export const FlowMcpInput = Schema.Union([
       description: "Include this step run's full output.",
     }),
   }),
-  Schema.Struct({ action: Schema.Literals(["stop", "resume"]), flowRunId: FlowRunId }),
+  Schema.Struct({ action: Schema.Literal("stop"), flowRunId: FlowRunId }),
+  Schema.Struct({ action: Schema.Literal("resume"), flowRunId: FlowRunId }),
   Schema.Struct({ action: Schema.Literal("retry_step"), stepRunId: FlowStepRunId }),
   Schema.Struct({ action: Schema.Literal("answer_approval"), ...FlowAnswerApprovalInput.fields }),
 ]).annotate({ description: FLOW_MCP_DESCRIPTION });
