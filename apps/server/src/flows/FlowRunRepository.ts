@@ -155,7 +155,7 @@ const make = Effect.gen(function* () {
             summary_json: string;
             definition_snapshot: string;
             inputs: string;
-            workspace: string;
+            workspace: string | null;
             base_ref: string | null;
           }>`SELECT * FROM flow_runs WHERE id = ${id}`;
           const row = rows[0];
@@ -179,7 +179,7 @@ const make = Effect.gen(function* () {
                 run: decodeRun(row.summary_json),
                 definition: decodeDefinition(row.definition_snapshot),
                 inputs: decodeInputs(row.inputs),
-                workspace: row.workspace,
+                workspace: row.workspace || null,
                 baseRef: row.base_ref,
                 stepRuns: steps.map((s) => {
                   const step = decodeStep(s.state_json);
@@ -257,7 +257,7 @@ const make = Effect.gen(function* () {
               runNumber: number!.last_number,
               flowTitle: state.definition.title,
             };
-            yield* sql`INSERT INTO flow_runs ${sql.insert({ id: r.id, version: state.version, project_id: r.projectId, flow_id: r.flowId, run_number: summary.runNumber, flow_title: summary.flowTitle, flow_run_thread_id: r.flowRunThreadId, definition_snapshot: encodeDefinition(state.definition), inputs: encodeInputs(state.inputs), base_ref: state.baseRef, workspace: state.workspace, status: r.status, error: encodeError(r.error), created_at: r.createdAt, started_at: r.startedAt, finished_at: r.finishedAt, scheduled_task_id: r.scheduledTaskId ?? null, summary_json: encodeRun(summary) })}`;
+            yield* sql`INSERT INTO flow_runs ${sql.insert({ id: r.id, version: state.version, project_id: r.projectId, flow_id: r.flowId, run_number: summary.runNumber, flow_title: summary.flowTitle, flow_run_thread_id: r.flowRunThreadId, definition_snapshot: encodeDefinition(state.definition), inputs: encodeInputs(state.inputs), base_ref: state.baseRef, workspace: state.workspace ?? "", status: r.status, error: encodeError(r.error), created_at: r.createdAt, started_at: r.startedAt, finished_at: r.finishedAt, scheduled_task_id: r.scheduledTaskId ?? null, summary_json: encodeRun(summary) })}`;
             yield* write(r.id, [
               ...state.stepRuns.map((step): Transition => ({ type: "step", step })),
               ...state.approvals.map((approval): Transition => ({ type: "approval", approval })),

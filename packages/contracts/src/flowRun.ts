@@ -8,6 +8,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { OrchestrationV2CreationSource } from "./orchestrationV2.ts";
 import { FlowDefinition, FlowId, FlowInputs, FlowValue } from "./flowDefinition.ts";
 
 export const FlowRunId = TrimmedNonEmptyString.pipe(Schema.brand("FlowRunId"));
@@ -123,6 +124,8 @@ export const FlowRunSummary = Schema.Struct({
   error: Schema.NullOr(FlowRunError),
   ...Timings,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  creationSource: Schema.optional(OrchestrationV2CreationSource),
+  webhookInputs: Schema.optional(Schema.Array(Schema.String)),
 });
 export type FlowRunSummary = typeof FlowRunSummary.Type;
 export const FlowStepRun = Schema.Struct({

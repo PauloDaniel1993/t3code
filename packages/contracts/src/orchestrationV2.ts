@@ -3126,6 +3126,8 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.metadata.update"),
+    flowNeedsInput: Schema.optional(Schema.Boolean),
+    lineage: Schema.optional(OrchestrationV2AppThreadLineage),
     commandId: CommandId,
     threadId: ThreadId,
     title: Schema.optional(TrimmedNonEmptyString),

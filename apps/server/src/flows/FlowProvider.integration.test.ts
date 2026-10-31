@@ -1,9 +1,12 @@
+import * as Lifecycle from "./FlowLifecycle.ts";
+import * as Outbox from "../orchestration-v2/EffectOutbox.ts";
+import * as Settings from "../serverSettings.ts";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   CommandId,
-  MessageId,
   FlowId,
   ProjectId,
   ProviderDriverKind,
@@ -12,19 +15,25 @@ import {
   ProviderTurnId,
   type FlowDefinition,
 } from "@t3tools/contracts";
+
+import { threadShellFromProjection } from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import * as Projects from "../project/ProjectService.ts";
+import * as Instances from "../provider/ProviderInstanceRegistry.ts";
+import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
+import { makeFlowRpcHandlers } from "./FlowRpcHandlers.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { subagentResultForRun } from "@t3tools/provider-core/server/subagentProjection";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { validateFlowDefinition, flowDefinitionRevision } from "@t3tools/shared/flow";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
-import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Worker from "../orchestration-v2/EffectWorker.ts";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -134,76 +143,134 @@ it.effect(
         { name: "flow-provider" },
         Registry.layerFromAdapters([adapter]),
         { databaseLayer: database },
-      );
+      ).pipe(Layer.provide(Lifecycle.layer));
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* Worker.OrchestrationEffectWorkerV2;
-        const sink = yield* EventSink.EventSinkV2;
-        const afterSequence = yield* sink.latestSequence();
-        const send = Effect.fn("test.send")(function* (input: Runtime.FlowThreadInput) {
-          yield* orchestrator
-            .dispatch({
-              type: "message.dispatch",
-              commandId: CommandId.make(`${input.commandId}:message`),
-              messageId: MessageId.make(input.messageId!),
-              threadId: input.threadId,
-              text: input.prompt!,
-              attachments: [],
-              modelSelection,
-              dispatchMode: { type: "start_immediately" },
-              createdBy: "user",
-              creationSource: "web",
-            })
-            .pipe(Effect.orDie);
+        const provider = yield* buildUnavailableProviderSnapshot({
+          instanceId,
+          driverKind: driver,
+          reason: "fixture",
         });
-        const runtime = Layer.succeed(Runtime.FlowRuntime, {
-          root: () => Effect.succeed(cwd),
-          launch: Effect.fn("test.launch")(function* (input) {
-            yield* orchestrator
-              .dispatch({
-                type: "thread.create",
-                commandId: CommandId.make(input.commandId),
-                threadId: input.threadId,
-                projectId: input.projectId,
-                title: input.title,
-                modelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                worktreePath: cwd,
-                branch: null,
-                createdBy: "user",
-                creationSource: "web",
-              })
-              .pipe(Effect.orDie);
-            if (input.prompt) yield* send(input);
-            return cwd;
-          }),
-          send,
-          interrupt: () => Effect.void,
-          attention: () => Effect.void,
-          continuing: () => Effect.succeed(null),
-          events: sink.stream({ afterSequence }).pipe(
-            Stream.filter((stored) => stored.event.type === "run.updated"),
-            Stream.map((stored) => stored.event.threadId),
-            Stream.orDie,
+        const runtime = Runtime.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(Instances.ProviderInstanceRegistry)({
+                listInstances: Effect.succeed([
+                  {
+                    instanceId,
+                    driverKind: driver,
+                    enabled: true,
+                    displayName: undefined,
+                    continuationIdentity: { driverKind: driver, continuationKey: "fixture" },
+                    orchestrationAdapter: adapter,
+                    textGeneration: {
+                      generateCommitMessage: () => Effect.die("unused"),
+                      generatePrContent: () => Effect.die("unused"),
+                      generateBranchName: () => Effect.die("unused"),
+                      generateThreadTitle: () => Effect.die("unused"),
+                      generateReviewGuide: () => Effect.die("unused"),
+                    },
+                    snapshot: {
+                      getSnapshot: Effect.succeed(provider),
+                      refresh: Effect.succeed(provider),
+                      streamChanges: Stream.empty,
+                      resolveMaintenance: () => Effect.die("unused"),
+                      applyUsageLimits: () => Effect.void,
+                    },
+                  },
+                ]),
+              }),
+              Outbox.layer,
+              Layer.mock(Settings.ServerSettingsService)({
+                getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+              }),
+              Layer.mock(Projects.ProjectService)({
+                getById: () =>
+                  Effect.succeedSome({
+                    id: ProjectId.make("flow-project"),
+                    title: "Flow",
+                    workspaceRoot: cwd,
+                    defaultModelSelection: modelSelection,
+                    scripts: [],
+                    createdAt: "2026-10-31T00:00:00.000Z",
+                    updatedAt: "2026-10-31T00:00:00.000Z",
+                    deletedAt: null,
+                  }),
+              }),
+              Layer.mock(ThreadLaunch.ThreadLaunchService)({
+                launch: (input) =>
+                  Effect.gen(function* () {
+                    const threadId = input.threadId!;
+                    yield* orchestrator.dispatch({
+                      type: "thread.create",
+                      commandId: input.commandId,
+                      threadId,
+                      projectId: input.projectId,
+                      title: input.title,
+                      modelSelection: input.modelSelection,
+                      runtimeMode: input.runtimeMode,
+                      interactionMode: input.interactionMode,
+                      worktreePath: cwd,
+                      branch: null,
+                      createdBy: input.createdBy,
+                      creationSource: input.creationSource,
+                    });
+                    return {
+                      threadId,
+                      projection: yield* orchestrator.getThreadProjection(threadId),
+                      resumed: false,
+                    };
+                  }).pipe(Effect.orDie),
+              }),
+              Layer.mock(Threads.ThreadManagementService)({
+                dispatch: orchestrator.dispatch,
+                getThreadRecords: orchestrator.getThreadRecords,
+                getThreadShell: (id) =>
+                  orchestrator
+                    .getThreadProjection(id)
+                    .pipe(Effect.map(threadShellFromProjection), Effect.orDie),
+                sendToThread: (input) =>
+                  Effect.gen(function* () {
+                    const dispatch = yield* orchestrator.dispatch({
+                      type: "message.dispatch",
+                      commandId: input.commandId,
+                      messageId: input.messageId!,
+                      threadId: input.threadId,
+                      text: input.text,
+                      attachments: [],
+                      modelSelection,
+                      dispatchMode: { type: "start_immediately" },
+                      createdBy: "user",
+                      creationSource: "web",
+                    });
+                    const projection = yield* orchestrator.getThreadProjection(input.threadId);
+                    return {
+                      dispatch,
+                      projection,
+                      message: projection.messages.find((m) => m.id === input.messageId)!,
+                      run: projection.runs.find((r) => r.userMessageId === input.messageId)!,
+                      turnItem: null,
+                      delivery: "started" as const,
+                    };
+                  }).pipe(Effect.orDie),
+                interruptThread: (input) =>
+                  orchestrator
+                    .dispatch({
+                      type: "thread.stop",
+                      commandId: input.commandId,
+                      threadId: input.threadId,
+                    })
+                    .pipe(Effect.as({ type: "no_active_run" as const }), Effect.orDie),
+              }),
+            ),
           ),
-          settled: Effect.fn("test.settled")(function* (id, messageId) {
-            const projection = yield* orchestrator.getThreadProjection(id).pipe(Effect.orDie);
-            const run = projection.runs.find((run) => run.userMessageId === messageId);
-            return run?.status === "completed"
-              ? {
-                  messageId,
-                  turnId: run.id,
-                  text: subagentResultForRun(projection, run).text,
-                  failed: false,
-                }
-              : null;
-          }),
-        });
+        );
         const definition: FlowDefinition = {
           version: 1,
           title: "Provider flow",
           workspace: "root",
+          defaults: { model: { providerInstanceId: instanceId, model: "test-model" } },
           steps: [
             { id: "implement", kind: "agent", prompt: "Implement" },
             {
@@ -255,11 +322,21 @@ it.effect(
         );
         const service = Context.get(context, Service.FlowService);
         yield* service.recover();
-        const run = yield* service.start({
+        const rpc = yield* makeFlowRpcHandlers("test-session").pipe(
+          Effect.provideService(Service.FlowService, service),
+        );
+        const run = yield* rpc["flow.start"]({
           projectId: ProjectId.make("flow-project"),
           flowId: entry.flowId,
           inputs: {},
         });
+        yield* service.run(run.id).pipe(
+          Stream.filter(
+            (event) =>
+              event.summary?.status === "running" || event.summary?.status === "waiting_approval",
+          ),
+          Stream.runHead,
+        );
         yield* worker.drain();
         yield* service.run(run.id).pipe(
           Stream.filter((event) => event.summary?.status === "waiting_approval"),
@@ -268,13 +345,61 @@ it.effect(
         yield* worker.drain();
         expect(turns).toBe(2);
         const snapshot = yield* service.snapshot(run.id);
+        expect((yield* orchestrator.getThreadProjection(run.flowRunThreadId)).runs).toHaveLength(0);
         expect(snapshot.stepRuns.filter((step) => step.status === "succeeded")).toHaveLength(4);
         expect(
-          (yield* service.answerApproval(
-            { stepRunId: snapshot.approvals[0]!.stepRunId, decision: "approve" },
-            "test",
-          )).status,
+          (yield* rpc["flow.answerApproval"]({
+            stepRunId: snapshot.approvals[0]!.stepRunId,
+            decision: "approve",
+          })).status,
         ).toBe("succeeded");
-      }).pipe(Effect.provide(Layer.mergeAll(harness, database)));
+        const stopped = yield* rpc["flow.start"]({
+          projectId: ProjectId.make("flow-project"),
+          flowId: entry.flowId,
+          inputs: {},
+        });
+        yield* service.run(stopped.id).pipe(
+          Stream.filter((event) => event.summary?.status === "running"),
+          Stream.runHead,
+        );
+        expect((yield* rpc["flow.stop"]({ flowRunId: stopped.id })).status).toBe("cancelled");
+        for (const type of ["thread.archive", "thread.delete"] as const) {
+          const owned = yield* rpc["flow.start"]({
+            projectId: ProjectId.make("flow-project"),
+            flowId: entry.flowId,
+            inputs: {},
+          });
+          yield* service.run(owned.id).pipe(
+            Stream.filter((event) => event.summary?.status === "waiting_approval"),
+            Stream.runHead,
+          );
+          const gate = (yield* service.snapshot(owned.id)).approvals[0]!;
+          const stepThread = (yield* service.snapshot(owned.id)).stepRuns.find(
+            (step) => step.threadId,
+          )!.threadId!;
+          expect(
+            (yield* service
+              .answerApproval(
+                { stepRunId: gate.stepRunId, decision: "approve" },
+                stepThread,
+                stepThread,
+              )
+              .pipe(Effect.exit))._tag,
+          ).toBe("Failure");
+          yield* orchestrator.dispatch({
+            type,
+            commandId: CommandId.make(type),
+            threadId: owned.flowRunThreadId,
+          });
+          if (type === "thread.archive")
+            expect((yield* service.snapshot(owned.id)).summary.status).toBe("cancelled");
+          else
+            expect(
+              (yield* service.runsPage(ProjectId.make("flow-project"))).runs.some(
+                (run) => run.id === owned.id,
+              ),
+            ).toBe(false);
+        }
+      }).pipe(Effect.provide(Layer.mergeAll(harness, database, Lifecycle.layer)));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

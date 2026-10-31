@@ -1,3 +1,4 @@
+import * as FlowLifecycle from "../flows/FlowLifecycle.ts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -101,6 +102,7 @@ export const layerExecutor: Layer.Layer<
     const runtimeRequests = yield* RuntimeRequestService.RuntimeRequestServiceV2;
     const threadTitleRegeneration =
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
+    const flowLifecycle = yield* Effect.serviceOption(FlowLifecycle.FlowLifecycle);
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
     return OrchestrationEffectExecutorV2.of({
@@ -109,7 +111,14 @@ export const layerExecutor: Layer.Layer<
         switch (effect.request.type) {
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
-            return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(
+            const continuation = continueRestartedRun({ threadId: effect.threadId, sourceRunId });
+            return (
+              Option.isSome(flowLifecycle)
+                ? continuation.pipe(
+                    Effect.provideService(FlowLifecycle.FlowLifecycle, flowLifecycle.value),
+                  )
+                : continuation
+            ).pipe(
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ServerSettings.ServerSettingsService, settings),
               Effect.tapError(() =>

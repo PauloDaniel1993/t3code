@@ -205,6 +205,9 @@ export interface EffectOutboxV2Shape {
   readonly get: (
     effectId: string,
   ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
+  readonly pendingForThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
   readonly listByCommandId: (
     commandId: CommandId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
@@ -422,6 +425,17 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         ),
       awaitAvailable: Queue.take(available),
       notifyAvailable,
+      pendingForThread: Effect.fn("EffectOutbox.pendingForThread")((threadId) =>
+        sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status IN ('pending', 'running') ORDER BY created_at DESC, effect_id DESC`.pipe(
+          NodeSqliteClient.readOnly,
+          Effect.flatMap((rows) => decodeRows("pendingForThread", rows)),
+          Effect.mapError((cause) =>
+            isEffectOutboxError(cause)
+              ? cause
+              : new EffectOutboxError({ operation: "pendingForThread", cause }),
+          ),
+        ),
+      ),
       listByCommandId: (commandId) =>
         sql<EffectRow>`
           SELECT *

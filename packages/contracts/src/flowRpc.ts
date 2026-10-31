@@ -34,6 +34,7 @@ export const FLOW_WS_METHODS = {
 } as const;
 export class FlowError extends Schema.TaggedError<FlowError>()("FlowError", {
   message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 export class FlowRevisionConflict extends Schema.TaggedError<FlowRevisionConflict>()(
   "FlowRevisionConflict",

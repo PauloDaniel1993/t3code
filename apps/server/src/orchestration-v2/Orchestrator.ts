@@ -1,5 +1,4 @@
-import * as SqlClient from "effect/sql/SqlClient";
-import { flowChildThreadIds } from "../flows/FlowCleanup.ts";
+import * as FlowLifecycle from "../flows/FlowLifecycle.ts";
 import * as WorkspaceAdmission from "./WorkspaceAdmission.ts";
 import { withTaskThreadLifecycle } from "./TaskThreadLifecycle.ts";
 import type {
@@ -998,7 +997,7 @@ function lastDeliveredRunForProviderThread(
 }
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
-  const flowSql = yield* SqlClient.SqlClient;
+  const flowLifecycle = yield* Effect.serviceOption(FlowLifecycle.FlowLifecycle);
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
@@ -3586,6 +3585,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? thread
               : { ...unboundThread, ...workspaceBinding.success }),
             ...(command.title === undefined ? {} : { title: command.title }),
+            ...(command.flowNeedsInput === undefined
+              ? {}
+              : { flowNeedsInput: command.flowNeedsInput }),
+            ...(command.lineage === undefined ? {} : { lineage: command.lineage }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -13280,10 +13283,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const plan = yield* dispatchOnce(command).pipe(
       Effect.flatMap((planned) =>
         withTaskThreadLifecycle(command, projectionStore, idAllocator, dispatchOnce, (threadId) =>
-          flowChildThreadIds(threadId).pipe(
-            Effect.provideService(SqlClient.SqlClient, flowSql),
-            Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
-          ),
+          projectionStore
+            .flowChildThreadIds(threadId)
+            .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
         )(planned).pipe(mapDispatchError(command)),
       ),
       Effect.filterOrFail(
@@ -13432,10 +13434,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
-    const dispatch = threadDispatch.withLock(
-      commandThreadId(command),
-      dispatchWithReceiptEffect(command),
-    );
+    if (command.type === "thread.archive" || command.type === "thread.delete") {
+      if (Option.isSome(flowLifecycle)) yield* flowLifecycle.value.stop(command.threadId);
+    }
+    const dispatch = threadDispatch
+      .withLock(commandThreadId(command), dispatchWithReceiptEffect(command))
+      .pipe(
+        Effect.tap(() =>
+          command.type === "thread.delete" && Option.isSome(flowLifecycle)
+            ? flowLifecycle.value.deleted(command.threadId)
+            : Effect.void,
+        ),
+      );
     // Answering a message-mode question can also start a follow-up.
     if (
       command.type !== "runtime-request.respond" &&
@@ -13916,7 +13926,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 export const layer: Layer.Layer<
   OrchestratorV2,
   never,
-  | SqlClient.SqlClient
   | CheckpointServiceV2
   | FileSystem.FileSystem
   | Path.Path

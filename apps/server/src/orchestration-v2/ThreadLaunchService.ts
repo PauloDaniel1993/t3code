@@ -851,6 +851,11 @@ const make = Effect.gen(function* () {
 
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (request) {
+      if (request.awaitPreparation && request.initialMessage)
+        return yield* mapError(
+          request,
+          "create-thread",
+        )("awaitPreparation requires a launch without an initial message.");
       // Scratch has no Git repository. Normalize before folder allocation so
       // durable preparation and retries use the thread's own Scratch folder.
       const input: ThreadLaunchInput =

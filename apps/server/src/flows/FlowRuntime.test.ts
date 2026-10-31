@@ -1,3 +1,6 @@
+import * as Outbox from "../orchestration-v2/EffectOutbox.ts";
+import * as Settings from "../serverSettings.ts";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import {
   MessageId,
@@ -6,7 +9,7 @@ import {
   ProviderInstanceId,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,7 +28,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`CREATE TABLE orchestration_v2_effect_outbox(thread_id TEXT, effect_type TEXT, status TEXT, payload_json TEXT)`;
+
       const threadId = ThreadId.make("thread");
       const shell = liveThreadShell(threadId);
       const now = DateTime.makeUnsafe("2026-10-31T00:00:00Z");
@@ -57,10 +60,13 @@ it.effect(
         expect(yield* runtime.continuing(threadId, "current-message")).toBeNull();
         expect(yield* runtime.continuing(ThreadId.make("missing"), "message")).toBeNull();
         expect(yield* runtime.settled(ThreadId.make("missing"), "message")).toBeNull();
-        yield* sql`INSERT INTO orchestration_v2_effect_outbox VALUES (${threadId}, 'provider-runtime.continue', 'pending', '{"sourceRunId":"current"}')`;
+        yield* sql`INSERT INTO orchestration_v2_effect_outbox (effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count, available_at, created_at, updated_at) VALUES ('continue', 'continue', ${threadId}, 'provider-runtime.continue', '{"type":"provider-runtime.continue","sourceRunId":"current"}', 'pending', 0, '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z')`;
         expect(yield* runtime.continuing(threadId, "current-message")).toBe(
           "message:restart-continuation:current",
         );
+        expect(
+          yield* runtime.settled(threadId, "message:restart-continuation:current", true),
+        ).toMatchObject({ failed: true, interrupted: true });
         runs.push(run("current-continuation", "new-message", "current"));
         expect(yield* runtime.continuing(threadId, "current-message")).toBe("new-message");
       });
@@ -70,6 +76,10 @@ it.effect(
             Layer.provide(
               Layer.mergeAll(
                 Layer.mock(Launch.ThreadLaunchService)({}),
+                Outbox.layer,
+                Layer.mock(Settings.ServerSettingsService)({
+                  getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+                }),
                 Layer.mock(Projects.ProjectService)({}),
                 Layer.mock(Registry.ProviderInstanceRegistry)({}),
                 Layer.mock(Threads.ThreadManagementService)({
@@ -85,5 +95,5 @@ it.effect(
           ),
         ),
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+    }).pipe(Effect.scoped, Effect.provide(Sqlite.layerMemory)),
 );

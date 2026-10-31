@@ -19,6 +19,8 @@ import {
   type FlowDefinition,
 } from "@t3tools/contracts";
 import { flowDefinitionRevision, validateFlowDefinition } from "@t3tools/shared/flow";
+import * as Deferred from "effect/Deferred";
+import * as PubSub from "effect/PubSub";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -83,7 +85,11 @@ const reportMcp = Effect.fn("test.reportMcp")(function* (
   return decodeMcp(result.content.map((part) => (part.type === "text" ? part.text : "")).join(""));
 });
 
-const setup = Effect.fn("test.setup")(function* (definition: FlowDefinition) {
+const setup = Effect.fn("test.setup")(function* (
+  definition: FlowDefinition,
+  preparation?: Effect.Effect<void>,
+  attentionFailure?: Effect.Effect<void>,
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`PRAGMA foreign_keys = ON`;
   yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
@@ -108,8 +114,14 @@ const setup = Effect.fn("test.setup")(function* (definition: FlowDefinition) {
     validation: validateFlowDefinition(saved),
   });
   const runtime = Runtime.FlowRuntime.of({
+    belongsToRun: (id, runId) =>
+      repository.runForThread(id).pipe(
+        Effect.map((link) => link?.flowRunId === runId),
+        Effect.orDie,
+      ),
     root: () => Effect.succeed("/workspace"),
     launch: Effect.fn("test.launch")(function* (input) {
+      if (!input.parentThreadId && preparation) yield* preparation;
       launches.push(input);
       yield* Queue.offer(launched, input);
       yield* sql`INSERT OR IGNORE INTO orchestration_v2_projection_threads VALUES (${input.threadId}, NULL)`.pipe(
@@ -123,9 +135,13 @@ const setup = Effect.fn("test.setup")(function* (definition: FlowDefinition) {
       }),
     interrupt: () => Effect.void,
     attention: (run) =>
-      Effect.sync(() => {
-        attention.push(run.status);
-      }),
+      (attentionFailure ?? Effect.void).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            attention.push(run.status);
+          }),
+        ),
+      ),
     continuing: (id) => Effect.succeed(continuing.get(id) ?? null),
     settled: (_id, messageId) => Effect.succeed(settled.get(messageId) ?? null),
     events: Stream.fromQueue(events),
@@ -384,6 +400,7 @@ it.effect(
         flowId: FlowId.make("example"),
         inputs: {},
       });
+      yield* awaitStatus(service, run.id, "waiting_approval");
       continuing.set(launches[1]!.threadId, "continued-message");
       expect((yield* service.snapshot(run.id)).baseRef).toBe("HEAD");
       yield* service.recover();
@@ -459,6 +476,7 @@ it.effect(
         flowId: FlowId.make("example"),
         inputs: {},
       });
+      yield* awaitStatus(service, run.id, "running");
       const messageId = launches[1]!.messageId!;
       expect((yield* service.snapshot(run.id)).baseRef).toBeNull();
       settled.set(messageId, { messageId, turnId: "persisted-turn", text: "done", failed: false });
@@ -468,4 +486,101 @@ it.effect(
       yield* service.recover();
       expect(commands).toHaveLength(1);
     }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect(
+  "returns starting runs across projects while preparation waits and recovers them without launching",
+  () =>
+    Effect.gen(function* () {
+      const prepare = yield* Deferred.make<void>();
+      const { service, repository, launches } = yield* setup(
+        {
+          version: 1,
+          title: "Prepare",
+          workspace: "worktree",
+          steps: [{ id: "agent", kind: "agent", prompt: "Work" }],
+          edges: [],
+        },
+        Deferred.await(prepare),
+      );
+      const first = yield* service.start({
+        projectId: ProjectId.make("one"),
+        flowId: FlowId.make("example"),
+        inputs: {},
+      });
+      const second = yield* service.start({
+        projectId: ProjectId.make("two"),
+        flowId: FlowId.make("example"),
+        inputs: {},
+      });
+      expect(first.status).toBe("starting");
+      expect(second.status).toBe("starting");
+      expect((yield* repository.read(first.id))?.workspace).toBeNull();
+      yield* service.recover();
+      expect((yield* repository.read(first.id))?.run).toMatchObject({
+        status: "failed",
+        error: { code: "interrupted" },
+      });
+      expect((yield* repository.read(second.id))?.run.status).toBe("failed");
+      expect(launches).toEqual([]);
+      yield* Deferred.succeed(prepare, undefined);
+    }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect("does not block transitions behind a stalled stream subscriber", () =>
+  Effect.gen(function* () {
+    const { service } = yield* setup({
+      version: 1,
+      title: "Gate",
+      workspace: "root",
+      steps: [{ id: "gate", kind: "approval", prompt: "Review" }],
+      edges: [],
+    });
+    const run = yield* service.start({
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      inputs: {},
+    });
+    yield* awaitStatus(service, run.id, "waiting_approval");
+    const stream = yield* service.run(run.id).pipe(Stream.toPubSub({ capacity: 1 }));
+    yield* PubSub.subscribe(stream);
+    for (let i = 0; i < 140; i++) {
+      yield* service.stop(run.id);
+      yield* service.resume(run.id);
+    }
+    expect((yield* service.snapshot(run.id)).summary.status).toBe("waiting_approval");
+  }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect("isolates presentation defects after commit and malformed runs during recovery", () =>
+  Effect.gen(function* () {
+    const { service, repository } = yield* setup(
+      {
+        version: 1,
+        title: "Gate",
+        workspace: "root",
+        steps: [{ id: "gate", kind: "approval", prompt: "Review" }],
+        edges: [],
+      },
+      undefined,
+      Effect.die("attention defect"),
+    );
+    const run = yield* service.start({
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      inputs: {},
+    });
+    yield* awaitStatus(service, run.id, "waiting_approval");
+    expect((yield* service.stop(run.id)).status).toBe("cancelled");
+    const next = yield* service.start({
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      inputs: {},
+    });
+    yield* awaitStatus(service, next.id, "waiting_approval");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE flow_runs SET status = 'running', summary_json = 'invalid' WHERE id = ${run.id}`;
+    yield* service.recover();
+    expect((yield* repository.read(next.id))?.run.status).toBe("waiting_approval");
+  }).pipe(Effect.scoped, Effect.provide(database)),
 );

@@ -135,6 +135,7 @@ function renderTemplate(
   sourceThreadLabel: (stepId: string) => string,
   path: string,
   environment: boolean,
+  transform: (reference: string, text: string) => string = (_reference, text) => text,
 ) {
   return template.replace(
     /(\\\{\{)|\{\{\s*([^{}]*?)\s*\}\}/g,
@@ -145,12 +146,18 @@ function renderTemplate(
         const parsed = parseFlowReference(reference, path);
         const value = resolveFlowReference(reference, context, path);
         if (Array.isArray(value) && value.every((item) => typeof item === "string"))
-          return value.map((item) => (environment ? item : `- ${item}`)).join("\n");
+          return transform(
+            reference,
+            value.map((item) => (environment ? item : `- ${item}`)).join("\n"),
+          );
         if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
           return "";
-        return parsed.kind === "step" && parsed.fields.at(-1) === "text"
-          ? capFlowText(String(value), sourceThreadLabel(parsed.fields.at(-2) ?? parsed.stepId))
-          : String(value);
+        return transform(
+          reference,
+          parsed.kind === "step" && parsed.fields.at(-1) === "text"
+            ? capFlowText(String(value), sourceThreadLabel(parsed.fields.at(-2) ?? parsed.stepId))
+            : String(value),
+        );
       } catch (error) {
         if (error instanceof FlowValueError) return "";
         throw error;
@@ -163,8 +170,9 @@ export function renderFlowTemplate(
   context: FlowReferenceContext,
   sourceThreadLabel: (stepId: string) => string,
   path = "$",
+  transform?: (reference: string, text: string) => string,
 ) {
-  return renderTemplate(template, context, sourceThreadLabel, path, false);
+  return renderTemplate(template, context, sourceThreadLabel, path, false, transform);
 }
 export function renderFlowCommandEnv(
   env: Readonly<Record<string, string>>,

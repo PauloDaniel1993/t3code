@@ -1,3 +1,4 @@
+import * as Lifecycle from "./FlowLifecycle.ts";
 // @effect-diagnostics preferSchemaOverJson:off -- Compare bounded stream projections and describe declared report fields.
 import {
   FlowError,
@@ -26,9 +27,11 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -46,7 +49,6 @@ import {
   type StepRun,
   type Action,
 } from "./FlowEngine.ts";
-import { sweepOrphanedFlowRuns } from "./FlowCleanup.ts";
 import { flowReportInstruction } from "./FlowAgentInstructions.ts";
 
 export interface FlowStart {
@@ -56,6 +58,8 @@ export interface FlowStart {
   readonly baseRef?: string | undefined;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly coerce?: boolean;
+  readonly creationSource?: Runtime.FlowThreadInput["creationSource"];
+  readonly webhookInputs?: ReadonlyArray<string>;
 }
 export class FlowService extends Context.Service<
   FlowService,
@@ -99,6 +103,7 @@ export class FlowService extends Context.Service<
         readonly comment?: string | undefined;
       },
       answeredBy: string,
+      callerThreadId?: ThreadId,
     ) => Effect.Effect<FlowRunSummary, FlowError>;
     readonly report: (
       threadId: ThreadId,
@@ -115,7 +120,11 @@ export class FlowService extends Context.Service<
     readonly runForThread: (
       id: ThreadId,
     ) => Effect.Effect<typeof FlowRunForThreadResult.Type, FlowError>;
-    readonly catchUp: () => Effect.Effect<void, FlowError>;
+    readonly settleThread: (
+      id: ThreadId,
+      continuationAttempted?: boolean,
+    ) => Effect.Effect<void, FlowError>;
+    readonly stopForThread: (id: ThreadId) => Effect.Effect<void, FlowError>;
     readonly recover: () => Effect.Effect<void, FlowError>;
   }
 >()("t3/flows/FlowService") {}
@@ -144,7 +153,22 @@ function snapshotOf(state: State): FlowRunSnapshot {
     summary: state.run,
     approvals: state.approvals,
     stepRuns: state.stepRuns.map((step) => {
-      const { output, scope: _scope, items, ...rest } = step;
+      const { output, items } = step;
+      const rest = {
+        id: step.id,
+        flowRunId: step.flowRunId,
+        parentStepRunId: step.parentStepRunId,
+        stepPath: step.stepPath,
+        iteration: step.iteration,
+        itemIndex: step.itemIndex,
+        attempt: step.attempt,
+        status: step.status,
+        threadId: step.threadId,
+        error: step.error,
+        createdAt: step.createdAt,
+        startedAt: step.startedAt,
+        finishedAt: step.finishedAt,
+      };
       let outputFields: FlowRunSnapshot["stepRuns"][number]["outputFields"] = null;
       if (output)
         switch (output.kind) {
@@ -188,9 +212,11 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const sql = yield* SqlClient.SqlClient;
   const scope = yield* Scope.Scope;
-  const changes = yield* PubSub.bounded<{ projectId: ProjectId; event: FlowRunEvent }>(128);
+  const changes = yield* PubSub.sliding<{ projectId: ProjectId; id: FlowRunId }>(128);
   const filesGate = yield* Semaphore.make(1);
-  const startGate = yield* Semaphore.make(1);
+  const allocationLocks = new Map<ProjectId, Semaphore.Semaphore>();
+  const threadRuns = new Map<ThreadId, FlowRunSummary>();
+  const preparationFibers = new Map<FlowRunId, Fiber.Fiber<unknown>>();
   const commandFibers = new Map<FlowStepRunId, Fiber.Fiber<unknown>>();
   let recoveryActions: Map<FlowRunId, Action[]> | undefined;
   const readState = Effect.fn("FlowService.readState")(function* (id: FlowRunId) {
@@ -198,25 +224,13 @@ const make = Effect.gen(function* () {
     if (!state) return yield* fail("Flow run not found.");
     return state;
   });
-  const publish = Effect.fn("FlowService.publish")(function* (state: State, before?: State) {
-    const snapshot = snapshotOf(state);
-    const previous = before && snapshotOf(before);
-    const oldSteps = new Map(previous?.stepRuns.map((step) => [step.id, step]));
-    const oldApprovals = new Map(
-      previous?.approvals.map((approval) => [approval.stepRunId, approval]),
-    );
-    const stepRuns = snapshot.stepRuns.filter(
-      (step) => JSON.stringify(step) !== JSON.stringify(oldSteps.get(step.id)),
-    );
-    const approvals = snapshot.approvals.filter(
-      (approval) =>
-        JSON.stringify(approval) !== JSON.stringify(oldApprovals.get(approval.stepRunId)),
-    );
-    yield* PubSub.publish(changes, {
-      projectId: state.run.projectId,
-      event: { type: "upsert", summary: state.run, stepRuns, approvals },
-    });
-  });
+  const publish = Effect.fn("FlowService.publish")((run: FlowRunSummary) =>
+    PubSub.publish(changes, { projectId: run.projectId, id: run.id }).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Flow broadcast failed", { cause })),
+    ),
+  );
+  const logFailure = (message: string) => (cause: Cause.Cause<unknown>) =>
+    Effect.logWarning(message, { cause });
   const drive = Effect.fn("FlowService.drive")(function* (
     id: FlowRunId,
     trigger: Trigger,
@@ -233,12 +247,15 @@ const make = Effect.gen(function* () {
       .apply(id, state.version, decision.transitions)
       .pipe(Effect.mapError(mapError));
     let next = { ...applyTransitions(state, decision.transitions), version: state.version + 1 };
-    yield* publish(next, state);
     if (recoveryActions) {
       recoveryActions.set(id, [...(recoveryActions.get(id) ?? []), ...decision.actions]);
       return next.run;
     }
-    return yield* executeActions(next, decision.actions);
+    return yield* executeActions(next, decision.actions).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Flow actions failed after commit", { cause }).pipe(Effect.as(next.run)),
+      ),
+    );
   });
   const executeActions = Effect.fn("FlowService.executeActions")(function* (
     state: State,
@@ -258,6 +275,11 @@ const make = Effect.gen(function* () {
           continue;
       }
       const execute = Effect.gen(function* () {
+        if (
+          ["launch_step_thread", "continue_thread", "start_command"].includes(action.type) &&
+          !next.workspace
+        )
+          return yield* fail("Flow workspace is not prepared.");
         switch (action.type) {
           case "launch_step_thread":
           case "continue_thread":
@@ -265,16 +287,14 @@ const make = Effect.gen(function* () {
             const step = next.stepRuns.find((step) => step.id === action.stepRunId)!;
             if (!action.threadId) return;
             const input = {
+              creationSource: next.run.creationSource,
               projectId: next.run.projectId,
               threadId: action.threadId,
               commandId: `flow:${action.stepRunId}:${action.messageId}`,
               messageId: action.messageId,
               title: `${next.definition.title} · ${step.stepPath.at(-1)}`,
               parentThreadId: next.run.flowRunThreadId,
-              workspace:
-                next.definition.workspace === "root"
-                  ? { type: "root" as const }
-                  : { type: "existing_worktree" as const, worktreePath: next.workspace },
+              workspace: { type: "existing_worktree" as const, worktreePath: next.workspace! },
               prompt:
                 (action.type === "send_reminder"
                   ? "Report the declared output fields for this step."
@@ -292,7 +312,7 @@ const make = Effect.gen(function* () {
             break;
           }
           case "start_command": {
-            const work = commands.run({ ...action, workspace: next.workspace }).pipe(
+            const work = commands.run({ ...action, workspace: next.workspace! }).pipe(
               Effect.matchEffect({
                 onSuccess: (output) =>
                   triggerRun(id, {
@@ -340,7 +360,13 @@ const make = Effect.gen(function* () {
             break;
         }
       });
-      const result = yield* execute.pipe(Effect.result);
+      const result = yield* execute.pipe(Effect.exit);
+      if (result._tag === "Failure")
+        yield* Effect.logWarning("Flow action failed", {
+          flowRunId: id,
+          action: action.type,
+          cause: result.cause,
+        });
       if (
         result._tag === "Failure" &&
         "stepRunId" in action &&
@@ -350,11 +376,11 @@ const make = Effect.gen(function* () {
         yield* drive(id, {
           type: "action_failed",
           stepRunId: action.stepRunId,
-          error: { code: "command_error", message: "Could not execute flow step action." },
+          error: { code: "other", message: `Flow action ${action.type} failed.` },
           at: yield* now,
         });
         next = yield* readState(id);
-      } else if (result._tag === "Failure") return yield* result.failure;
+      }
     }
     return next.run;
   });
@@ -362,14 +388,23 @@ const make = Effect.gen(function* () {
     id: FlowRunId,
     trigger: Trigger,
   ): Effect.fn.Return<FlowRunSummary, FlowError> {
-    return yield* lock.withRunLock(id, drive(id, { ...trigger, at: trigger.at || (yield* now) }));
+    const run = yield* lock.withRunLock(
+      id,
+      drive(id, { ...trigger, at: trigger.at || (yield* now) }),
+    );
+    yield* publish(run);
+    return run;
   });
   const stepRun = Effect.fn("FlowService.stepRun")(function* (id: FlowStepRunId) {
     const owner = yield* repository.runForStep(id).pipe(Effect.mapError(mapError));
     if (!owner) return yield* fail("Step run not found.");
     return owner;
   });
-  const settleThread = Effect.fn("FlowService.settleThread")(function* (threadId: ThreadId) {
+  const settleThread = Effect.fn("FlowService.settleThread")(function* (
+    threadId: ThreadId,
+    continuationAttempted = false,
+    recovering = false,
+  ) {
     const link = yield* repository.runForThread(threadId).pipe(Effect.mapError(mapError));
     if (!link || link.role !== "step_thread") return;
     const state = yield* readState(link.flowRunId);
@@ -381,26 +416,29 @@ const make = Effect.gen(function* () {
         !["running", "waiting_report"].includes(step.status)
       )
         continue;
-      const settled = yield* runtime.settled(threadId, step.expectedMessageId);
+      const settled = yield* runtime.settled(
+        threadId,
+        step.expectedMessageId,
+        continuationAttempted,
+      );
       if (settled && settled.turnId !== step.lastSettledTurnId)
         yield* triggerRun(link.flowRunId, {
           type: "step_thread_settled",
           stepRunId: step.id,
           ...settled,
           ...(settled.failed
-            ? { error: { code: "turn_failed" as const, message: "Step thread did not complete." } }
+            ? {
+                error: {
+                  code:
+                    settled.interrupted && (recovering || continuationAttempted)
+                      ? ("interrupted" as const)
+                      : ("turn_failed" as const),
+                  message: "Step thread did not complete.",
+                },
+              }
             : {}),
           at: "",
         });
-    }
-  });
-  const catchUp = Effect.fn("FlowService.catchUp")(function* () {
-    for (const id of yield* repository.active().pipe(Effect.mapError(mapError))) {
-      const state = yield* readState(id);
-      for (const threadId of new Set(
-        state.stepRuns.flatMap((step) => (step.threadId ? [step.threadId] : [])),
-      ))
-        yield* settleThread(threadId);
     }
   });
   const read = Effect.fn("FlowService.read")(function* (projectId: ProjectId, flowId: FlowId) {
@@ -414,13 +452,44 @@ const make = Effect.gen(function* () {
     observing = true;
     yield* runtime.events.pipe(
       Stream.runForEach((id) =>
-        settleThread(id).pipe(
-          Effect.catch((error) => Effect.logWarning("Flow settlement failed", { cause: error })),
-        ),
+        settleThread(id).pipe(Effect.catchCause(logFailure("Flow settlement failed"))),
+      ),
+      Effect.catchCause(logFailure("Flow event stream failed")),
+      Effect.repeat(Schedule.spaced("1 second")),
+      Effect.ensuring(
+        Effect.sync(() => {
+          observing = false;
+        }),
       ),
       Effect.forkIn(scope),
     );
   });
+  const stopForThread = Effect.fn("FlowService.stopForThread")(function* (id: ThreadId) {
+    const link = yield* repository.runForThread(id).pipe(Effect.mapError(mapError));
+    if (link?.role !== "flow_run_thread") return;
+    const state = yield* readState(link.flowRunId);
+    threadRuns.set(id, state.run);
+    if (["starting", "running", "waiting_approval"].includes(state.run.status)) {
+      yield* triggerRun(link.flowRunId, { type: "stop", at: "" });
+      const preparing = preparationFibers.get(link.flowRunId);
+      if (preparing) yield* Fiber.interrupt(preparing);
+    }
+  });
+  const lifecycle = yield* Effect.serviceOption(Lifecycle.FlowLifecycle);
+  if (lifecycle._tag === "Some")
+    yield* lifecycle.value.register({
+      deleted: Effect.fn("FlowService.deleted")(function* (id) {
+        const run = threadRuns.get(id);
+        threadRuns.delete(id);
+        if (run) yield* publish(run);
+      }),
+      stop: (id) =>
+        stopForThread(id).pipe(Effect.catchCause(logFailure("Flow lifecycle cleanup failed"))),
+      continued: (id) =>
+        settleThread(id, true).pipe(
+          Effect.catchCause(logFailure("Flow continuation settlement failed")),
+        ),
+    });
   return FlowService.of({
     read,
     validate: Effect.fn("FlowService.validate")((definition) => definitions.validate(definition)),
@@ -483,132 +552,166 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(mapError));
     }),
     start: Effect.fn("FlowService.start")((input) =>
-      startGate.withPermits(1)(
-        Effect.gen(function* () {
-          if (input.scheduledTaskId) {
-            const active =
-              yield* sql`SELECT id FROM flow_runs WHERE scheduled_task_id = ${input.scheduledTaskId} AND status IN ('starting', 'running', 'waiting_approval') LIMIT 1`.pipe(
-                Effect.mapError(() => fail("Could not check previous flow run.")),
+      Effect.gen(function* () {
+        const gate = allocationLocks.get(input.projectId) ?? Semaphore.makeUnsafe(1);
+        allocationLocks.set(input.projectId, gate);
+        const allocated = yield* gate.withPermits(1)(
+          Effect.gen(function* () {
+            if (input.scheduledTaskId) {
+              const active =
+                yield* sql`SELECT id FROM flow_runs WHERE scheduled_task_id = ${input.scheduledTaskId} AND status IN ('starting', 'running', 'waiting_approval') LIMIT 1`.pipe(
+                  Effect.mapError(() => fail("Could not check previous flow run.")),
+                );
+              if (active.length) return yield* fail("skipped: previous flow run still active");
+            }
+            const entry = yield* read(input.projectId, input.flowId);
+            if (!entry.definition || !entry.validation.valid)
+              return yield* fail(
+                entry.validation.errors
+                  .map((error) => `${error.path}: ${error.message}`)
+                  .join("; "),
               );
-            if (active.length) return yield* fail("skipped: previous flow run still active");
-          }
-          const entry = yield* read(input.projectId, input.flowId);
-          if (!entry.definition || !entry.validation.valid)
-            return yield* fail(
-              entry.validation.errors.map((error) => `${error.path}: ${error.message}`).join("; "),
+            const definition = entry.definition;
+            const inputs = yield* Effect.try({
+              try: () =>
+                input.coerce
+                  ? coerceFlowInputs(
+                      definition.inputs ?? [],
+                      input.inputs as Record<string, string>,
+                    )
+                  : resolveFlowInputs(definition.inputs ?? [], input.inputs),
+              catch: (cause) =>
+                fail(cause instanceof FlowValueError ? cause.message : "Invalid flow inputs."),
+            });
+            const id = FlowRunId.make(
+              yield* crypto
+                .randomUUIDv4()
+                .pipe(Effect.mapError(() => fail("Could not allocate flow run id."))),
             );
-          const definition = entry.definition;
-          const inputs = yield* Effect.try({
-            try: () =>
-              input.coerce
-                ? coerceFlowInputs(definition.inputs ?? [], input.inputs as Record<string, string>)
-                : resolveFlowInputs(definition.inputs ?? [], input.inputs),
-            catch: (cause) =>
-              fail(cause instanceof FlowValueError ? cause.message : "Invalid flow inputs."),
+            const threadId = ThreadId.make(`flow:${id}`);
+            const at = yield* now;
+            let state: State = {
+              version: 0,
+              definition,
+              inputs,
+              workspace: null,
+              baseRef: definition.workspace === "root" ? null : (input.baseRef ?? "HEAD"),
+              stepRuns: [],
+              approvals: [],
+              run: {
+                id,
+                projectId: input.projectId,
+                flowId: input.flowId,
+                flowTitle: definition.title,
+                runNumber: 1,
+                flowRunThreadId: threadId,
+                status: "starting",
+                activeStepRunIds: [],
+                error: null,
+                createdAt: at,
+                startedAt: null,
+                finishedAt: null,
+                creationSource: input.creationSource ?? "web",
+                ...(input.webhookInputs ? { webhookInputs: input.webhookInputs } : {}),
+                ...(input.scheduledTaskId ? { scheduledTaskId: input.scheduledTaskId } : {}),
+              },
+            };
+            state = {
+              ...state,
+              run: yield* repository.create(state).pipe(Effect.mapError(mapError)),
+            };
+            return { state, definition, id, threadId, at };
+          }),
+        );
+        const { state, definition, id, threadId, at } = allocated;
+        yield* publish(state.run);
+        const prepare = Effect.gen(function* () {
+          const workspace = yield* runtime.launch({
+            creationSource: state.run.creationSource,
+            projectId: input.projectId,
+            threadId,
+            commandId: `flow:${id}`,
+            title: `▶ ${definition.title} · run ${state.run.runNumber}`,
+            workspace:
+              definition.workspace === "root"
+                ? { type: "root" }
+                : {
+                    type: "worktree",
+                    baseRef: input.baseRef ?? "HEAD",
+                    branch: `flow/${input.flowId}/${id.slice(0, 8)}`,
+                    startFromOrigin: false,
+                  },
+            model: definition.defaults?.model,
+            runtimeMode: definition.defaults?.runtimeMode,
+            interactionMode: definition.defaults?.interactionMode,
           });
-          const id = FlowRunId.make(
-            yield* crypto
-              .randomUUIDv4()
-              .pipe(Effect.mapError(() => fail("Could not allocate flow run id."))),
+          yield* lock.withRunLock(
+            id,
+            Effect.gen(function* () {
+              const current = yield* readState(id);
+              if (current.run.status !== "starting") return;
+              yield* sql`UPDATE flow_runs SET workspace = ${workspace} WHERE id = ${id}`.pipe(
+                Effect.mapError(() => fail("Could not persist flow workspace.")),
+              );
+              yield* drive(id, { type: "start", at });
+            }),
           );
-          const threadId = ThreadId.make(`flow:${id}`);
-          const at = yield* now;
-          const root = yield* runtime.root(input.projectId);
-          let state: State = {
-            version: 0,
-            definition,
-            inputs,
-            workspace: root,
-            baseRef: definition.workspace === "root" ? null : (input.baseRef ?? "HEAD"),
-            stepRuns: [],
-            approvals: [],
-            run: {
-              id,
-              projectId: input.projectId,
-              flowId: input.flowId,
-              flowTitle: definition.title,
-              runNumber: 1,
-              flowRunThreadId: threadId,
-              status: "starting",
-              activeStepRunIds: [],
-              error: null,
-              createdAt: at,
-              startedAt: null,
-              finishedAt: null,
-              ...(input.scheduledTaskId ? { scheduledTaskId: input.scheduledTaskId } : {}),
-            },
-          };
-          state = {
-            ...state,
-            run: yield* repository.create(state).pipe(Effect.mapError(mapError)),
-          };
-          const workspace = yield* runtime
-            .launch({
-              projectId: input.projectId,
-              threadId,
-              commandId: `flow:${id}`,
-              title: `▶ ${definition.title} · run ${state.run.runNumber}`,
-              workspace:
-                definition.workspace === "root"
-                  ? { type: "root" }
-                  : {
-                      type: "worktree",
-                      baseRef: input.baseRef ?? "HEAD",
-                      branch: `flow/${input.flowId}/${id.slice(0, 8)}`,
-                      startFromOrigin: false,
-                    },
-              model: definition.defaults?.model,
-              runtimeMode: definition.defaults?.runtimeMode,
-              interactionMode: definition.defaults?.interactionMode,
-            })
-            .pipe(
-              Effect.onError(() =>
-                repository
-                  .apply(id, 0, [
-                    {
-                      type: "run",
-                      run: {
-                        ...state.run,
-                        status: "failed",
-                        finishedAt: at,
-                        error: {
-                          code: "command_error",
-                          message: "Flow workspace preparation failed.",
-                        },
-                      },
-                    },
-                  ])
-                  .pipe(Effect.ignore),
-              ),
-            );
-          yield* sql`UPDATE flow_runs SET workspace = ${workspace} WHERE id = ${id}`.pipe(
-            Effect.mapError(() => fail("Could not persist flow workspace.")),
-          );
-          return yield* triggerRun(id, { type: "start", at });
-        }),
-      ),
+          yield* publish((yield* readState(id)).run);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              if (Cause.hasInterruptsOnly(cause)) return;
+              yield* Effect.logWarning("Flow workspace preparation failed", {
+                flowRunId: id,
+                cause,
+              });
+              yield* triggerRun(id, { type: "recovered", continuingThreadIds: [], at: "" }).pipe(
+                Effect.catchCause(logFailure("Flow preparation failure could not be recorded")),
+              );
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              preparationFibers.delete(id);
+            }),
+          ),
+        );
+        preparationFibers.set(id, yield* prepare.pipe(Effect.forkIn(scope)));
+        return state.run;
+      }),
     ),
     trigger: triggerRun,
-    stop: Effect.fn("FlowService.stop")((id) => triggerRun(id, { type: "stop", at: "" })),
+    stop: Effect.fn("FlowService.stop")(function* (id) {
+      const run = yield* triggerRun(id, { type: "stop", at: "" });
+      const preparing = preparationFibers.get(id);
+      if (preparing) yield* Fiber.interrupt(preparing);
+      return run;
+    }),
+    stopForThread,
     resume: Effect.fn("FlowService.resume")((id) => triggerRun(id, { type: "resume", at: "" })),
     retryStep: Effect.fn("FlowService.retryStep")(function* (id) {
       return yield* triggerRun(yield* stepRun(id), { type: "retry_step", stepRunId: id, at: "" });
     }),
-    answerApproval: Effect.fn("FlowService.answerApproval")(function* (input, answeredBy) {
-      return yield* triggerRun(yield* stepRun(input.stepRunId), {
-        type: "approval_answered",
-        stepRunId: input.stepRunId,
-        decision: input.decision,
-        ...(input.comment === undefined ? {} : { comment: input.comment }),
-        answeredBy,
-        at: "",
-      });
-    }),
+    answerApproval: Effect.fn("FlowService.answerApproval")(
+      function* (input, answeredBy, callerThreadId) {
+        const owner = yield* stepRun(input.stepRunId);
+        if (callerThreadId && (yield* runtime.belongsToRun(callerThreadId, owner)))
+          return yield* fail("Threads belonging to a flow run cannot answer its approvals.");
+        return yield* triggerRun(owner, {
+          type: "approval_answered",
+          stepRunId: input.stepRunId,
+          decision: input.decision,
+          ...(input.comment === undefined ? {} : { comment: input.comment }),
+          answeredBy,
+          at: "",
+        });
+      },
+    ),
     report: Effect.fn("FlowService.report")(function* (threadId, fields) {
       const link = yield* repository.runForThread(threadId).pipe(Effect.mapError(mapError));
       if (!link || link.role !== "step_thread")
         return yield* fail("t3_flow_report requires a running flow step thread.");
-      return yield* lock.withRunLock(
+      const result = yield* lock.withRunLock(
         link.flowRunId,
         Effect.gen(function* () {
           const state = yield* readState(link.flowRunId);
@@ -638,6 +741,11 @@ const make = Effect.gen(function* () {
           return { valid: true, errors: [] };
         }),
       );
+      yield* readState(link.flowRunId).pipe(
+        Effect.flatMap((state) => publish(state.run)),
+        Effect.catchCause(logFailure("Flow report broadcast failed")),
+      );
+      return result;
     }),
     runsPage: Effect.fn("FlowService.runsPage")((projectId, before) =>
       repository.list(projectId, before).pipe(Effect.mapError(mapError)),
@@ -646,18 +754,27 @@ const make = Effect.gen(function* () {
       Stream.unwrap(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
-          const page = yield* repository.list(projectId).pipe(Effect.mapError(mapError));
+          let page = yield* repository.list(projectId).pipe(Effect.mapError(mapError));
           return Stream.concat(
             Stream.make({ type: "snapshot", ...page } satisfies FlowRunsEvent),
             Stream.fromSubscription(subscription).pipe(
               Stream.filter((change) => change.projectId === projectId),
-              Stream.map((change): FlowRunsEvent => ({
-                type: "upsert",
-                runs:
-                  change.event.type === "upsert" && change.event.summary
-                    ? [change.event.summary]
-                    : [],
-              })),
+              Stream.mapEffect(() => repository.list(projectId).pipe(Effect.mapError(mapError))),
+              Stream.map((current): FlowRunsEvent => {
+                const previous = new Map(page.runs.map((run) => [run.id, JSON.stringify(run)]));
+                const removed = page.runs.some(
+                  (run) => !current.runs.some((candidate) => candidate.id === run.id),
+                );
+                page = current;
+                return removed
+                  ? { type: "snapshot", ...current }
+                  : {
+                      type: "upsert",
+                      runs: current.runs.filter(
+                        (run) => previous.get(run.id) !== JSON.stringify(run),
+                      ),
+                    };
+              }),
             ),
           );
         }),
@@ -666,14 +783,36 @@ const make = Effect.gen(function* () {
       Stream.unwrap(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
-          const snapshot = snapshotOf(yield* readState(id));
+          let previous = snapshotOf(yield* readState(id));
           return Stream.concat(
-            Stream.make({ type: "snapshot", ...snapshot } satisfies FlowRunEvent),
+            Stream.make({ type: "snapshot", ...previous } satisfies FlowRunEvent),
             Stream.fromSubscription(subscription).pipe(
-              Stream.filter(
-                (change) => change.event.type === "upsert" && change.event.summary?.id === id,
-              ),
-              Stream.map((change) => change.event),
+              Stream.filter((change) => change.id === id),
+              Stream.mapEffect(() => readState(id)),
+              Stream.map((state): FlowRunEvent => {
+                const current = snapshotOf(state);
+                const oldSteps = new Map(
+                  previous.stepRuns.map((step) => [step.id, JSON.stringify(step)]),
+                );
+                const oldApprovals = new Map(
+                  previous.approvals.map((approval) => [
+                    approval.stepRunId,
+                    JSON.stringify(approval),
+                  ]),
+                );
+                const event: FlowRunEvent = {
+                  type: "upsert",
+                  summary: current.summary,
+                  stepRuns: current.stepRuns.filter(
+                    (step) => oldSteps.get(step.id) !== JSON.stringify(step),
+                  ),
+                  approvals: current.approvals.filter(
+                    (approval) => oldApprovals.get(approval.stepRunId) !== JSON.stringify(approval),
+                  ),
+                };
+                previous = current;
+                return event;
+              }),
             ),
           );
         }),
@@ -685,25 +824,33 @@ const make = Effect.gen(function* () {
     runForThread: Effect.fn("FlowService.runForThread")((id) =>
       repository.runForThread(id).pipe(Effect.mapError(mapError)),
     ),
-    catchUp,
+    settleThread,
     recover: Effect.fn("FlowService.recover")(function* () {
-      yield* sweepOrphanedFlowRuns().pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.mapError(() => fail("Could not sweep orphaned flow runs.")),
-      );
-      const originals = new Map<FlowRunId, State>();
-      for (const id of yield* repository.active().pipe(Effect.mapError(mapError)))
-        originals.set(id, yield* readState(id));
-      recoveryActions = new Map();
       yield* Effect.gen(function* () {
-        yield* catchUp();
+        const originals = new Map<FlowRunId, State>();
+        for (const id of yield* repository.active().pipe(Effect.mapError(mapError)))
+          yield* readState(id).pipe(
+            Effect.tap((state) =>
+              Effect.sync(() => {
+                originals.set(id, state);
+              }),
+            ),
+            Effect.catchCause(logFailure("Flow recovery read failed")),
+          );
+        recoveryActions = new Map();
         for (const [id, original] of originals) {
-          const state = yield* readState(id);
-          if (!["starting", "running", "waiting_approval"].includes(state.run.status)) continue;
-          const continuingThreadIds: ThreadId[] = [];
-          const continuingMessageIds: Record<string, string> = {};
-          for (const step of state.stepRuns)
-            if (step.threadId && ["running", "waiting_report"].includes(step.status)) {
+          yield* Effect.gen(function* () {
+            if (original.run.status !== "starting")
+              for (const threadId of new Set(
+                original.stepRuns.flatMap((step) => (step.threadId ? [step.threadId] : [])),
+              ))
+                yield* settleThread(threadId, false, true);
+            const state = yield* readState(id);
+            if (!["starting", "running", "waiting_approval"].includes(state.run.status)) return;
+            const continuingThreadIds: ThreadId[] = [];
+            const continuingMessageIds: Record<string, string> = {};
+            for (const step of state.stepRuns) {
+              if (!step.threadId || !["running", "waiting_report"].includes(step.status)) continue;
               const messageId = yield* runtime.continuing(
                 step.threadId,
                 step.expectedMessageId ?? "",
@@ -713,27 +860,36 @@ const make = Effect.gen(function* () {
                 continuingMessageIds[step.threadId] = messageId;
               }
             }
-          yield* triggerRun(id, {
-            type: "recovered",
-            interruptedStepRunIds: original.stepRuns
-              .filter((step) => ["running", "waiting_report"].includes(step.status))
-              .map((step) => step.id),
-            continuingThreadIds,
-            continuingMessageIds,
-            at: "",
-          });
-          for (const threadId of continuingThreadIds) yield* settleThread(threadId);
+            yield* triggerRun(id, {
+              type: "recovered",
+              interruptedStepRunIds: original.stepRuns
+                .filter((step) => ["running", "waiting_report"].includes(step.status))
+                .map((step) => step.id),
+              continuingThreadIds,
+              continuingMessageIds,
+              at: "",
+            });
+            for (const threadId of continuingThreadIds) yield* settleThread(threadId, false, true);
+          }).pipe(Effect.catchCause(logFailure("Flow recovery failed")));
         }
         const pending = recoveryActions!;
         recoveryActions = undefined;
-        for (const [id, actions] of pending)
-          yield* lock.withRunLock(
-            id,
-            Effect.gen(function* () {
-              yield* executeActions(yield* readState(id), actions);
-            }),
+        for (const [id, actions] of pending) {
+          yield* lock
+            .withRunLock(
+              id,
+              Effect.gen(function* () {
+                yield* executeActions(yield* readState(id), actions);
+              }),
+            )
+            .pipe(Effect.catchCause(logFailure("Flow recovery actions failed")));
+          yield* readState(id).pipe(
+            Effect.flatMap((state) => publish(state.run)),
+            Effect.catchCause(logFailure("Flow recovery broadcast failed")),
           );
+        }
       }).pipe(
+        Effect.catchCause(logFailure("Flow recovery unavailable")),
         Effect.ensuring(
           Effect.sync(() => {
             recoveryActions = undefined;

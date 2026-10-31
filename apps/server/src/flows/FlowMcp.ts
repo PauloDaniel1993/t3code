@@ -101,7 +101,9 @@ const handle = Effect.fn("FlowMcp.handle")(function* (
       };
     return {
       action: "start",
-      summary: yield* service.start({ ...input, projectId }).pipe(Effect.mapError(failure)),
+      summary: yield* service
+        .start({ creationSource: "mcp", ...input, projectId })
+        .pipe(Effect.mapError(failure)),
     };
   }
   switch (input.action) {
@@ -144,6 +146,7 @@ const handle = Effect.fn("FlowMcp.handle")(function* (
           .answerApproval(
             input,
             invocation.thread?.threadId ?? invocation.client?.sessionId ?? "mcp",
+            invocation.thread?.threadId,
           )
           .pipe(Effect.mapError(failure)),
       };

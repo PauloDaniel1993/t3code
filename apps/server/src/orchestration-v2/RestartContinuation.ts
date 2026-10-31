@@ -1,3 +1,5 @@
+import * as Option from "effect/Option";
+import * as FlowLifecycle from "../flows/FlowLifecycle.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -181,13 +183,16 @@ export function restartContinuationRun(
   return run;
 }
 
+export const restartContinuationMessageId = (runId: string) =>
+  MessageId.make(`message:restart-continuation:${runId}`);
+
 export const continueRestartedRun = Effect.fn("RestartContinuation.continueRestartedRun")(
   function* (input: { readonly threadId: ThreadId; readonly sourceRunId: RunId }) {
     const settings = yield* ServerSettings.ServerSettingsService;
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     if (!enabled) return;
     const threads = yield* ThreadManagementService.ThreadManagementService;
-    const messageId = MessageId.make(`message:restart-continuation:${input.sourceRunId}`);
+    const messageId = restartContinuationMessageId(input.sourceRunId);
     const projection = yield* threads.getThreadRecords(
       input.threadId,
       ["messages", "runs", "providerTurns", "attempts", "runtimeRequests", "turnItems"],
@@ -346,6 +351,8 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         Effect.gen(function* () {
           const threads = yield* ThreadManagementService.ThreadManagementService;
           yield* threads.recoverDelegatedTask(input.threadId, input.sourceRunId);
+          const flows = yield* Effect.serviceOption(FlowLifecycle.FlowLifecycle);
+          if (Option.isSome(flows)) yield* flows.value.continued(input.threadId);
         }),
       ),
     ),

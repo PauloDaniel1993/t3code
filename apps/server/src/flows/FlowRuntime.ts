@@ -1,22 +1,25 @@
 // @effect-diagnostics redundantMapError:off -- Each adapter operation normalizes failures at its I/O boundary.
 import {
   CommandId,
-  EventId,
   MessageId,
   ProviderInstanceId,
   type FlowModel,
+  type OrchestrationV2CreationSource,
+  type FlowRunId,
   type FlowRunSummary,
   type ProjectId,
   type RuntimeMode,
   type ProviderInteractionMode,
   type ThreadId,
 } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import * as Settings from "../serverSettings.ts";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
+import * as Outbox from "../orchestration-v2/EffectOutbox.ts";
+import { restartContinuationMessageId } from "../orchestration-v2/RestartContinuation.ts";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { subagentResultForRun } from "@t3tools/provider-core/server/subagentProjection";
@@ -28,6 +31,7 @@ import * as Registry from "../provider/ProviderInstanceRegistry.ts";
 import { FlowError } from "@t3tools/contracts";
 
 export interface FlowThreadInput {
+  readonly creationSource?: OrchestrationV2CreationSource | undefined;
   readonly projectId: ProjectId;
   readonly threadId: ThreadId;
   readonly commandId: string;
@@ -43,6 +47,10 @@ export interface FlowThreadInput {
 export class FlowRuntime extends Context.Service<
   FlowRuntime,
   {
+    readonly belongsToRun: (
+      threadId: ThreadId,
+      runId: FlowRunId,
+    ) => Effect.Effect<boolean, FlowError>;
     readonly root: (projectId: ProjectId) => Effect.Effect<string, FlowError>;
     readonly launch: (input: FlowThreadInput) => Effect.Effect<string, FlowError>;
     readonly send: (
@@ -57,8 +65,10 @@ export class FlowRuntime extends Context.Service<
     readonly settled: (
       threadId: ThreadId,
       messageId: string,
+      continuationAttempted?: boolean,
     ) => Effect.Effect<
       {
+        readonly interrupted?: boolean;
         readonly messageId: string;
         readonly turnId: string;
         readonly text: string;
@@ -73,11 +83,11 @@ export class FlowRuntime extends Context.Service<
     readonly events: Stream.Stream<ThreadId, FlowError>;
   }
 >()("t3/flows/FlowRuntime") {}
-const decodeContinuation = Schema.decodeEffect(
-  Schema.fromJsonString(Schema.Struct({ sourceRunId: Schema.String })),
-);
-const failure = () => new FlowError({ message: "Flow thread operation failed." });
+const failure = (cause?: unknown) =>
+  new FlowError({ message: "Flow thread operation failed.", cause });
 const make = Effect.gen(function* () {
+  const outbox = yield* Outbox.EffectOutboxV2;
+  const settings = yield* Settings.ServerSettingsService;
   const launch = yield* ThreadLaunch.ThreadLaunchService;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
@@ -86,49 +96,64 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const sequence = yield* sink.latestSequence().pipe(Effect.mapError(failure));
   const commit = Effect.fn("FlowRuntime.link")(function* (childId: ThreadId, parentId: ThreadId) {
-    const child = (yield* threads.getThreadRecords(childId, [])).thread;
     const parent = (yield* threads.getThreadRecords(parentId, [])).thread;
-    const now = yield* DateTime.now;
-    yield* sink.commitCommand({
+    yield* threads.dispatch({
+      type: "thread.metadata.update",
       commandId: CommandId.make(`flow-link:${childId}`),
       threadId: childId,
-      commandType: "flow.link",
-      acceptedAt: now,
-      effects: [],
-      events: [
-        {
-          id: EventId.make(`flow-link:${childId}`),
-          type: "thread.metadata-updated",
-          threadId: childId,
-          providerInstanceId: child.providerInstanceId,
-          occurredAt: now,
-          payload: {
-            ...child,
-            lineage: {
-              parentThreadId: parentId,
-              relationshipToParent: "subagent",
-              rootThreadId: parent.lineage.rootThreadId,
-            },
-          },
-        },
-      ],
+      lineage: {
+        parentThreadId: parentId,
+        relationshipToParent: "subagent",
+        rootThreadId: parent.lineage.rootThreadId,
+      },
     });
   });
   return FlowRuntime.of({
+    belongsToRun: Effect.fn("FlowRuntime.belongsToRun")(function* (threadId, runId) {
+      const seen = new Set<ThreadId>();
+      let id: ThreadId | null = threadId;
+      while (id && !seen.has(id)) {
+        seen.add(id);
+        const rows =
+          yield* sql`SELECT 1 FROM flow_runs WHERE id = ${runId} AND flow_run_thread_id = ${id} UNION ALL SELECT 1 FROM flow_step_runs WHERE flow_run_id = ${runId} AND thread_id = ${id}`.pipe(
+            Effect.mapError(failure),
+          );
+        if (rows.length) return true;
+        id = yield* threads.getThreadShell(id).pipe(
+          Effect.map((shell) => shell?.lineage.parentThreadId ?? null),
+          Effect.mapError(failure),
+        );
+      }
+      return false;
+    }),
     root: Effect.fn("FlowRuntime.root")(function* (projectId) {
       const project = yield* projects.getById(projectId).pipe(Effect.mapError(failure));
       if (Option.isNone(project)) return yield* new FlowError({ message: "Project not found." });
       return project.value.workspaceRoot;
     }),
     launch: Effect.fn("FlowRuntime.launch")(function* (input) {
+      if (input.parentThreadId) {
+        const parent = yield* threads
+          .getThreadShell(input.parentThreadId)
+          .pipe(Effect.mapError(failure));
+        if (!parent || parent.archivedAt || parent.deletedAt)
+          return yield* new FlowError({ message: "Flow run thread is archived or deleted." });
+      }
+      const project = yield* projects.getById(input.projectId).pipe(Effect.mapError(failure));
+      if (Option.isNone(project)) return yield* new FlowError({ message: "Project not found." });
+      const defaults = resolveProjectSettings(
+        yield* settings.getSettings.pipe(Effect.mapError(failure)),
+        input.projectId,
+      ).settings;
+      const fallback = project.value.defaultModelSelection ?? defaults.defaultModelSelection;
       const instances = yield* registry.listInstances;
-      const instance =
-        input.model?.providerInstanceId ?? instances.find((item) => item.enabled)?.instanceId;
+      const instance = input.model?.providerInstanceId ?? fallback?.instanceId;
       const selected = instances.find((item) => item.instanceId === instance && item.enabled);
       if (!selected) return yield* new FlowError({ message: "No enabled provider instance." });
       const snapshot = yield* selected.snapshot.getSnapshot;
       const model =
         input.model?.model ??
+        fallback?.model ??
         snapshot.models.find((model) => model.isDefault)?.slug ??
         snapshot.models[0]?.slug;
       if (!model) return yield* new FlowError({ message: "No model available for the flow." });
@@ -153,14 +178,17 @@ const make = Effect.gen(function* () {
                 }
               : {}),
           },
-          runtimeMode: input.runtimeMode ?? "full-access",
+          runtimeMode: input.runtimeMode ?? defaults.defaultRuntimeMode,
           interactionMode: input.interactionMode ?? "default",
           createdBy: "user",
-          creationSource: "mcp",
+          creationSource: input.creationSource ?? "web",
         })
         .pipe(Effect.mapError(failure));
       if (input.parentThreadId)
-        yield* commit(input.threadId, input.parentThreadId).pipe(Effect.mapError(failure));
+        yield* commit(input.threadId, input.parentThreadId).pipe(
+          Effect.retry({ times: 2 }),
+          Effect.mapError(failure),
+        );
       if (input.prompt !== undefined && input.messageId !== undefined) {
         yield* threads
           .sendToThread({
@@ -172,7 +200,7 @@ const make = Effect.gen(function* () {
             attachments: [],
             mode: "queue",
             createdBy: "user",
-            creationSource: "mcp",
+            creationSource: input.creationSource ?? "web",
           })
           .pipe(Effect.mapError(failure));
       }
@@ -212,7 +240,7 @@ const make = Effect.gen(function* () {
           attachments: [],
           mode: "queue",
           createdBy: "user",
-          creationSource: "mcp",
+          creationSource: input.creationSource ?? "web",
           ...(input.model
             ? {
                 modelSelection: {
@@ -244,45 +272,29 @@ const make = Effect.gen(function* () {
     ),
     attention: Effect.fn("FlowRuntime.attention")(function* (run) {
       const thread = (yield* threads.getThreadRecords(run.flowRunThreadId, [])).thread;
-      const at = yield* DateTime.now;
-      yield* sink.commitCommand({
-        commandId: CommandId.make(
-          `flow-attention:${run.id}:${run.status}:${run.activeStepRunIds.join(":")}`,
-        ),
+      const flowNeedsInput = run.status === "waiting_approval";
+      if ((thread.flowNeedsInput ?? false) === flowNeedsInput) return;
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
         threadId: thread.id,
-        commandType: "flow.attention",
-        acceptedAt: at,
-        effects: [],
-        events: [
-          {
-            id: EventId.make(
-              `flow-attention:${run.id}:${run.status}:${DateTime.toEpochMillis(at)}`,
-            ),
-            type: "thread.metadata-updated",
-            threadId: thread.id,
-            occurredAt: at,
-            providerInstanceId: thread.providerInstanceId,
-            payload: {
-              ...thread,
-              flowNeedsInput: run.status === "waiting_approval",
-              updatedAt: at,
-            },
-          },
-        ],
+        commandId: CommandId.make(
+          `flow-attention:${run.id}:${run.status}:${run.finishedAt}:${run.activeStepRunIds.join(":")}`,
+        ),
+        flowNeedsInput,
       });
-      if (["succeeded", "failed", "cancelled"].includes(run.status))
-        yield* threads.dispatch({
-          type: "thread.mark-unread",
-          threadId: thread.id,
-          commandId: CommandId.make(`flow-unread:${run.id}:${run.status}:${run.finishedAt}`),
-        });
     }, Effect.mapError(failure)),
-    settled: Effect.fn("FlowRuntime.settled")(function* (threadId, messageId) {
+    settled: Effect.fn("FlowRuntime.settled")(function* (
+      threadId,
+      messageId,
+      continuationAttempted = false,
+    ) {
       if (!(yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure)))) return null;
       const projection = yield* threads
-        .getThreadRecords(threadId, ["runs", "messages", "turnItems"])
+        .getThreadRecords(threadId, ["runs"])
         .pipe(Effect.mapError(failure));
       const run = projection.runs.find((run) => run.userMessageId === messageId);
+      if (!run && continuationAttempted && messageId.startsWith("message:restart-continuation:"))
+        return { messageId, turnId: messageId, text: "", failed: true, interrupted: true };
       if (
         !run ||
         !["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(run.status)
@@ -292,16 +304,26 @@ const make = Effect.gen(function* () {
         (candidate) => candidate.restartContinuationOfRunId === run.id,
       );
       if (continuation) return null;
-      const pending =
-        yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND effect_type = 'provider-runtime.continue' AND status IN ('pending', 'running')`.pipe(
-          Effect.mapError(failure),
-        );
-      if (pending.length) return null;
+      const pending = yield* outbox.pendingForThread(threadId).pipe(Effect.mapError(failure));
+      if (
+        !continuationAttempted &&
+        pending.some((effect) => effect.request.type === "provider-runtime.continue")
+      )
+        return null;
       return {
         messageId,
         turnId: run.id,
-        text: subagentResultForRun(projection, run).text,
+        text: subagentResultForRun(
+          yield* threads
+            .getThreadRecords(threadId, ["messages", "turnItems"], {
+              messageRunIds: [run.id],
+              turnItemRunIds: [run.id],
+            })
+            .pipe(Effect.mapError(failure)),
+          run,
+        ).text,
         failed: run.status !== "completed",
+        interrupted: run.status === "cancelled" || run.status === "interrupted",
       };
     }),
     continuing: Effect.fn("FlowRuntime.continuing")(function* (threadId, messageId) {
@@ -320,22 +342,21 @@ const make = Effect.gen(function* () {
         latest = continuation;
       }
       if (latest !== source) return latest.userMessageId;
-      const rows = yield* sql<{
-        payload_json: string;
-      }>`SELECT payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND effect_type = 'provider-runtime.continue' AND status IN ('pending', 'running') ORDER BY rowid DESC LIMIT 1`.pipe(
-        Effect.mapError(failure),
+      const pending = yield* outbox.pendingForThread(threadId).pipe(Effect.mapError(failure));
+      const continuation = pending.find(
+        (effect) =>
+          effect.request.type === "provider-runtime.continue" &&
+          effect.request.sourceRunId === source.id,
       );
-      if (!rows[0]) return null;
-      const request = yield* decodeContinuation(rows[0].payload_json).pipe(
-        Effect.mapError(failure),
-      );
-      return request.sourceRunId === source.id
-        ? `message:restart-continuation:${request.sourceRunId}`
-        : null;
+      return continuation ? restartContinuationMessageId(source.id) : null;
     }),
     events: sink.stream({ afterSequence: sequence }).pipe(
       Stream.filter(
-        (stored) => stored.event.type === "run.updated" || stored.event.type === "run.created",
+        (stored) =>
+          stored.event.type === "run.updated" &&
+          ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(
+            stored.event.payload.status,
+          ),
       ),
       Stream.map((stored) => stored.event.threadId),
       Stream.mapError(failure),

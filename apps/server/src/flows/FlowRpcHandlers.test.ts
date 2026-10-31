@@ -38,7 +38,7 @@ it.effect.each([false, true])(
         retryStep: handled,
         answerApproval: handled,
       });
-      const handlers = yield* makeFlowRpcHandlers.pipe(Effect.provide(service));
+      const handlers = yield* makeFlowRpcHandlers("test-session").pipe(Effect.provide(service));
       const client = yield* RpcTest.makeClient(group).pipe(
         Effect.provide(
           Layer.mergeAll(

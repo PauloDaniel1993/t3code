@@ -1,3 +1,4 @@
+import * as FlowLifecycle from "../flows/FlowLifecycle.ts";
 import * as FlowService from "../flows/FlowService.ts";
 import * as FlowDefinitions from "../flows/FlowDefinitions.ts";
 import * as FlowRunRepository from "../flows/FlowRunRepository.ts";
@@ -218,6 +219,7 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
 );
 
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
+  Layer.provide(FlowLifecycle.layer),
   Layer.provide(
     Layer.mergeAll(
       layerCheckpointServiceProvided,
@@ -320,6 +322,7 @@ const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
 const layerFlowProvided = FlowService.layer.pipe(
+  Layer.provide(FlowLifecycle.layer),
   Layer.provide(
     Layer.mergeAll(
       FlowDefinitions.layer.pipe(Layer.provide(WorkspacePaths.layer)),
@@ -333,6 +336,7 @@ const layerFlowProvided = FlowService.layer.pipe(
             layerThreadManagementProvided,
             layerProjectService,
             layerEventSink,
+            EffectOutbox.layer,
           ),
         ),
       ),
@@ -375,6 +379,7 @@ const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.laye
   ),
 );
 const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
+  Layer.provide(FlowLifecycle.layer),
   Layer.provide(
     Layer.mergeAll(
       EffectOutbox.layer,

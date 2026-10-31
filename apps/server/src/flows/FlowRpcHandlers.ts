@@ -3,7 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as FlowService from "./FlowService.ts";
 
-export const makeFlowRpcHandlers = Effect.gen(function* () {
+export const makeFlowRpcHandlers = Effect.fn("FlowRpcHandlers.make")(function* (
+  answeredBy: string,
+) {
   const service = yield* FlowService.FlowService;
   const connection = {};
   let subscriptions = 0;
@@ -71,7 +73,7 @@ export const makeFlowRpcHandlers = Effect.gen(function* () {
       stepRunId: Parameters<typeof service.retryStep>[0];
     }) => service.retryStep(stepRunId),
     [FLOW_WS_METHODS.flowAnswerApproval]: (input: Parameters<typeof service.answerApproval>[0]) =>
-      service.answerApproval(input, "user"),
+      service.answerApproval(input, answeredBy),
     [FLOW_WS_METHODS.flowStepRunOutput]: ({
       stepRunId,
     }: {
