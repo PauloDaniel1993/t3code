@@ -1,3 +1,4 @@
+import { FlowRunStatusChip } from "./FlowRunCard";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -1105,6 +1106,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         >
           {thread.title}
         </Text>
+        <FlowRunStatusChip
+          threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
+          projectId={thread.projectId}
+        />
         <View className="flex-row items-center gap-1.5" style={{ minHeight: titleLineHeight }}>
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
           {pinnedRow ? (
@@ -1434,6 +1439,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             >
               {thread.title}
             </Text>
+            <FlowRunStatusChip
+              threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
+              projectId={thread.projectId}
+            />
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
                 sidebar={sidebarPane}

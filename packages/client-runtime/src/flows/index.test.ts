@@ -111,24 +111,32 @@ describe("flow views", () => {
     expect(flowStepStatusById(snapshot).get("review")).toBe("running");
     expect(snapshot.stepRuns).toEqual([retry, first]);
   });
-  it("labels a map item with the container's final item count", () => {
-    const parent = step("map", {
-      outputFields: {
-        kind: "map",
-        items: [{ status: "succeeded" }, { status: "succeeded" }],
-      },
-    });
-    const child = step("child", {
-      stepPath: ["map", "child"],
-      parentStepRunId: parent.id,
-      itemIndex: 1,
-    });
-    expect(
-      flowStepRunList({ ...base, summary, approvals: [], stepRuns: [parent, child] }).find(
-        (row) => row.id === child.id,
-      )?.itemLabel,
-    ).toBe("item 2 of 2");
-  });
+  it.each(["running", "succeeded"] as const)(
+    "labels a map item with its total while %s",
+    (status) => {
+      const parent = step("map", {
+        status,
+        ...(status === "running"
+          ? { itemCount: 2 }
+          : {
+              outputFields: {
+                kind: "map",
+                items: [{ status: "succeeded" }, { status: "succeeded" }],
+              },
+            }),
+      });
+      const child = step("child", {
+        stepPath: ["map", "child"],
+        parentStepRunId: parent.id,
+        itemIndex: 1,
+      });
+      expect(
+        flowStepRunList({ ...base, summary, approvals: [], stepRuns: [parent, child] }).find(
+          (row) => row.id === child.id,
+        )?.itemLabel,
+      ).toBe("item 2 of 2");
+    },
+  );
   it("replaces reconnect snapshots and merges repeated detail deltas by id", () => {
     const original: FlowRunSnapshot = {
       ...base,

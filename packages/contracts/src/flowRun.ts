@@ -188,9 +188,11 @@ export type FlowOutputFields = typeof FlowOutputFields.Type;
 export const FlowStepRunState = Schema.Struct({
   ...FlowStepRun.mapFields(({ output: _output, ...fields }) => fields).fields,
   outputFields: Schema.NullOr(FlowOutputFields),
+  itemCount: Schema.optional(NonNegativeInt),
 });
 export type FlowStepRunState = typeof FlowStepRunState.Type;
 export const FlowRunSnapshot = Schema.Struct({
+  baseRef: Schema.optional(Schema.NullOr(Schema.String)),
   definition: FlowDefinition,
   inputs: FlowInputs,
   summary: FlowRunSummary,

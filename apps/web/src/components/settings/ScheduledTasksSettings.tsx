@@ -1,3 +1,6 @@
+import { flowEnvironment } from "../../state/flows";
+import { ScheduledFlowSummary } from "../flows/ScheduledFlowSummary";
+import { ScheduledFlowFields } from "../flows/ScheduledFlowFields";
 import {
   isProviderEligibleForScope,
   workspaceFolderScope,
@@ -18,6 +21,7 @@ import {
 import { type ReactNode, useRef, useState } from "react";
 import type {
   EnvironmentId,
+  FlowId,
   ModelSelection,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
@@ -26,7 +30,6 @@ import type {
   ScheduledTaskSchedule,
   ScheduledTaskUpsertInput,
   ScheduledTaskWebhookDeliverySummary,
-  ThreadId,
 } from "@t3tools/contracts";
 import {
   DEFAULT_WEBHOOK_PROMPT,
@@ -86,6 +89,7 @@ import {
   scheduleFromDraft,
   scheduledTaskDefaultModel,
   taskToDraft,
+  scheduledTaskTargetFromDraft,
   type DraftState,
   type ScheduleMode,
   type WorkspaceMode,
@@ -352,6 +356,8 @@ function statusVariant(status: ScheduledTask["lastRunStatus"]) {
 export function ScheduledTasksSettings(target: {
   readonly environmentId?: EnvironmentId;
   readonly taskId?: ScheduledTaskId | undefined;
+  readonly flowId?: FlowId;
+  readonly projectId?: ProjectId;
 }) {
   const { scope, environments, connectedEnvironments, environment } = useSettingsScope();
   const [editor, setEditor] = useState<{
@@ -392,12 +398,18 @@ export function ScheduledTasksSettings(target: {
     if (editor === null) setEditor({ environmentId: linkedEnvironmentId, task: linkedTask });
   }
   const navigate = useNavigate({ from: "/settings/scheduled-tasks" });
+  const [openedFlow, setOpenedFlow] = useState<FlowId | undefined>();
+  if (!target.flowId && openedFlow) setOpenedFlow(undefined);
+  if (target.flowId && linkedEnvironmentId && openedFlow !== target.flowId) {
+    setOpenedFlow(target.flowId);
+    setEditor({ environmentId: linkedEnvironmentId, task: null });
+  }
   const closeEditor = () => {
     setEditor(null);
-    if (target.taskId === undefined) return;
+    if (target.taskId === undefined && target.flowId === undefined) return;
     void navigate({
       to: "/settings/scheduled-tasks",
-      search: ({ taskId: _closed, ...rest }) => rest,
+      search: ({ taskId: _closed, flowId: _flow, projectId: _project, ...rest }) => rest,
       replace: true,
     });
   };
@@ -469,6 +481,11 @@ export function ScheduledTasksSettings(target: {
       {editor ? (
         <ScheduledTaskEditorDialog
           key={`${editor.environmentId}:${editor.task?.id ?? "new"}`}
+          preset={
+            target.flowId && target.projectId
+              ? { flowId: target.flowId, projectId: target.projectId }
+              : undefined
+          }
           initialEnvironmentId={editor.environmentId}
           task={editor.task}
           onClose={closeEditor}
@@ -737,7 +754,13 @@ function ScheduledTaskRow({
   return (
     <SettingsRow
       title={task.title}
-      description={<span className="line-clamp-2">{task.prompt}</span>}
+      description={
+        task.flow ? (
+          <ScheduledFlowSummary environmentId={environmentId} task={task} />
+        ) : (
+          <span className="line-clamp-2">{task.prompt}</span>
+        )
+      }
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span>
@@ -1082,11 +1105,15 @@ function WebhookDeliveryMode({ environmentId }: { readonly environmentId: Enviro
   );
 }
 
-function ScheduledTaskEditorDialog({
+export function ScheduledTaskEditorDialog({
+  initialProjectId,
+  preset,
   initialEnvironmentId,
   task,
   onClose,
 }: {
+  readonly initialProjectId?: ProjectId | undefined;
+  readonly preset?: { flowId: FlowId; projectId: ProjectId } | undefined;
   readonly initialEnvironmentId: EnvironmentId;
   readonly task: ScheduledTask | null;
   readonly onClose: () => void;
@@ -1102,6 +1129,8 @@ function ScheduledTaskEditorDialog({
       {/* The form owns the draft so a keystroke re-renders it, not the dialog chrome. */}
       <DialogPopup className="max-w-xl">
         <ScheduledTaskEditorForm
+          initialProjectId={initialProjectId}
+          preset={preset}
           initialEnvironmentId={initialEnvironmentId}
           task={task}
           saving={saving}
@@ -1114,12 +1143,16 @@ function ScheduledTaskEditorDialog({
 }
 
 function ScheduledTaskEditorForm({
+  initialProjectId,
+  preset,
   initialEnvironmentId,
   task,
   saving,
   onSavingChange: setSaving,
   onClose,
 }: {
+  readonly initialProjectId?: ProjectId | undefined;
+  readonly preset?: { flowId: FlowId; projectId: ProjectId } | undefined;
   readonly initialEnvironmentId: EnvironmentId;
   readonly task: ScheduledTask | null;
   readonly saving: boolean;
@@ -1150,7 +1183,14 @@ function ScheduledTaskEditorForm({
     label: "scheduled task upsert",
   });
   const [draft, setDraft] = useState<DraftState>(() =>
-    task ? taskToDraft(task) : { ...EMPTY_DRAFT, projectId: projects[0]?.id ?? "" },
+    task
+      ? taskToDraft(task)
+      : {
+          ...EMPTY_DRAFT,
+          projectId: preset?.projectId ?? initialProjectId ?? projects[0]?.id ?? "",
+          targetMode: preset ? "flow" : "prompt",
+          flow: preset ? { flowId: preset.flowId, inputs: {} } : undefined,
+        },
   );
   const submissionPending = useRef(false);
   const editingTaskMissing =
@@ -1162,6 +1202,13 @@ function ScheduledTaskEditorForm({
     : task;
   const selectedProjectId = draft.projectId || projects[0]?.id || "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const flowMode = draft.targetMode === "flow";
+  const flows = useEnvironmentQuery(
+    flowMode && connected && selectedProject
+      ? flowEnvironment.list({ environmentId, input: { projectId: selectedProject.id } })
+      : null,
+  );
+  const selectedFlow = flows.data?.flows.find((entry) => entry.flowId === draft.flow?.flowId);
   const instanceEntries = providerInstanceEntriesFor(
     providers,
     settings,
@@ -1220,10 +1267,10 @@ function ScheduledTaskEditorForm({
     const selection = activeSelection;
     if (
       !draft.title.trim() ||
-      !draft.prompt.trim() ||
+      (!flowMode && !draft.prompt.trim()) ||
+      (flowMode && !selectedFlow?.validation.valid) ||
       !projects.some((project) => project.id === selectedProjectId) ||
-      selection === null ||
-      getModelDisabledReason(selection.instanceId) !== null
+      (!flowMode && (selection === null || getModelDisabledReason(selection.instanceId) !== null))
     ) {
       reportFailure("Scheduled task is incomplete", "Add a title, prompt, project, and model.");
       return;
@@ -1255,16 +1302,22 @@ function ScheduledTaskEditorForm({
       reportFailure("Invalid interval", "Enter an interval of at least one minute.");
       return;
     }
-    if (draft.workspaceMode === "existing_worktree" && !draft.existingWorktreePath.trim()) {
+    if (
+      !flowMode &&
+      draft.workspaceMode === "existing_worktree" &&
+      !draft.existingWorktreePath.trim()
+    ) {
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
+    const fallbackSelection = selection ??
+      task?.modelSelection ?? { instanceId: ProviderInstanceId.make("codex"), model: "default" };
     const modelSelection =
       draft.baseModelSelection !== null &&
-      draft.baseModelSelection.instanceId === selection.instanceId &&
-      draft.baseModelSelection.model === selection.model
+      draft.baseModelSelection.instanceId === fallbackSelection.instanceId &&
+      draft.baseModelSelection.model === fallbackSelection.model
         ? draft.baseModelSelection
-        : selection;
+        : fallbackSelection;
     const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
       draft.workspaceMode === "root"
         ? { type: "root" }
@@ -1278,12 +1331,11 @@ function ScheduledTaskEditorForm({
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
-      prompt: draft.prompt.trim(),
+      ...scheduledTaskTargetFromDraft(draft, selectedFlow?.definition?.title),
       enabled: draft.enabled,
       schedule,
       projectId: selectedProjectId as ProjectId,
-      threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
-      workspaceStrategy,
+      workspaceStrategy: flowMode ? { type: "root" } : workspaceStrategy,
       modelSelection,
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.interactionMode,
@@ -1309,7 +1361,8 @@ function ScheduledTaskEditorForm({
       <DialogHeader>
         <DialogTitle>{draft.editingId ? "Edit task" : "New task"}</DialogTitle>
         <DialogDescription>
-          Run a prompt automatically on an interval, at a fixed time, or when a webhook is called.
+          Run a prompt or flow automatically on an interval, at a fixed time, or when a webhook is
+          called.
         </DialogDescription>
       </DialogHeader>
 
@@ -1329,6 +1382,7 @@ function ScheduledTaskEditorForm({
                 setEnvironmentId(next.environmentId);
                 setDraft((current) => ({
                   ...current,
+                  flow: undefined,
                   projectId: "",
                   modelKey: "",
                   baseModelSelection: null,
@@ -1402,12 +1456,30 @@ function ScheduledTaskEditorForm({
             />
           </Field>
 
+          <Field label="Task target">
+            <ToggleGroup
+              aria-label="Task target"
+              value={[draft.targetMode ?? "prompt"]}
+              onValueChange={(values) => {
+                const mode = values[0];
+                if (mode === "prompt" || mode === "flow")
+                  setDraft((current) => ({ ...current, targetMode: mode }));
+              }}
+            >
+              <Toggle value="prompt">Prompt</Toggle>
+              <Toggle value="flow">Flow</Toggle>
+            </ToggleGroup>
+          </Field>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Project" htmlFor="scheduled-task-project">
               <Select
                 value={selectedProjectId}
                 onValueChange={(projectId) =>
-                  setDraft((current) => ({ ...current, projectId: projectId ?? "" }))
+                  setDraft((current) => ({
+                    ...current,
+                    projectId: projectId ?? "",
+                    flow: undefined,
+                  }))
                 }
               >
                 <SelectTrigger size="sm" id="scheduled-task-project">
@@ -1433,26 +1505,36 @@ function ScheduledTaskEditorForm({
               </Select>
             </Field>
 
-            <Field label="Workspace" htmlFor="scheduled-task-workspace">
-              <Select
-                value={draft.workspaceMode}
-                onValueChange={(value) =>
-                  setDraft((current) => ({ ...current, workspaceMode: value as WorkspaceMode }))
-                }
-              >
-                <SelectTrigger size="sm" id="scheduled-task-workspace">
-                  <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
-                </SelectTrigger>
-                <SelectPopup>
-                  <SelectItem value="worktree">Create a new worktree</SelectItem>
-                  <SelectItem value="root">Use the project checkout</SelectItem>
-                  <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>
-                </SelectPopup>
-              </Select>
-            </Field>
+            {!flowMode && (
+              <Field label="Workspace" htmlFor="scheduled-task-workspace">
+                <Select
+                  value={draft.workspaceMode}
+                  onValueChange={(value) =>
+                    setDraft((current) => ({ ...current, workspaceMode: value as WorkspaceMode }))
+                  }
+                >
+                  <SelectTrigger size="sm" id="scheduled-task-workspace">
+                    <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup>
+                    <SelectItem value="worktree">Create a new worktree</SelectItem>
+                    <SelectItem value="root">Use the project checkout</SelectItem>
+                    <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>
+                  </SelectPopup>
+                </Select>
+              </Field>
+            )}
           </div>
 
-          {draft.workspaceMode === "worktree" ? (
+          {flowMode ? (
+            <ScheduledFlowFields
+              entries={flows.data?.flows ?? []}
+              error={flows.error}
+              value={draft.flow}
+              onChange={(flow) => setDraft((current) => ({ ...current, flow }))}
+            />
+          ) : null}
+          {!flowMode && draft.workspaceMode === "worktree" ? (
             <Field
               label="Base branch"
               {...((selectedProject?.folders?.length ?? 0) > 1
@@ -1475,7 +1557,7 @@ function ScheduledTaskEditorForm({
               />
             </Field>
           ) : null}
-          {draft.workspaceMode === "existing_worktree" ? (
+          {!flowMode && draft.workspaceMode === "existing_worktree" ? (
             <Field label="Checkout path" htmlFor="scheduled-task-checkout">
               <Input
                 id="scheduled-task-checkout"
@@ -1491,38 +1573,41 @@ function ScheduledTaskEditorForm({
             </Field>
           ) : null}
 
-          <Field label="Prompt" htmlFor="scheduled-task-prompt">
-            <Textarea
-              id="scheduled-task-prompt"
-              className="max-h-64 overflow-y-auto"
-              placeholder="What should the agent do each time this runs?"
-              value={draft.prompt}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, prompt: event.target.value }))
-              }
-            />
-          </Field>
+          {!flowMode && (
+            <>
+              <Field label="Prompt" htmlFor="scheduled-task-prompt">
+                <Textarea
+                  id="scheduled-task-prompt"
+                  className="max-h-64 overflow-y-auto"
+                  placeholder="What should the agent do each time this runs?"
+                  value={draft.prompt}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, prompt: event.target.value }))
+                  }
+                />
+              </Field>
 
-          <Field label="Model">
-            <div>
-              <ProviderModelPicker
-                environmentId={environmentId}
-                disabled={saving || !connected}
-                activeInstanceId={activeInstanceId}
-                model={activeModel}
-                lockedProvider={null}
-                instanceEntries={instanceEntries}
-                modelOptionsByInstance={modelOptionsByInstance}
-                isComposerOwned={false}
-                triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                getModelDisabledReason={getModelDisabledReason}
-                onInstanceModelChange={(instanceId, model) =>
-                  setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
-                }
-              />
-            </div>
-          </Field>
-
+              <Field label="Model">
+                <div>
+                  <ProviderModelPicker
+                    environmentId={environmentId}
+                    disabled={saving || !connected}
+                    activeInstanceId={activeInstanceId}
+                    model={activeModel}
+                    lockedProvider={null}
+                    instanceEntries={instanceEntries}
+                    modelOptionsByInstance={modelOptionsByInstance}
+                    isComposerOwned={false}
+                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                    getModelDisabledReason={getModelDisabledReason}
+                    onInstanceModelChange={(instanceId, model) =>
+                      setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
+                    }
+                  />
+                </div>
+              </Field>
+            </>
+          )}
           <div className="space-y-3">
             {task?.schedule.type === "interval" &&
             task.schedule.everyMs < MIN_SCHEDULED_TASK_INTERVAL_MS ? (

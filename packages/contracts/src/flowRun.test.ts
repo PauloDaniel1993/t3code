@@ -58,21 +58,24 @@ const snapshot = {
   ],
   approvals: [],
 };
-it("preserves the definition, inputs and nested step-run identity in the first stream message", () => {
-  const event = { type: "snapshot", ...snapshot };
-  expect(encodeEvent(decodeEvent(event))).toEqual(event);
-  expect(
-    decodeMcp({
+it.each([undefined, null, "release"])(
+  "preserves the definition, inputs, base ref %s and nested step-run identity in the first stream message",
+  (baseRef) => {
+    const event = { type: "snapshot", ...snapshot, ...(baseRef === undefined ? {} : { baseRef }) };
+    expect(encodeEvent(decodeEvent(event))).toEqual(event);
+    expect(
+      decodeMcp({
+        action: "read_run",
+        ...snapshot,
+        stepOutput: { kind: "agent", text: "done", decision: "approve" },
+      }),
+    ).toEqual({
       action: "read_run",
       ...snapshot,
       stepOutput: { kind: "agent", text: "done", decision: "approve" },
-    }),
-  ).toEqual({
-    action: "read_run",
-    ...snapshot,
-    stepOutput: { kind: "agent", text: "done", decision: "approve" },
-  });
-});
+    });
+  },
+);
 it("streams only changed state after the snapshot, retaining command exit metadata", () => {
   const event = {
     type: "upsert",
