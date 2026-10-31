@@ -1,3 +1,16 @@
+import { Plus, MoreHorizontal, TriangleAlert } from "lucide-react";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectPopup,
+  SelectGroup,
+  SelectItem,
+} from "../ui/select";
+import { Menu, MenuTrigger, MenuPopup, MenuItem, MenuSeparator } from "../ui/menu";
+import { ToggleGroup, Toggle } from "../ui/toggle-group";
+import { Popover, PopoverTrigger, PopoverPopup } from "../ui/popover";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useAtomValue } from "@effect/atom-react";
@@ -92,32 +105,55 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
       : (currentEntry ?? (request?.flowId ? undefined : list.data?.flows[0]));
   return (
     <div className="flex h-full min-h-0 flex-col text-sm">
-      <header className="flex flex-wrap items-end gap-2 border-b border-border p-2">
-        <Choice
-          label="Flow"
-          value={entry?.flowId ?? ""}
-          values={list.data?.flows.map((entry) => entry.flowId) ?? []}
-          labels={Object.fromEntries(
-            (list.data?.flows ?? []).map((entry) => [
-              entry.flowId,
-              <span key={entry.flowId}>
-                {entry.definition?.title ?? entry.flowId}{" "}
-                {!entry.validation.valid && (
-                  <Badge variant="destructive" size="sm">
-                    Invalid
-                  </Badge>
-                )}
-              </span>,
-            ]),
-          )}
-          onChange={(id) => {
-            setRequestedRunId(null);
-            setSelected(FlowId.make(id));
-          }}
-        />
-        <Button size="xs" variant="outline" disabled={!canSave} onClick={() => setNewId("")}>
-          New flow
-        </Button>
+      <header className="flex h-10 min-h-10 items-center gap-2 border-b border-border/60 px-2">
+        {entry && (
+          <div className="min-w-0 flex-1">
+            <Select
+              value={entry.flowId}
+              onValueChange={(id) => {
+                if (!id) return;
+                setRequestedRunId(null);
+                setSelected(FlowId.make(id));
+              }}
+            >
+              <SelectTrigger variant="ghost" size="xs" aria-label="Flow" className="max-w-full">
+                <SelectValue>{entry.definition?.title ?? entry.flowId}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                <SelectGroup>
+                  {(list.data?.flows ?? []).map((flow) => (
+                    <SelectItem key={flow.flowId} value={flow.flowId}>
+                      {flow.definition?.title ?? flow.flowId}
+                      {!flow.validation.valid && (
+                        <Badge variant="error" size="sm">
+                          Invalid
+                        </Badge>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectPopup>
+            </Select>
+          </div>
+        )}
+        <div className="ml-auto">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="New flow"
+                  disabled={!canSave}
+                  onClick={() => setNewId("")}
+                />
+              }
+            >
+              <Plus />
+            </TooltipTrigger>
+            <TooltipPopup>New flow</TooltipPopup>
+          </Tooltip>
+        </div>
       </header>
       {list.error && (
         <p role="alert" className="p-2">
@@ -287,6 +323,7 @@ function FlowEditor({
   >([]);
   const validation = validateFlowDefinition(draft);
   const dirty = draft !== saved;
+  const problems = [...validation.errors, ...serverErrors];
   const persist = useStableCallback(async (overwrite = false) => {
     if (!canSave) return;
     await draftStore.save(
@@ -367,57 +404,128 @@ function FlowEditor({
   const locked = flowRunId !== null || !canSave;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
-        <Button
-          size="xs"
-          variant={tab === "design" ? "secondary" : "ghost"}
-          onClick={() => setTab("design")}
-        >
-          Design
-        </Button>
-        <Button
-          size="xs"
-          variant={tab === "runs" ? "secondary" : "ghost"}
-          onClick={() => setTab("runs")}
-        >
-          Runs
-        </Button>
-        <span role="status" className="text-xs text-muted-foreground">
-          {saving ? "Saving…" : saveError ? "Save failed" : dirty ? "Unsaved changes" : "Saved"}
-        </span>
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={!canSave || saving || !dirty}
-          onClick={() => {
-            void persist();
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-2">
+        <ToggleGroup
+          variant="segmented"
+          size="segmented"
+          value={[tab]}
+          onValueChange={(value) => {
+            if (value[0] === "design" || value[0] === "runs") setTab(value[0]);
           }}
         >
-          Save
-        </Button>
-        <Button
-          size="xs"
-          disabled={!canStart || dirty || !validation.valid}
-          onClick={() => setShowStart(!showStart)}
-        >
-          Start
-        </Button>
-        <Button
-          size="xs"
-          variant="ghost"
-          onClick={() =>
-            void navigate({
-              to: "/settings/scheduled-tasks",
-              search: { environmentId, projectId, flowId },
-            })
-          }
-          disabled={!canSchedule || dirty || saving || !validation.valid}
-        >
-          Schedule…
-        </Button>
-        <Button size="xs" variant="ghost" onClick={() => setSelection({ kind: "flow", id: "" })}>
-          Flow settings
-        </Button>
+          <Toggle value="design">Design</Toggle>
+          <Toggle value="runs">
+            Runs <span className="text-muted-foreground">{runs.length}</span>
+          </Toggle>
+        </ToggleGroup>
+        <div className="ml-auto flex min-w-0 items-center gap-1">
+          {(saving || saveError || dirty) && (
+            <span role="status" className="truncate text-2xs text-muted-foreground">
+              {saving ? "Saving…" : saveError ? "Save failed" : "Unsaved"}
+            </span>
+          )}
+          {dirty && (
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={!canSave || saving}
+              onClick={() => void persist()}
+            >
+              Save
+            </Button>
+          )}
+          {problems.length > 0 && (
+            <Popover>
+              <PopoverTrigger
+                render={
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-label={`${problems.length} problems`}
+                    onClick={() => {
+                      const id = stepIdAtPath(draft, problems[0]!.path);
+                      setTab("design");
+                      setSelection(id ? { kind: "step", id } : { kind: "flow", id: "" });
+                    }}
+                  />
+                }
+              >
+                <Badge variant="error" size="sm">
+                  <TriangleAlert />
+                  {problems.length} problems
+                </Badge>
+              </PopoverTrigger>
+              <PopoverPopup width="md">
+                <div className="flex max-h-64 flex-col gap-1 overflow-auto">
+                  {problems.map((problem) => (
+                    <Button
+                      key={`${problem.path}:${problem.message}`}
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => {
+                        const id = stepIdAtPath(draft, problem.path);
+                        setTab("design");
+                        setSelection(id ? { kind: "step", id } : { kind: "flow", id: "" });
+                      }}
+                    >
+                      {problem.path}: {problem.message}
+                    </Button>
+                  ))}
+                </div>
+              </PopoverPopup>
+            </Popover>
+          )}
+          <Menu>
+            <MenuTrigger
+              render={<Button size="icon-xs" variant="ghost" aria-label="Flow actions" />}
+            >
+              <MoreHorizontal />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem onClick={() => setSelection({ kind: "flow", id: "" })}>
+                Flow settings
+              </MenuItem>
+              <MenuItem
+                disabled={!canSchedule || dirty || saving || !validation.valid}
+                onClick={() =>
+                  void navigate({
+                    to: "/settings/scheduled-tasks",
+                    search: { environmentId, projectId, flowId },
+                  })
+                }
+              >
+                Schedule…
+              </MenuItem>
+              <MenuItem
+                disabled={!canValidate}
+                onClick={async () => {
+                  const result = await validate({
+                    environmentId,
+                    input: { projectId, definition: draft },
+                  });
+                  if (result._tag === "Success") setServerErrors(result.value.errors);
+                  reportFlowFailure(result, "Could not validate flow");
+                }}
+              >
+                Validate with environment
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem disabled={!canRename || dirty} onClick={() => setRenameId(flowId)}>
+                Rename flow file
+              </MenuItem>
+              <MenuItem disabled={!canDelete || dirty} onClick={() => setDeleteOpen(true)}>
+                Delete flow
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+          <Button
+            size="xs"
+            disabled={!canStart || dirty || saving || !validation.valid}
+            onClick={() => setShowStart(!showStart)}
+          >
+            Start
+          </Button>
+        </div>
       </div>
       {targetedSchedules.length > 0 && (
         <div className="p-2 text-xs">
@@ -836,27 +944,6 @@ function FlowEditor({
           </Button>
         </div>
       )}
-      {(validation.errors.length > 0 || serverErrors.length > 0) && (
-        <div role="alert" className="max-h-32 overflow-auto p-2 text-xs text-destructive">
-          {[...validation.errors, ...serverErrors].map((error) => (
-            <p key={`${error.path}:${error.message}`}>
-              {error.path}: {error.message}
-            </p>
-          ))}
-        </div>
-      )}
-      <Button
-        size="xs"
-        variant="ghost"
-        disabled={!canValidate}
-        onClick={async () => {
-          const result = await validate({ environmentId, input: { projectId, definition: draft } });
-          if (result._tag === "Success") setServerErrors(result.value.errors);
-          reportFlowFailure(result, "Could not validate flow");
-        }}
-      >
-        Validate with environment
-      </Button>
     </div>
   );
 }
