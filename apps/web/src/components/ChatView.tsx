@@ -279,6 +279,7 @@ import { ThreadTimeline } from "./chat/ThreadTimeline";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
+import { FlowRunThreadCard } from "./flows/FlowRunThreadCard";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
@@ -2365,6 +2366,7 @@ export default function ChatView(props: ChatViewProps) {
     addDiffSurfaceStable,
     addFilesSurfaceStable,
     addMapSurfaceStable,
+    addFlowSurfaceStable,
     openFolderChangesFromThreadPanelStable,
     addPullRequestSurfaceStable,
     addPullRequestsSurfaceStable,
@@ -3312,6 +3314,13 @@ export default function ChatView(props: ChatViewProps) {
           />
         </header>
 
+        {activeThreadRef && activeProject && (
+          <FlowRunThreadCard
+            threadRef={activeThreadRef}
+            projectId={activeProject.id}
+            metadata={serverProjection?.thread}
+          />
+        )}
         <div className="relative flex min-h-0 min-w-0 flex-1">
           <ThreadFindCanvas
             findOptions={{
@@ -3942,6 +3951,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddDiff={addDiffSurfaceStable}
           onAddFiles={addFilesSurfaceStable}
           onAddMap={addMapSurfaceStable}
+          onAddFlow={addFlowSurfaceStable}
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}

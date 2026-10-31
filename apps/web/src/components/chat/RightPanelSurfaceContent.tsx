@@ -25,6 +25,8 @@ import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
 import { ThreadPullRequestsPanel } from "../pullRequest/ThreadPullRequestsPanel";
 
+const FlowPanel = lazy(() => import("../flows/FlowPanel"));
+
 const PreviewPanel = lazy(() =>
   import("../preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
 );
@@ -168,6 +170,16 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
+    case "flow":
+      return props.pullRequest.projectId ? (
+        <Suspense fallback={null}>
+          <FlowPanel
+            environmentId={props.environmentId}
+            projectId={props.pullRequest.projectId}
+            threadRef={threadRef}
+          />
+        </Suspense>
+      ) : null;
     case "map":
       return props.files.workspaceRoot && props.files.projectName !== null ? (
         <StarMapSurface
