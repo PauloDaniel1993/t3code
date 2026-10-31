@@ -4,7 +4,9 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ServerCommand,
   type RunId,
+  type ThreadId,
 } from "@t3tools/contracts";
+
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
@@ -27,6 +29,8 @@ export function withTaskThreadLifecycle<E, R>(
   projectionStore: ProjectionStoreV2["Service"],
   idAllocator: IdAllocatorV2["Service"],
   plan: (command: OrchestrationV2ServerCommand) => Effect.Effect<Plan, E, R>,
+  flowChildren: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<ThreadId>, E, R> = () =>
+    Effect.succeed([]),
 ): (parentPlan: Plan) => Effect.Effect<Plan, E | ProjectionStoreV2Error | IdAllocatorV2Error, R> {
   return Effect.fnUntraced(function* (parentPlan: Plan) {
     // Upstream has already validated the parent before any child effects are planned.
@@ -42,6 +46,7 @@ export function withTaskThreadLifecycle<E, R>(
         task.origin === "app_owned" && task.childThreadId !== null ? [task.childThreadId] : [],
       ),
     );
+    for (const childId of yield* flowChildren(command.threadId)) childIds.add(childId);
     // The common path reads only this parent's indexed records, never any shell list.
     if (childIds.size === 0) return parentPlan;
     const children = [];
@@ -77,6 +82,7 @@ export function withTaskThreadLifecycle<E, R>(
         projectionStore,
         idAllocator,
         plan,
+        flowChildren,
       )(yield* plan(childCommand));
       events.push(...childPlan.events);
       effects.push(...childPlan.effects);

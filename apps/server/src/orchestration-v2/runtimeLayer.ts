@@ -1,3 +1,10 @@
+import * as FlowService from "../flows/FlowService.ts";
+import * as FlowDefinitions from "../flows/FlowDefinitions.ts";
+import * as FlowRunRepository from "../flows/FlowRunRepository.ts";
+import * as FlowRunLock from "../flows/FlowRunLock.ts";
+import * as FlowCommandRunner from "../flows/FlowCommandRunner.ts";
+import * as FlowRuntime from "../flows/FlowRuntime.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -312,7 +319,28 @@ const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
+const layerFlowProvided = FlowService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      FlowDefinitions.layer.pipe(Layer.provide(WorkspacePaths.layer)),
+      FlowRunRepository.layer,
+      FlowRunLock.layer,
+      FlowCommandRunner.layer,
+      FlowRuntime.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            layerThreadLaunchProvided,
+            layerThreadManagementProvided,
+            layerProjectService,
+            layerEventSink,
+          ),
+        ),
+      ),
+    ),
+  ),
+);
 const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
+  Layer.provide(layerFlowProvided),
   Layer.provide(
     Layer.mergeAll(
       layerThreadLaunchProvided,
@@ -402,6 +430,7 @@ export const layer = Layer.mergeAll(
 );
 
 export const layerProduction = Layer.mergeAll(
+  layerFlowProvided,
   Layer.effectDiscard(startAttachmentReferenceIndex()).pipe(Layer.provide(EffectOutbox.layer)),
   layer.pipe(Layer.provide(layerProjectService)),
   layerProjectService,

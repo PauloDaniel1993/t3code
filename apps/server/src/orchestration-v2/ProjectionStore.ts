@@ -1,3 +1,4 @@
+import { deleteFlowRunsForThread } from "../flows/FlowCleanup.ts";
 import * as TaskDeliveryShell from "./TaskDeliveryShell.ts";
 import { pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
@@ -1527,6 +1528,7 @@ export function threadShellFromProjection(
     ...(projection.thread.activeOrderKey === undefined
       ? {}
       : { activeOrderKey: projection.thread.activeOrderKey }),
+    flowNeedsInput: projection.thread.flowNeedsInput,
     lineage: projection.thread.lineage,
     forkedFrom: projection.thread.forkedFrom,
     activeProviderThreadId: projection.thread.activeProviderThreadId,
@@ -1831,6 +1833,7 @@ function shellFromState(input: {
     ...(input.state.thread.activeOrderKey === undefined
       ? {}
       : { activeOrderKey: input.state.thread.activeOrderKey }),
+    flowNeedsInput: input.state.thread.flowNeedsInput,
     lineage: input.state.thread.lineage,
     forkedFrom: input.state.thread.forkedFrom,
     activeProviderThreadId: input.state.thread.activeProviderThreadId,
@@ -1947,6 +1950,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.model-selection-updated":
             case "thread.provider-switched":
             case "thread.guest-share-updated": {
+              if (event.type === "thread.deleted")
+                yield* deleteFlowRunsForThread(event.threadId).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                  Effect.mapError(
+                    (cause) => new ProjectionStoreApplyEventError({ eventType: event.type, cause }),
+                  ),
+                );
               const payloadJson = yield* encodeThreadPayload(event.payload);
               const payload = parseEncodedPayload(payloadJson);
               yield* sql`

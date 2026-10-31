@@ -213,7 +213,7 @@ import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspaceFolderFiles from "./workspace/WorkspaceFolderFiles.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
-import { flowRpcHandlers } from "./flows/FlowRpcHandlers.ts";
+import { makeFlowRpcHandlers } from "./flows/FlowRpcHandlers.ts";
 import { makeWayfinderRpcHandlers } from "./wayfinder/WayfinderRpcHandlers.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -1409,6 +1409,7 @@ export const layerWsRpc = (
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const workspaceFolderFiles = yield* WorkspaceFolderFiles.WorkspaceFolderFiles;
       const wayfinder = yield* makeWayfinderRpcHandlers;
+      const flowRpcHandlers = yield* makeFlowRpcHandlers;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());

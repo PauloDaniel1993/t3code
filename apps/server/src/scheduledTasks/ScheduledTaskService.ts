@@ -1,4 +1,6 @@
+import * as FlowService from "../flows/FlowService.ts";
 import {
+  FlowScheduledTarget,
   CommandId,
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
@@ -166,6 +168,8 @@ const webhookFilters = (filters: ReadonlyArray<ScheduledTaskWebhookFilter> | und
   filters?.length ? { filters } : {};
 
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
+const decodeFlowTarget = Schema.decodeEffect(Schema.fromJsonString(FlowScheduledTarget));
+const encodeFlowTarget = Schema.encodeSync(Schema.fromJsonString(FlowScheduledTarget));
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
 const decodeScheduleJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.schedule),
@@ -184,6 +188,7 @@ const encodeHeadersJson = Schema.encodeSync(HeadersJson);
 const encodeMissingFieldsJson = Schema.encodeSync(MissingFieldsJson);
 
 interface ScheduledTaskRow {
+  readonly flow_json: string | null;
   readonly task_id: string;
   readonly title: string;
   readonly prompt: string;
@@ -344,6 +349,7 @@ const decodeRow = Effect.fnUntraced(
     const workspaceStrategy = yield* decodeWorkspaceStrategyJson(row.workspace_strategy_json);
     const modelSelection = yield* decodeModelSelectionJson(row.model_selection_json);
     return yield* decodeTask({
+      ...(row.flow_json == null ? {} : { flow: yield* decodeFlowTarget(row.flow_json) }),
       id: row.task_id,
       title: row.title,
       prompt: row.prompt,
@@ -445,6 +451,7 @@ export const layer = Layer.effect(
   ScheduledTaskService,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const flows = yield* Effect.serviceOption(FlowService.FlowService);
     const crypto = yield* Crypto.Crypto;
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -482,6 +489,7 @@ export const layer = Layer.effect(
     const selectAllRows = () =>
       sql<ScheduledTaskRow>`
       SELECT
+        flow_json,
         task_id,
         title,
         prompt,
@@ -519,6 +527,7 @@ export const layer = Layer.effect(
     const getRows = (id: ScheduledTaskId) =>
       sql<ScheduledTaskRow>`
       SELECT
+        flow_json,
         task_id,
         title,
         prompt,
@@ -594,7 +603,8 @@ export const layer = Layer.effect(
     ) =>
       sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
-          task_id,
+          flow_json,
+        task_id,
           title,
           prompt,
           enabled,
@@ -618,13 +628,14 @@ export const layer = Layer.effect(
           webhook_secret
         )
         SELECT
+          ${task.flow === undefined ? null : encodeFlowTarget(task.flow)},
           ${task.id},
           ${task.title},
           ${task.prompt},
           ${task.enabled ? 1 : 0},
           ${JSON.stringify(task.schedule)},
           ${task.projectId},
-          ${task.threadId},
+          ${task.flow === undefined ? task.threadId : null},
           ${JSON.stringify(task.workspaceStrategy)},
           ${JSON.stringify(task.modelSelection)},
           ${task.runtimeMode},
@@ -644,6 +655,7 @@ export const layer = Layer.effect(
            OR EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${task.id})
         ON CONFLICT (task_id)
         DO UPDATE SET
+          flow_json = excluded.flow_json,
           title = excluded.title,
           prompt = excluded.prompt,
           enabled = excluded.enabled,
@@ -903,35 +915,71 @@ export const layer = Layer.effect(
 
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const result =
-          active.threadId === null
+          active.flow !== undefined
             ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
-                    commandId,
+                Effect.gen(function* () {
+                  if (Option.isNone(flows)) return yield* taskError("Flow service is unavailable.");
+                  let inputs = active.flow!.inputs;
+                  if (webhook !== undefined) {
+                    const delivery =
+                      yield* sql<WebhookDeliveryRow>`SELECT * FROM scheduled_task_webhook_deliveries WHERE delivery_id = ${webhook.deliveryId}`;
+                    const row = delivery[0];
+                    if (row) {
+                      const request = {
+                        method: row.method,
+                        path: "",
+                        query: row.query,
+                        headers: Option.getOrElse(decodeHeadersJson(row.headers_json), () => ({})),
+                        bodyText: row.body,
+                      };
+                      inputs = Object.fromEntries(
+                        Object.entries(inputs).map(([key, value]) => [
+                          key,
+                          renderWebhookPrompt(value, request, "flow", true).prompt,
+                        ]),
+                      );
+                    }
+                  }
+                  const run = yield* flows.value.start({
                     projectId: active.projectId,
-                    title: active.title,
-                    modelSelection: active.modelSelection,
-                    runtimeMode: active.runtimeMode,
-                    interactionMode: active.interactionMode,
-                    workspaceStrategy: active.workspaceStrategy,
-                    initialMessage: {
-                      messageId,
-                      scheduledTaskId: active.id,
-                      text: prompt,
-                      attachments: [],
-                    },
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
-                  })
-                  .pipe(Effect.map((launched) => launched.threadId)),
+                    flowId: active.flow!.flowId,
+                    inputs,
+                    baseRef: active.flow!.baseRef,
+                    scheduledTaskId: active.id,
+                    coerce: true,
+                  });
+                  return run.flowRunThreadId;
+                }),
               )
-            : yield* Effect.exit(
-                // The stored selection only seeds fresh threads. A bound run
-                // follows the thread's current provider, so it passes none.
-                sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
-                  Effect.as(ThreadId.make(active.threadId)),
-                ),
-              );
+            : active.threadId === null
+              ? yield* Effect.exit(
+                  threadLaunch
+                    .launch({
+                      commandId,
+                      projectId: active.projectId,
+                      title: active.title,
+                      modelSelection: active.modelSelection,
+                      runtimeMode: active.runtimeMode,
+                      interactionMode: active.interactionMode,
+                      workspaceStrategy: active.workspaceStrategy,
+                      initialMessage: {
+                        messageId,
+                        scheduledTaskId: active.id,
+                        text: prompt,
+                        attachments: [],
+                      },
+                      createdBy: active.createdBy,
+                      creationSource: active.creationSource,
+                    })
+                    .pipe(Effect.map((launched) => launched.threadId)),
+                )
+              : yield* Effect.exit(
+                  // The stored selection only seeds fresh threads. A bound run
+                  // follows the thread's current provider, so it passes none.
+                  sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+                    Effect.as(ThreadId.make(active.threadId)),
+                  ),
+                );
 
         const runSucceeded = result._tag === "Success";
         if (webhook !== undefined && runSucceeded) yield* Ref.set(webhook.dispatched, true);
@@ -1244,12 +1292,13 @@ export const layer = Layer.effect(
         isSameSchedule(existingTask.schedule, schedule);
       const task: ScheduledTask = {
         id,
+        ...(input.flow === undefined ? {} : { flow: input.flow }),
         title: input.title,
         prompt: input.prompt,
         enabled: input.enabled,
         schedule,
         projectId: input.projectId,
-        threadId: input.threadId ?? null,
+        threadId: input.flow === undefined ? (input.threadId ?? null) : null,
         workspaceStrategy,
         modelSelection: input.modelSelection,
         runtimeMode: input.runtimeMode,

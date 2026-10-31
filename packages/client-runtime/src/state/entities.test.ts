@@ -98,6 +98,20 @@ describe("V2 client presentation", () => {
     ).toBeNull();
   });
 
+  it.each([false, true])(
+    "presents flow approval attention while the flow thread is idle: %s",
+    (flowNeedsInput) => {
+      const shell = presentThreadShell(environmentId, {
+        ...v2ThreadShell,
+        flowNeedsInput,
+        activeRunId: null,
+        status: "idle",
+        pendingRuntimeRequest: null,
+      });
+      expect(shell.hasPendingUserInput).toBe(flowNeedsInput);
+    },
+  );
+
   it.each([
     { kinds: ["command"], expected: "completed" },
     { kinds: ["command", "subagent"], expected: "idle" },

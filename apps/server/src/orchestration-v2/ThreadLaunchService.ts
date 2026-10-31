@@ -86,6 +86,8 @@ export interface ThreadLaunchInput {
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
+  readonly awaitPreparation?: boolean;
+  readonly skipSetupScript?: boolean;
   readonly projectId: ProjectId;
   readonly title: string;
   readonly generateTitle?: boolean;
@@ -112,7 +114,12 @@ export interface ThreadLaunchInput {
 
 type PreparationInput = Pick<
   ThreadLaunchInput,
-  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage"
+  | "commandId"
+  | "projectId"
+  | "workspaceStrategy"
+  | "initialMessage"
+  | "awaitPreparation"
+  | "skipSetupScript"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string };
 };
@@ -582,7 +589,7 @@ const make = Effect.gen(function* () {
       }
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       const setup =
-        worktreePath === null
+        worktreePath === null || input.skipSetupScript === true
           ? ({ status: "no-script" } as const)
           : yield* setupScripts
               .runForThread({
@@ -631,7 +638,7 @@ const make = Effect.gen(function* () {
                 threadId,
               )(`Setup script exited with ${completion.exitCode ?? "no exit code"}.`);
           });
-          if (setup.async) {
+          if (setup.async && input.awaitPreparation !== true) {
             awaitAsyncSetup = awaitCompletion.pipe(
               Effect.catchCause((cause) =>
                 setupTracker.stage(threadId, "setup-script", {
@@ -1136,11 +1143,19 @@ const make = Effect.gen(function* () {
                       Effect.mapError(mapError(input, "update-thread", threadId)),
                     );
               if (preparationStillRequired) {
-                yield* schedulePreparation(
-                  { ...input, workspaceStrategy: preparationStrategy },
-                  threadId,
-                  runId,
-                );
+                if (input.awaitPreparation === true) {
+                  yield* prepareInBackground(
+                    { ...input, workspaceStrategy: preparationStrategy },
+                    threadId,
+                    runId,
+                  ).pipe(Effect.ensuring(releasePreparation(input.commandId)));
+                } else {
+                  yield* schedulePreparation(
+                    { ...input, workspaceStrategy: preparationStrategy },
+                    threadId,
+                    runId,
+                  );
+                }
               } else {
                 yield* releasePreparation(input.commandId);
               }
@@ -1150,7 +1165,12 @@ const make = Effect.gen(function* () {
 
         return {
           threadId,
-          projection,
+          projection:
+            input.awaitPreparation === true
+              ? yield* threads
+                  .getThreadProjection(threadId)
+                  .pipe(Effect.mapError(mapError(input, "create-thread", threadId)))
+              : projection,
           // An attempt that failed after claiming the thread recorded nothing, so
           // only a repeat of the final write counts as resumed.
           resumed:

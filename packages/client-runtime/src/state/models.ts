@@ -328,8 +328,9 @@ export function presentThreadShell(
       thread.pendingRuntimeRequest.kind !== "user_input" &&
       thread.pendingRuntimeRequest.kind !== "auth_refresh",
     hasPendingUserInput:
-      thread.pendingRuntimeRequest?.kind === "user_input" &&
-      (thread.pendingRuntimeRequest.blocking !== false || !runtimeIsWorking),
+      thread.flowNeedsInput === true ||
+      (thread.pendingRuntimeRequest?.kind === "user_input" &&
+        (thread.pendingRuntimeRequest.blocking !== false || !runtimeIsWorking)),
     pendingSubagentRequest,
     pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,

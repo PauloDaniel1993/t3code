@@ -1,3 +1,5 @@
+import * as SqlClient from "effect/sql/SqlClient";
+import { flowChildThreadIds } from "../flows/FlowCleanup.ts";
 import * as WorkspaceAdmission from "./WorkspaceAdmission.ts";
 import { withTaskThreadLifecycle } from "./TaskThreadLifecycle.ts";
 import type {
@@ -996,6 +998,7 @@ function lastDeliveredRunForProviderThread(
 }
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
+  const flowSql = yield* SqlClient.SqlClient;
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
@@ -13276,11 +13279,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const plan = yield* dispatchOnce(command).pipe(
       Effect.flatMap((planned) =>
-        withTaskThreadLifecycle(
-          command,
-          projectionStore,
-          idAllocator,
-          dispatchOnce,
+        withTaskThreadLifecycle(command, projectionStore, idAllocator, dispatchOnce, (threadId) =>
+          flowChildThreadIds(threadId).pipe(
+            Effect.provideService(SqlClient.SqlClient, flowSql),
+            Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
+          ),
         )(planned).pipe(mapDispatchError(command)),
       ),
       Effect.filterOrFail(
@@ -13913,6 +13916,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 export const layer: Layer.Layer<
   OrchestratorV2,
   never,
+  | SqlClient.SqlClient
   | CheckpointServiceV2
   | FileSystem.FileSystem
   | Path.Path

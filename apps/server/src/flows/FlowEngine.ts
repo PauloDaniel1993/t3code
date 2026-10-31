@@ -86,6 +86,7 @@ export type Trigger = { readonly at: string } & (
   | {
       readonly type: "recovered";
       readonly continuingThreadIds: ReadonlyArray<ThreadId>;
+      readonly interruptedStepRunIds?: ReadonlyArray<FlowStepRunId>;
       readonly continuingMessageIds?: Readonly<Record<string, string>>;
     }
 );
@@ -464,6 +465,7 @@ export function decide(
   } else if (trigger.type === "recovered") {
     if (!["starting", "running", "waiting_approval"].includes(state.run.status)) return reject();
     for (const s of [...byId.values()].filter(inFlight)) {
+      if (trigger.interruptedStepRunIds && !trigger.interruptedStepRunIds.includes(s.id)) continue;
       const kind = definition(s).kind;
       if (
         kind === "command" ||

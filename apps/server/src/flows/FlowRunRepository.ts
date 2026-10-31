@@ -20,6 +20,7 @@ import {
   type FlowRunsPage,
   type ProjectId,
   type ThreadId,
+  type FlowRunForThreadResult,
 } from "@t3tools/contracts";
 import type { State, StepRun, Transition } from "./FlowEngine.ts";
 
@@ -40,6 +41,13 @@ export class FlowPersistenceError extends Schema.TaggedError<FlowPersistenceErro
 export class FlowRunRepository extends Context.Service<
   FlowRunRepository,
   {
+    readonly runForThread: (
+      id: ThreadId,
+    ) => Effect.Effect<typeof FlowRunForThreadResult.Type, FlowPersistenceError>;
+    readonly runForStep: (
+      id: FlowStepRunId,
+    ) => Effect.Effect<FlowRunId | null, FlowPersistenceError>;
+    readonly active: () => Effect.Effect<ReadonlyArray<FlowRunId>, FlowPersistenceError>;
     readonly create: (state: State) => Effect.Effect<FlowRunSummary, FlowPersistenceError>;
     readonly read: (id: FlowRunId) => Effect.Effect<State | null, FlowPersistenceError>;
     readonly apply: (
@@ -201,6 +209,39 @@ const make = Effect.gen(function* () {
     );
   });
   return FlowRunRepository.of({
+    runForThread: Effect.fn("FlowRunRepository.runForThread")(function* (id) {
+      const runs = yield* protect(
+        "thread lookup",
+        sql<{ id: FlowRunId }>`SELECT id FROM flow_runs WHERE flow_run_thread_id = ${id} LIMIT 1`,
+      );
+      if (runs[0]) return { flowRunId: runs[0].id, role: "flow_run_thread" as const };
+      const steps = yield* protect(
+        "thread lookup",
+        sql<{
+          id: FlowStepRunId;
+          flow_run_id: FlowRunId;
+        }>`SELECT id, flow_run_id FROM flow_step_runs WHERE thread_id = ${id} ORDER BY rowid DESC LIMIT 1`,
+      );
+      return steps[0]
+        ? { flowRunId: steps[0].flow_run_id, stepRunId: steps[0].id, role: "step_thread" as const }
+        : null;
+    }),
+    runForStep: Effect.fn("FlowRunRepository.runForStep")(function* (id) {
+      const rows = yield* protect(
+        "step lookup",
+        sql<{ flow_run_id: FlowRunId }>`SELECT flow_run_id FROM flow_step_runs WHERE id = ${id}`,
+      );
+      return rows[0]?.flow_run_id ?? null;
+    }),
+    active: Effect.fn("FlowRunRepository.active")(function* () {
+      const rows = yield* protect(
+        "active",
+        sql<{
+          id: FlowRunId;
+        }>`SELECT id FROM flow_runs WHERE status IN ('starting', 'running', 'waiting_approval')`,
+      );
+      return rows.map((row) => row.id);
+    }),
     create: Effect.fn("FlowRunRepository.create")(function* (state) {
       const r = state.run;
       return yield* protect(

@@ -1,0 +1,448 @@
+import { McpServer, McpSchema } from "effect/ai";
+import * as Schema from "effect/Schema";
+import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import * as FlowMcp from "./FlowMcp.ts";
+import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import { expect, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import {
+  FlowId,
+  FlowRunId,
+  FlowStepRunId,
+  ProjectId,
+  ScheduledTaskId,
+  ThreadId,
+  type FlowDefinition,
+} from "@t3tools/contracts";
+import { flowDefinitionRevision, validateFlowDefinition } from "@t3tools/shared/flow";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
+import FlowMigration from "../persistence/ForkMigrations/013_FlowRuns.ts";
+import * as Definitions from "./FlowDefinitions.ts";
+import * as Repository from "./FlowRunRepository.ts";
+import * as Runtime from "./FlowRuntime.ts";
+import * as Commands from "./FlowCommandRunner.ts";
+import * as Lock from "./FlowRunLock.ts";
+import * as Service from "./FlowService.ts";
+import { initialState } from "./FlowEngine.test-support.ts";
+import { applyTransitions, decide } from "./FlowEngine.ts";
+
+const decodeMcp = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const reportMcp = Effect.fn("test.reportMcp")(function* (
+  service: Service.FlowService["Service"],
+  threadId: ThreadId,
+  fields: Record<string, string>,
+) {
+  const context = yield* Layer.build(
+    McpHttpServer.toolkitRegistration(FlowMcp.FlowToolkit, FlowMcp.layer).pipe(
+      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provide(Layer.succeed(Service.FlowService, service)),
+      Layer.provide(
+        Layer.mock(Threads.ThreadManagementService)({
+          getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+        }),
+      ),
+    ),
+  );
+  const result = yield* Context.get(context, McpServer.McpServer)
+    .callTool({ name: "t3_flow_report", arguments: { fields } })
+    .pipe(
+      Effect.provideService(Invocation.McpInvocationContext, {
+        environmentId: EnvironmentId.make("env"),
+        requestNamespace: "test",
+        thread: {
+          threadId,
+          providerSessionId: "provider",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration"] as const),
+        issuedAt: 0,
+      }),
+      Effect.provideService(McpSchema.McpServerClient, {
+        clientId: 1,
+        protocolVersion: "2025-06-18",
+        clientCapabilities: {},
+        clientInfo: { name: "test", version: "1" },
+        initializePayload: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        },
+        getClient: Effect.die("unused"),
+      }),
+    );
+  return decodeMcp(result.content.map((part) => (part.type === "text" ? part.text : "")).join(""));
+});
+
+const setup = Effect.fn("test.setup")(function* (definition: FlowDefinition) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`PRAGMA foreign_keys = ON`;
+  yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
+  yield* sql`CREATE TABLE scheduled_tasks(task_id TEXT PRIMARY KEY, project_id TEXT, flow_json TEXT)`;
+  yield* FlowMigration;
+  const events = yield* Queue.unbounded<ThreadId>();
+  const launches: Runtime.FlowThreadInput[] = [];
+  const launched = yield* Queue.unbounded<Runtime.FlowThreadInput>();
+  const messages: Runtime.FlowThreadInput[] = [];
+  const continuing = new Map<ThreadId, string>();
+  const settled = new Map<
+    string,
+    { messageId: string; turnId: string; text: string; failed: boolean }
+  >();
+  const commands: Parameters<Commands.FlowCommandRunner["Service"]["run"]>[0][] = [];
+  const attention: string[] = [];
+  let saved = definition;
+  const entry = () => ({
+    flowId: FlowId.make("example"),
+    definition: saved,
+    revision: flowDefinitionRevision(saved),
+    validation: validateFlowDefinition(saved),
+  });
+  const runtime = Runtime.FlowRuntime.of({
+    root: () => Effect.succeed("/workspace"),
+    launch: Effect.fn("test.launch")(function* (input) {
+      launches.push(input);
+      yield* Queue.offer(launched, input);
+      yield* sql`INSERT OR IGNORE INTO orchestration_v2_projection_threads VALUES (${input.threadId}, NULL)`.pipe(
+        Effect.orDie,
+      );
+      return input.workspace.type === "worktree" ? "/workspace/worktree" : "/workspace";
+    }),
+    send: (input) =>
+      Effect.sync(() => {
+        messages.push(input);
+      }),
+    interrupt: () => Effect.void,
+    attention: (run) =>
+      Effect.sync(() => {
+        attention.push(run.status);
+      }),
+    continuing: (id) => Effect.succeed(continuing.get(id) ?? null),
+    settled: (_id, messageId) => Effect.succeed(settled.get(messageId) ?? null),
+    events: Stream.fromQueue(events),
+  });
+  const definitions = Definitions.FlowDefinitions.of({
+    read: () => Effect.succeed(entry()),
+    list: () => Effect.succeed([entry()]),
+    validate: (value) => Effect.succeed(validateFlowDefinition(value)),
+    write: (_root, _id, value) =>
+      Effect.sync(() => {
+        saved = value;
+        return entry();
+      }),
+    rename: () => Effect.succeed(entry()),
+    delete: () => Effect.void,
+    stream: () => Stream.make([entry()]),
+  });
+  const services = Layer.mergeAll(
+    Layer.succeed(Runtime.FlowRuntime, runtime),
+    Layer.succeed(Definitions.FlowDefinitions, definitions),
+    Layer.succeed(Commands.FlowCommandRunner, {
+      run: (input) =>
+        Effect.sync(() => {
+          commands.push(input);
+          return {
+            kind: "command" as const,
+            text: "command text",
+            lines: ["command text"],
+            exitCode: 0,
+            timedOut: false,
+            lineCount: 1,
+          };
+        }),
+    }),
+    Repository.layer,
+    Lock.layer,
+    NodeCrypto.layer,
+  );
+  const context = yield* Layer.build(Service.layer.pipe(Layer.provideMerge(services)));
+  const service = Context.get(context, Service.FlowService);
+  const repository = Context.get(context, Repository.FlowRunRepository);
+  const finish = Effect.fn("test.finish")(function* (
+    input: Runtime.FlowThreadInput,
+    text = "assistant text",
+  ) {
+    const messageId = input.messageId!;
+    settled.set(messageId, { messageId, turnId: `turn:${messageId}`, text, failed: false });
+    yield* Queue.offer(events, input.threadId);
+  });
+  return {
+    service,
+    launches,
+    messages,
+    continuing,
+    commands,
+    attention,
+    finish,
+    repository,
+    launched,
+    settled,
+  };
+});
+const database = NodeSqliteClient.layer({ filename: ":memory:" });
+const awaitStatus = (service: Service.FlowService["Service"], id: FlowRunId, status: string) =>
+  service.run(id).pipe(
+    Stream.filter(
+      (event) => (event.type === "snapshot" ? event.summary : event.summary)?.status === status,
+    ),
+    Stream.runHead,
+  );
+
+it.effect(
+  "drives agent, reported loop, rendered command and approval; streams omit text and resolves thread roles",
+  () =>
+    Effect.gen(function* () {
+      const { service, launches, finish, commands, attention, launched } = yield* setup({
+        version: 1,
+        title: "Review",
+        workspace: "worktree",
+        inputs: [{ name: "issue", type: "string", required: true }],
+        steps: [
+          { id: "implement", kind: "agent", prompt: "Fix {{inputs.issue}}" },
+          {
+            id: "review-loop",
+            kind: "loop",
+            maxIterations: 3,
+            until: { ref: "steps.review.output.verdict", op: "eq", value: "approve" },
+            steps: [
+              {
+                id: "review",
+                kind: "agent",
+                prompt: "Review",
+                outputs: [{ name: "verdict", type: "enum", values: ["approve", "revise"] }],
+              },
+            ],
+            edges: [],
+          },
+          {
+            id: "command",
+            kind: "command",
+            command: "echo done",
+            env: { ISSUE: "{{inputs.issue}}" },
+          },
+          { id: "gate", kind: "approval", prompt: "Ship?" },
+        ],
+        edges: [
+          { from: "implement", to: "review-loop" },
+          { from: "review-loop", to: "command" },
+          { from: "command", to: "gate" },
+        ],
+      });
+      yield* service.recover();
+      const run = yield* service.start({
+        projectId: ProjectId.make("project"),
+        flowId: FlowId.make("example"),
+        inputs: { issue: "123" },
+      });
+      yield* Queue.take(launched);
+      yield* Queue.take(launched);
+      expect(launches[0]?.title).toBe("▶ Review · run 1");
+      expect(launches[0]?.workspace).toEqual({
+        type: "worktree",
+        baseRef: "HEAD",
+        branch: `flow/example/${run.id.slice(0, 8)}`,
+        startFromOrigin: false,
+      });
+      expect(launches[1]?.parentThreadId).toBe(run.flowRunThreadId);
+      expect(launches[1]?.workspace).toEqual({
+        type: "existing_worktree",
+        worktreePath: "/workspace/worktree",
+      });
+      expect(yield* service.runForThread(run.flowRunThreadId)).toEqual({
+        flowRunId: run.id,
+        role: "flow_run_thread",
+      });
+      expect((yield* service.runForThread(launches[1]!.threadId))?.role).toBe("step_thread");
+      expect(yield* reportMcp(service, run.flowRunThreadId, {})).toMatchObject({
+        code: "invalid_request",
+      });
+      yield* finish(launches[1]!);
+      yield* service.run(run.id).pipe(
+        Stream.filter((event) =>
+          event.stepRuns.some(
+            (step) => step.stepPath.at(-1) === "review" && step.status === "running",
+          ),
+        ),
+        Stream.runHead,
+      );
+      const review = yield* Queue.take(launched);
+      expect(review.prompt).toContain("t3_flow_report");
+      expect(yield* reportMcp(service, review.threadId, { verdict: "invalid" })).toMatchObject({
+        valid: false,
+      });
+      expect(yield* reportMcp(service, review.threadId, { verdict: "approve" })).toMatchObject({
+        valid: true,
+      });
+      yield* finish(review);
+      yield* awaitStatus(service, run.id, "waiting_approval");
+      expect(commands[0]?.env).toEqual({ ISSUE: "123" });
+      const snapshot = yield* service.snapshot(run.id);
+      expect(JSON.stringify(snapshot)).not.toContain("assistant text");
+      const implement = snapshot.stepRuns.find((step) => step.stepPath[0] === "implement")!;
+      expect((yield* service.stepRunOutput(implement.id))?.kind).toBe("agent");
+      expect(yield* service.runForThread(ThreadId.make("ordinary"))).toBeNull();
+      const result = yield* service.answerApproval(
+        { stepRunId: snapshot.approvals[0]!.stepRunId, decision: "approve" },
+        "tester",
+      );
+      expect(result.status).toBe("succeeded");
+      expect(attention).toContain("waiting_approval");
+      expect(attention).toContain("succeeded");
+    }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect("rejects stale saves and typed inputs; scheduled starts coerce and skip overlap", () =>
+  Effect.gen(function* () {
+    const definition: FlowDefinition = {
+      version: 1,
+      title: "Gate",
+      workspace: "root",
+      inputs: [{ name: "count", type: "number", required: true }],
+      steps: [{ id: "gate", kind: "approval", prompt: "Continue?" }],
+      edges: [],
+    };
+    const { service } = yield* setup(definition);
+    expect(
+      (yield* service
+        .save({
+          projectId: ProjectId.make("p"),
+          flowId: FlowId.make("example"),
+          definition,
+          baseRevision: null,
+        })
+        .pipe(Effect.exit))._tag,
+    ).toBe("Failure");
+    yield* service.save({
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      definition,
+      baseRevision: flowDefinitionRevision(definition),
+    });
+    const input = {
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      inputs: { count: "3" },
+      scheduledTaskId: ScheduledTaskId.make("schedule"),
+    };
+    expect((yield* service.start(input).pipe(Effect.exit))._tag).toBe("Failure");
+    const run = yield* service.start({ ...input, coerce: true });
+    expect((yield* service.snapshot(run.id)).inputs).toEqual({ count: 3 });
+    expect((yield* service.start({ ...input, coerce: true }).pipe(Effect.exit))._tag).toBe(
+      "Failure",
+    );
+    yield* service.stop(run.id);
+    expect((yield* service.start({ ...input, coerce: true })).runNumber).toBe(2);
+  }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect(
+  "recovers terminal turns before deciding interruptions and retains auto-continuing agents and approvals",
+  () =>
+    Effect.gen(function* () {
+      const definition: FlowDefinition = {
+        version: 1,
+        title: "Recover",
+        steps: [
+          { id: "agent", kind: "agent", prompt: "Work" },
+          { id: "gate", kind: "approval", prompt: "Wait" },
+        ],
+        edges: [],
+      };
+      const { service, repository, continuing, launches, finish } = yield* setup(definition);
+      const run = yield* service.start({
+        projectId: ProjectId.make("p"),
+        flowId: FlowId.make("example"),
+        inputs: {},
+      });
+      continuing.set(launches[1]!.threadId, "continued-message");
+      yield* service.recover();
+      const state = yield* repository.read(run.id);
+      expect(state?.stepRuns.find((step) => step.stepPath[0] === "agent")?.expectedMessageId).toBe(
+        "continued-message",
+      );
+      expect(state?.stepRuns.find((step) => step.stepPath[0] === "gate")?.status).toBe(
+        "waiting_approval",
+      );
+      yield* finish({ ...launches[1]!, messageId: "continued-message" });
+      yield* service.run(run.id).pipe(
+        Stream.filter((event) =>
+          event.stepRuns.some(
+            (step) => step.stepPath[0] === "agent" && step.status === "succeeded",
+          ),
+        ),
+        Stream.runHead,
+      );
+      const commandDefinition: FlowDefinition = {
+        version: 1,
+        title: "Command",
+        steps: [{ id: "cmd", kind: "command", command: "echo ok" }],
+        edges: [],
+      };
+      const initial = initialState(commandDefinition);
+      const active = applyTransitions(
+        initial,
+        decide(initial, { type: "start", at: initial.run.createdAt }).transitions,
+      );
+      yield* repository.create({
+        ...active,
+        run: {
+          ...active.run,
+          id: FlowRunId.make("interrupted-command"),
+          flowRunThreadId: ThreadId.make("cmd-parent"),
+        },
+        stepRuns: active.stepRuns.map((step) => ({
+          ...step,
+          id: FlowStepRunId.make("cmd-step"),
+          flowRunId: FlowRunId.make("interrupted-command"),
+        })),
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES ('cmd-parent', NULL)`;
+      yield* service.recover();
+      expect((yield* repository.read(FlowRunId.make("interrupted-command")))?.run.status).toBe(
+        "failed",
+      );
+    }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect(
+  "restart catches a persisted terminal turn and starts its newly reached command once",
+  () =>
+    Effect.gen(function* () {
+      const { service, launches, settled, commands } = yield* setup({
+        version: 1,
+        title: "Catch up",
+        workspace: "root",
+        steps: [
+          { id: "agent", kind: "agent", prompt: "Work" },
+          { id: "command", kind: "command", command: "echo done" },
+          { id: "gate", kind: "approval", prompt: "Continue?" },
+        ],
+        edges: [
+          { from: "agent", to: "command" },
+          { from: "command", to: "gate" },
+        ],
+      });
+      const run = yield* service.start({
+        projectId: ProjectId.make("p"),
+        flowId: FlowId.make("example"),
+        inputs: {},
+      });
+      const messageId = launches[1]!.messageId!;
+      settled.set(messageId, { messageId, turnId: "persisted-turn", text: "done", failed: false });
+      yield* service.recover();
+      yield* awaitStatus(service, run.id, "waiting_approval");
+      expect(commands).toHaveLength(1);
+      yield* service.recover();
+      expect(commands).toHaveLength(1);
+    }).pipe(Effect.scoped, Effect.provide(database)),
+);

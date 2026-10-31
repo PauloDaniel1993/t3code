@@ -1,3 +1,4 @@
+import { FlowService } from "../flows/FlowService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -71,6 +72,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(PullRequestReviewGuideService)({}),
   Layer.mock(RemoteDelegation)({}),
   Layer.mock(ScheduledTaskService)({}),
+  Layer.mock(FlowService)({}),
   Layer.mock(SecretRequests)({}),
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" }),
   Layer.mock(ServerEnvironment)({}),
