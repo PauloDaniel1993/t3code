@@ -10,6 +10,7 @@ import type { State } from "./FlowEngine.ts";
 const at = "2026-10-31T00:00:00.000Z";
 export function initialState(definition: FlowDefinition, inputs: FlowInputs = {}): State {
   return {
+    version: 0,
     definition,
     inputs,
     workspace: ".",

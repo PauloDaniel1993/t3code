@@ -56,19 +56,12 @@ export const FlowApprovalOutput = Schema.Struct({
   decision: FlowApprovalDecision,
   comment: Schema.optional(Schema.String),
 });
-export const FlowLoopOutput = Schema.StructWithRest(
-  Schema.Struct({
-    kind: Schema.Literal("loop"),
-    iterations: NonNegativeInt,
-    exitReason: Schema.Literals(["condition", "maxIterations"]),
-  }),
-  [
-    Schema.Record(
-      Schema.String.check(Schema.isPattern(/^(?!(?:kind|iterations|exitReason)$).+$/)),
-      OutputRef,
-    ),
-  ],
-);
+export const FlowLoopOutput = Schema.Struct({
+  kind: Schema.Literal("loop"),
+  iterations: NonNegativeInt,
+  exitReason: Schema.Literals(["condition", "maxIterations"]),
+  steps: Schema.Record(Schema.String, OutputRef),
+});
 export const FlowMapOutput = Schema.Struct({
   kind: Schema.Literal("map"),
   items: Schema.Array(
@@ -90,7 +83,7 @@ export type FlowStepOutput =
       readonly kind: "loop";
       readonly iterations: number;
       readonly exitReason: "condition" | "maxIterations";
-      readonly [key: string]: FlowStepOutput | number | "loop" | "condition" | "maxIterations";
+      readonly steps: Readonly<Record<string, FlowStepOutput>>;
     }
   | {
       readonly kind: "map";

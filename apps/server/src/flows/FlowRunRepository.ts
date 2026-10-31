@@ -1,3 +1,4 @@
+import { deleteFlowRunsForThread } from "./FlowCleanup.ts";
 // @effect-diagnostics preferSchemaOverJson:off -- Internal engine records include durable scheduling metadata outside RPC schemas.
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -10,6 +11,7 @@ import {
   FlowDefinition,
   FlowInputs,
   FlowRunSummary,
+  FlowRunError,
   FlowStepRun,
   FlowStepRunId,
   FlowStepOutput,
@@ -40,6 +42,7 @@ export class FlowRunRepository extends Context.Service<
     readonly read: (id: FlowRunId) => Effect.Effect<State | null, FlowPersistenceError>;
     readonly apply: (
       id: FlowRunId,
+      expectedVersion: number,
       transitions: ReadonlyArray<Transition>,
     ) => Effect.Effect<void, FlowPersistenceError>;
     readonly list: (
@@ -54,8 +57,9 @@ export class FlowRunRepository extends Context.Service<
 >()("t3/flows/FlowRunRepository") {}
 
 const StoredStepRun = Schema.Struct({
-  ...FlowStepRun.fields,
-  scope: Schema.String,
+  ...FlowStepRun.mapFields(({ output: _output, ...fields }) => fields).fields,
+  cancelledBy: Schema.optional(FlowStepRunId),
+  expectedMessageId: Schema.optional(Schema.String),
   superseded: Schema.optional(Schema.Boolean),
   cancelReason: Schema.optional(Schema.Literals(["stopped", "flow_failed", "retry_dependency"])),
   reportReceived: Schema.optional(Schema.Boolean),
@@ -64,6 +68,12 @@ const StoredStepRun = Schema.Struct({
   takenEdges: Schema.optional(Schema.Array(Schema.Number)),
   items: Schema.optional(Schema.Array(Schema.String)),
 });
+const encodeStep = Schema.encodeSync(Schema.fromJsonString(StoredStepRun));
+const encodeRun = Schema.encodeSync(Schema.fromJsonString(FlowRunSummary));
+const encodeDefinition = Schema.encodeSync(Schema.fromJsonString(FlowDefinition));
+const encodeInputs = Schema.encodeSync(Schema.fromJsonString(FlowInputs));
+const encodeOutput = Schema.encodeSync(Schema.fromJsonString(Schema.NullOr(FlowStepOutput)));
+const encodeError = Schema.encodeSync(Schema.fromJsonString(Schema.NullOr(FlowRunError)));
 const decodeRun = Schema.decodeSync(Schema.fromJsonString(FlowRunSummary));
 const decodeDefinition = Schema.decodeSync(Schema.fromJsonString(FlowDefinition));
 const decodeInputs = Schema.decodeSync(Schema.fromJsonString(FlowInputs));
@@ -74,7 +84,6 @@ const parse = <A>(read: () => A) =>
     try: read,
     catch: (cause) => new FlowPersistenceError({ operation: "decode", cause }),
   });
-const isPersistenceError = Schema.is(FlowPersistenceError);
 const decodeApproval = Schema.decodeUnknownSync(FlowApproval);
 
 const make = Effect.gen(function* () {
@@ -88,18 +97,23 @@ const make = Effect.gen(function* () {
         if (t.run.id !== id)
           return yield* new FlowPersistenceError({ operation: "run ownership", cause: null });
         yield* sql`UPDATE flow_runs SET
-        summary_json = ${JSON.stringify(t.run)}, status = ${t.run.status}, error = ${JSON.stringify(t.run.error)},
+        summary_json = ${encodeRun(t.run)}, status = ${t.run.status}, error = ${encodeError(t.run.error)},
         started_at = ${t.run.startedAt}, finished_at = ${t.run.finishedAt} WHERE id = ${id}`;
       } else if (t.type === "step") {
         if (t.step.flowRunId !== id)
           return yield* new FlowPersistenceError({ operation: "step ownership", cause: null });
         const s = t.step;
+        const encoded = yield* parse(() => ({
+          state: encodeStep(s),
+          output: encodeOutput(s.output),
+          error: encodeError(s.error),
+        }));
         const existing = yield* sql<{
           flow_run_id: string;
         }>`SELECT flow_run_id FROM flow_step_runs WHERE id = ${s.id}`;
         if (existing[0] && existing[0].flow_run_id !== id)
           return yield* new FlowPersistenceError({ operation: "step ownership", cause: null });
-        yield* sql`INSERT INTO flow_step_runs ${sql.insert({ id: s.id, flow_run_id: id, parent_step_run_id: s.parentStepRunId, step_path: JSON.stringify(s.stepPath), iteration: s.iteration ?? null, item_index: s.itemIndex ?? null, attempt: s.attempt, status: s.status, thread_id: s.threadId, output: JSON.stringify(s.output), error: JSON.stringify(s.error), created_at: s.createdAt, started_at: s.startedAt, finished_at: s.finishedAt, state_json: JSON.stringify(s) })}
+        yield* sql`INSERT INTO flow_step_runs ${sql.insert({ id: s.id, flow_run_id: id, parent_step_run_id: s.parentStepRunId, step_path: JSON.stringify(s.stepPath), iteration: s.iteration ?? null, item_index: s.itemIndex ?? null, attempt: s.attempt, status: s.status, thread_id: s.threadId, output: encoded.output, error: encoded.error, created_at: s.createdAt, started_at: s.startedAt, finished_at: s.finishedAt, state_json: encoded.state })}
           ON CONFLICT(id) DO UPDATE SET status = excluded.status, thread_id = excluded.thread_id, output = excluded.output, error = excluded.error, started_at = excluded.started_at, finished_at = excluded.finished_at, state_json = excluded.state_json`;
       } else {
         const a = t.approval;
@@ -118,7 +132,9 @@ const make = Effect.gen(function* () {
   ) =>
     effect.pipe(
       Effect.mapError((cause) =>
-        isPersistenceError(cause) ? cause : new FlowPersistenceError({ operation, cause }),
+        cause instanceof FlowPersistenceError
+          ? cause
+          : new FlowPersistenceError({ operation, cause }),
       ),
     );
   const read = Effect.fn("FlowRunRepository.read")(function* (id: FlowRunId) {
@@ -127,6 +143,7 @@ const make = Effect.gen(function* () {
       sql.withTransaction(
         Effect.gen(function* () {
           const rows = yield* sql<{
+            version: number;
             summary_json: string;
             definition_snapshot: string;
             inputs: string;
@@ -137,7 +154,8 @@ const make = Effect.gen(function* () {
           if (!row) return null;
           const steps = yield* sql<{
             state_json: string;
-          }>`SELECT state_json FROM flow_step_runs WHERE flow_run_id = ${id} ORDER BY rowid`;
+            output: string;
+          }>`SELECT state_json, output FROM flow_step_runs WHERE flow_run_id = ${id} ORDER BY rowid`;
           const approvals = yield* sql<{
             step_run_id: string;
             prompt: string;
@@ -149,12 +167,23 @@ const make = Effect.gen(function* () {
           return yield* parse(
             () =>
               ({
+                version: row.version,
                 run: decodeRun(row.summary_json),
                 definition: decodeDefinition(row.definition_snapshot),
                 inputs: decodeInputs(row.inputs),
                 workspace: row.workspace,
                 baseRef: row.base_ref,
-                stepRuns: steps.map((s) => decodeStep(s.state_json)),
+                stepRuns: steps.map((s) => {
+                  const step = decodeStep(s.state_json);
+                  return {
+                    ...step,
+                    output: decodeOutput(s.output),
+                    scope:
+                      step.parentStepRunId === null
+                        ? "root"
+                        : `${step.parentStepRunId}:${step.iteration ?? step.itemIndex ?? 0}`,
+                  };
+                }),
                 approvals: approvals.map((a) =>
                   decodeApproval({
                     stepRunId: a.step_run_id,
@@ -187,7 +216,7 @@ const make = Effect.gen(function* () {
               runNumber: number!.last_number,
               flowTitle: state.definition.title,
             };
-            yield* sql`INSERT INTO flow_runs ${sql.insert({ id: r.id, project_id: r.projectId, flow_id: r.flowId, run_number: summary.runNumber, flow_title: summary.flowTitle, flow_run_thread_id: r.flowRunThreadId, definition_snapshot: JSON.stringify(state.definition), inputs: JSON.stringify(state.inputs), base_ref: state.baseRef, workspace: state.workspace, status: r.status, error: JSON.stringify(r.error), created_at: r.createdAt, started_at: r.startedAt, finished_at: r.finishedAt, scheduled_task_id: r.scheduledTaskId ?? null, summary_json: JSON.stringify(summary) })}`;
+            yield* sql`INSERT INTO flow_runs ${sql.insert({ id: r.id, version: state.version, project_id: r.projectId, flow_id: r.flowId, run_number: summary.runNumber, flow_title: summary.flowTitle, flow_run_thread_id: r.flowRunThreadId, definition_snapshot: encodeDefinition(state.definition), inputs: encodeInputs(state.inputs), base_ref: state.baseRef, workspace: state.workspace, status: r.status, error: encodeError(r.error), created_at: r.createdAt, started_at: r.startedAt, finished_at: r.finishedAt, scheduled_task_id: r.scheduledTaskId ?? null, summary_json: encodeRun(summary) })}`;
             yield* write(r.id, [
               ...state.stepRuns.map((step): Transition => ({ type: "step", step })),
               ...state.approvals.map((approval): Transition => ({ type: "approval", approval })),
@@ -198,8 +227,22 @@ const make = Effect.gen(function* () {
       );
     }),
     read,
-    apply: Effect.fn("FlowRunRepository.apply")((id, transitions) =>
-      protect("apply", sql.withTransaction(write(id, transitions))),
+    apply: Effect.fn("FlowRunRepository.apply")((id, expectedVersion, transitions) =>
+      protect(
+        "apply",
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const updated =
+              yield* sql`UPDATE flow_runs SET version = version + 1 WHERE id = ${id} AND version = ${expectedVersion} RETURNING id`;
+            if (updated.length !== 1)
+              return yield* new FlowPersistenceError({
+                operation: "version conflict",
+                cause: null,
+              });
+            yield* write(id, transitions);
+          }),
+        ),
+      ),
     ),
     list: Effect.fn("FlowRunRepository.list")(function* (projectId, before) {
       const rows = yield* protect(
@@ -230,9 +273,10 @@ const make = Effect.gen(function* () {
       return yield* parse(() => (rows[0] ? decodeOutput(rows[0].output) : null));
     }),
     deleteForThread: Effect.fn("FlowRunRepository.deleteForThread")((id) =>
-      protect("delete", sql`DELETE FROM flow_runs WHERE flow_run_thread_id = ${id}`).pipe(
-        Effect.asVoid,
-      ),
+      protect(
+        "delete",
+        deleteFlowRunsForThread(id).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ).pipe(Effect.asVoid),
     ),
   });
 });

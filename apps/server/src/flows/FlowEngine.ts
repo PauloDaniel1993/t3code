@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Synchronous hashing keeps engine decisions pure and deterministic.
+import * as NodeCrypto from "node:crypto";
 import {
   FlowStepRunId,
   type FlowApproval,
@@ -11,9 +13,11 @@ import {
   type FlowStep,
   type FlowStepOutput,
   type FlowStepRun,
-  type ThreadId,
+  ThreadId,
+  type FlowValidationError,
 } from "@t3tools/contracts";
 import {
+  FlowValueError,
   evaluateFlowCondition,
   renderFlowTemplate,
   renderFlowCommandEnv,
@@ -24,6 +28,8 @@ import {
 
 export interface StepRun extends FlowStepRun {
   readonly scope: string;
+  readonly cancelledBy?: FlowStepRunId | undefined;
+  readonly expectedMessageId?: string | undefined;
   readonly superseded?: boolean | undefined;
   readonly cancelReason?: "stopped" | "flow_failed" | "retry_dependency" | undefined;
   readonly reportReceived?: boolean | undefined;
@@ -34,6 +40,7 @@ export interface StepRun extends FlowStepRun {
 }
 
 export interface State {
+  readonly version: number;
   readonly run: FlowRunSummary;
   readonly definition: FlowDefinition;
   readonly inputs: FlowInputs;
@@ -49,15 +56,12 @@ export type Trigger = { readonly at: string } & (
   | { readonly type: "stop" }
   | { readonly type: "resume" }
   | { readonly type: "retry_step"; readonly stepRunId: FlowStepRunId }
-  | {
-      readonly type: "thread_started";
-      readonly stepRunId: FlowStepRunId;
-      readonly threadId: ThreadId;
-    }
+  | { readonly type: "action_failed"; readonly stepRunId: FlowStepRunId; readonly error: ErrorInfo }
   | {
       readonly type: "step_thread_settled";
       readonly stepRunId: FlowStepRunId;
       readonly text: string;
+      readonly messageId: string;
       readonly turnId: string;
       readonly error?: ErrorInfo;
     }
@@ -79,14 +83,19 @@ export type Trigger = { readonly at: string } & (
       readonly comment?: string;
       readonly answeredBy: string;
     }
-  | { readonly type: "recovered"; readonly continuingThreadIds: ReadonlyArray<ThreadId> }
+  | {
+      readonly type: "recovered";
+      readonly continuingThreadIds: ReadonlyArray<ThreadId>;
+      readonly continuingMessageIds?: Readonly<Record<string, string>>;
+    }
 );
 
 export type Action =
   | {
       readonly type: "launch_step_thread" | "continue_thread";
       readonly stepRunId: FlowStepRunId;
-      readonly threadId: ThreadId | null;
+      readonly threadId: ThreadId;
+      readonly messageId: string;
       readonly prompt: string;
       readonly model?: FlowModel | undefined;
       readonly runtimeMode?: RuntimeMode | undefined;
@@ -94,6 +103,7 @@ export type Action =
     }
   | {
       readonly type: "send_reminder";
+      readonly messageId: string;
       readonly stepRunId: FlowStepRunId;
       readonly threadId: ThreadId | null;
     }
@@ -134,7 +144,9 @@ export function applyTransitions(state: State, transitions: ReadonlyArray<Transi
 
 const active = (s: StepRun) =>
   !s.superseded && ["pending", "running", "waiting_report", "waiting_approval"].includes(s.status);
+const inFlight = (s: StepRun) => active(s) && s.status !== "pending";
 const terminal = (s: StepRun) => !active(s);
+const opaqueId = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
 const failed = (s: StepRun) => s.status === "failed" || s.status === "interrupted";
 const fault = (code: ErrorInfo["code"], message = code.replaceAll("_", " ")): ErrorInfo => ({
   code,
@@ -144,16 +156,107 @@ const fault = (code: ErrorInfo["code"], message = code.replaceAll("_", " ")): Er
 export function decide(
   initial: State,
   trigger: Trigger,
-): { transitions: ReadonlyArray<Transition>; actions: ReadonlyArray<Action> } {
+): {
+  transitions: ReadonlyArray<Transition>;
+  actions: ReadonlyArray<Action>;
+  rejected?: {
+    reason: "not_applicable" | "invalid_report";
+    errors?: ReadonlyArray<FlowValidationError>;
+  };
+} {
   let state = initial;
   const transitions: Transition[] = [];
   const actions: Action[] = [];
+  const reject = (
+    reason: "not_applicable" | "invalid_report" = "not_applicable",
+    errors?: ReadonlyArray<FlowValidationError>,
+  ) => ({ transitions: [], actions: [], rejected: { reason, ...(errors ? { errors } : {}) } });
+  const finishDecision = () => {
+    const before = new Map(initial.stepRuns.map((s) => [s.id, s]));
+    const after = byId;
+    const starts = actions.filter((a) => {
+      if (!("stepRunId" in a)) return true;
+      const next = after.get(a.stepRunId);
+      if (a.type === "send_reminder") return next?.status === "waiting_report" && !next.superseded;
+      return (
+        next?.status === "running" &&
+        !next.superseded &&
+        before.get(a.stepRunId)?.status !== "running"
+      );
+    });
+    const stops: Action[] = [];
+    for (const old of initial.stepRuns) {
+      const next = after.get(old.id);
+      if (!inFlight(old) || (next && inFlight(next))) continue;
+      if (next?.status !== "cancelled" && !next?.superseded) continue;
+      const kind = definition(old).kind;
+      if (kind === "agent" || kind === "command")
+        stops.push({
+          type: kind === "agent" ? "interrupt_turn" : "kill_command",
+          stepRunId: old.id,
+          threadId: old.threadId,
+        });
+    }
+    const finalSteps = new Map<FlowStepRunId, Transition>();
+    const finalApprovals = new Map<FlowStepRunId, Transition>();
+    for (const t of transitions) {
+      if (t.type === "step") finalSteps.set(t.step.id, t);
+      if (t.type === "approval") finalApprovals.set(t.approval.stepRunId, t);
+    }
+    return {
+      transitions: [
+        ...finalSteps.values(),
+        ...finalApprovals.values(),
+        ...transitions.filter((t) => t.type === "run").slice(-1),
+      ],
+      actions: [
+        ...starts.filter((a) => "stepRunId" in a),
+        ...stops,
+        ...starts.filter((a) => !("stepRunId" in a)),
+      ],
+    };
+  };
+  const byId = new Map(initial.stepRuns.map((s) => [s.id, s]));
+  const byScope = new Map<string, Map<FlowStepRunId, StepRun>>();
+  const byPath = new Map<string, Map<FlowStepRunId, StepRun>>();
+  const children = new Map<FlowStepRunId | null, Map<FlowStepRunId, StepRun>>();
+  for (const step of initial.stepRuns) {
+    const rows = byScope.get(step.scope) ?? new Map();
+    rows.set(step.id, step);
+    byScope.set(step.scope, rows);
+    const pathRows = byPath.get(step.stepPath.join("/")) ?? new Map();
+    pathRows.set(step.id, step);
+    byPath.set(step.stepPath.join("/"), pathRows);
+    const childRows = children.get(step.parentStepRunId) ?? new Map();
+    childRows.set(step.id, step);
+    children.set(step.parentStepRunId, childRows);
+  }
   const emit = (transition: Transition) => {
     transitions.push(transition);
-    state = applyTransitions(state, [transition]);
+    if (transition.type === "step") {
+      const step = transition.step;
+      byId.set(step.id, step);
+      const rows = byScope.get(step.scope) ?? new Map();
+      rows.set(step.id, step);
+      byScope.set(step.scope, rows);
+      const pathRows = byPath.get(step.stepPath.join("/")) ?? new Map();
+      pathRows.set(step.id, step);
+      byPath.set(step.stepPath.join("/"), pathRows);
+      const childRows = children.get(step.parentStepRunId) ?? new Map();
+      childRows.set(step.id, step);
+      children.set(step.parentStepRunId, childRows);
+    } else if (transition.type === "run") state = { ...state, run: transition.run };
+    else
+      state = {
+        ...state,
+        approvals: [
+          ...state.approvals.filter((a) => a.stepRunId !== transition.approval.stepRunId),
+          transition.approval,
+        ],
+      };
   };
   const put = (step: StepRun) => emit({ type: "step", step });
-  const get = (id: FlowStepRunId) => state.stepRuns.find((s) => s.id === id)!;
+  const get = (id: FlowStepRunId) => byId.get(id)!;
   const definition = (s: StepRun): FlowStep => {
     let steps = state.definition.steps;
     let found: FlowStep | undefined;
@@ -176,7 +279,7 @@ export function decide(
     const loop = chain[loopIndex]!;
     const iteration = chain[loopIndex - 1]!.iteration ?? 0;
     const mapIndexes = chain.slice(0, loopIndex).map((r) => r.itemIndex);
-    return state.stepRuns.findLast((r) => {
+    return [...(byPath.get(s.stepPath.join("/"))?.values() ?? [])].findLast((r) => {
       if (r.superseded || r.stepPath.join("/") !== s.stepPath.join("/")) return false;
       const candidate = ancestors(r);
       const index = candidate.findIndex((r) => r.id === loop.id);
@@ -192,7 +295,7 @@ export function decide(
       ? context(parent.scope, parent.parentStepRunId ? get(parent.parentStepRunId) : null)
       : { inputs: state.inputs };
     const steps = { ...inherited.steps };
-    for (const s of state.stepRuns.filter((r) => r.scope === scope && !r.superseded)) {
+    for (const s of [...(byScope.get(scope)?.values() ?? [])].filter((r) => !r.superseded)) {
       const previous = previousRun(s);
       steps[s.stepPath.at(-1)!] = {
         ...(s.output ? { output: s.output } : {}),
@@ -217,22 +320,22 @@ export function decide(
       error: error ?? s.error,
       finishedAt: trigger.at,
     });
-  const cancel = (s: StepRun, reason: NonNullable<StepRun["cancelReason"]>) => {
-    const step = definition(s);
-    if (step.kind === "command")
-      actions.push({ type: "kill_command", stepRunId: s.id, threadId: s.threadId });
-    if (step.kind === "agent")
-      actions.push({ type: "interrupt_turn", stepRunId: s.id, threadId: s.threadId });
+  const cancel = (
+    s: StepRun,
+    reason: NonNullable<StepRun["cancelReason"]>,
+    cancelledBy?: FlowStepRunId,
+  ) => {
     put({
       ...s,
       status: "cancelled",
       error: fault("turn_cancelled", reason),
       cancelReason: reason,
+      cancelledBy,
       finishedAt: trigger.at,
     });
   };
   const supersede = (s: StepRun) => {
-    for (const child of state.stepRuns.filter((r) => r.parentStepRunId === s.id && !r.superseded))
+    for (const child of [...(children.get(s.id)?.values() ?? [])].filter((r) => !r.superseded))
       supersede(child);
     if (active(s)) cancel(s, "retry_dependency");
     put({ ...get(s.id), superseded: true });
@@ -241,7 +344,7 @@ export function decide(
     supersede(s);
     const next = {
       ...s,
-      id: FlowStepRunId.make(`${s.id}:retry:${s.attempt + 1}`),
+      id: FlowStepRunId.make(opaqueId(`${s.id}:retry:${s.attempt + 1}`)),
       attempt: s.attempt + 1,
       status: "pending" as const,
       output: null,
@@ -252,6 +355,8 @@ export function decide(
       threadId: null,
       reportReceived: false,
       cancelReason: undefined,
+      cancelledBy: undefined,
+      expectedMessageId: undefined,
       reminderSent: false,
       lastSettledTurnId: undefined,
       takenEdges: undefined,
@@ -261,27 +366,49 @@ export function decide(
   };
 
   if (trigger.type === "stop") {
-    if (!["starting", "running", "waiting_approval"].includes(state.run.status))
-      return { transitions, actions };
-    for (const s of state.stepRuns.filter(active)) cancel(s, "stopped");
+    if (!["starting", "running", "waiting_approval"].includes(state.run.status)) return reject();
+    for (const s of [...byId.values()].filter(active)) cancel(s, "stopped");
     emit({
       type: "run",
       run: { ...state.run, status: "cancelled", activeStepRunIds: [], finishedAt: trigger.at },
     });
     actions.push({ type: "finish", status: "cancelled" });
-    return { transitions, actions };
+    return finishDecision();
   }
   if (trigger.type === "resume") {
-    if (state.run.status !== "cancelled") return { transitions, actions };
-    for (const s of state.stepRuns.filter((s) => !s.superseded && s.cancelReason === "stopped")) {
+    if (state.run.status !== "cancelled") return reject();
+    for (const s of [...byId.values()].filter(
+      (s) => !s.superseded && s.cancelReason === "stopped",
+    )) {
       const kind = definition(s).kind;
       if (kind === "loop" || kind === "map")
         put({ ...s, status: "running", error: null, finishedAt: null });
+      else if (s.startedAt === null)
+        put({ ...s, status: "pending", error: null, cancelReason: undefined, finishedAt: null });
       else retry(s);
     }
   } else if (trigger.type === "retry_step") {
-    const s = state.stepRuns.find((s) => s.id === trigger.stepRunId && !s.superseded);
-    if (!s || !failed(s)) return { transitions, actions };
+    const s = [...byId.values()].find((s) => s.id === trigger.stepRunId && !s.superseded);
+    if (!s || !failed(s) || !["failed", "running"].includes(state.run.status)) return reject();
+    const chain = new Set(ancestors(s).map((r) => r.id));
+    if (
+      [...byId.values()].some(
+        (r) =>
+          !r.superseded &&
+          failed(r) &&
+          !chain.has(r.id) &&
+          (() => {
+            const parent = r.parentStepRunId ? get(r.parentStepRunId) : null;
+            const graph = parent ? definition(parent) : state.definition;
+            return (
+              "edges" in graph &&
+              !r.takenEdges?.some((i) => graph.edges[i]?.on === "failure") &&
+              (!parent || active(parent))
+            );
+          })(),
+      )
+    )
+      return reject();
     // Invalidate only dependent work; independent completed branches remain durable.
     const invalidate = (source: StepRun) => {
       const parent = source.parentStepRunId ? get(source.parentStepRunId) : null;
@@ -296,7 +423,7 @@ export function decide(
             changed = true;
           }
       }
-      for (const r of state.stepRuns.filter(
+      for (const r of [...byId.values()].filter(
         (r) =>
           !r.superseded &&
           r.scope === source.scope &&
@@ -307,7 +434,7 @@ export function decide(
       }
       if (parent) {
         if (definition(parent).kind === "loop") {
-          for (const later of state.stepRuns.filter(
+          for (const later of [...byId.values()].filter(
             (r) =>
               !r.superseded &&
               r.parentStepRunId === parent.id &&
@@ -321,8 +448,13 @@ export function decide(
     };
     invalidate(s);
     retry(s);
-    for (const cancelled of state.stepRuns.filter(
-      (r) => !r.superseded && r.cancelReason === "flow_failed",
+    for (const cancelled of [...byId.values()].filter(
+      (r) =>
+        !r.superseded &&
+        r.cancelReason === "flow_failed" &&
+        r.cancelledBy !== undefined &&
+        chain.has(r.cancelledBy) &&
+        ancestors(r).slice(1).every(active),
     )) {
       const kind = definition(cancelled).kind;
       if (kind === "map" || kind === "loop")
@@ -330,27 +462,37 @@ export function decide(
       else retry(cancelled);
     }
   } else if (trigger.type === "recovered") {
-    if (!["starting", "running", "waiting_approval"].includes(state.run.status))
-      return { transitions, actions };
-    for (const s of state.stepRuns.filter(active)) {
+    if (!["starting", "running", "waiting_approval"].includes(state.run.status)) return reject();
+    for (const s of [...byId.values()].filter(inFlight)) {
       const kind = definition(s).kind;
       if (
         kind === "command" ||
         (kind === "agent" && (!s.threadId || !trigger.continuingThreadIds.includes(s.threadId)))
       )
         put({ ...s, status: "interrupted", error: fault("interrupted"), finishedAt: trigger.at });
+      else if (kind === "agent" && s.threadId && trigger.continuingMessageIds?.[s.threadId])
+        put({ ...s, expectedMessageId: trigger.continuingMessageIds[s.threadId] });
     }
   } else if (trigger.type !== "start") {
-    if (!["starting", "running", "waiting_approval"].includes(state.run.status))
-      return { transitions, actions };
-    const s = state.stepRuns.find((s) => s.id === trigger.stepRunId && active(s));
-    if (!s) return { transitions, actions };
+    if (!["starting", "running", "waiting_approval"].includes(state.run.status)) return reject();
+    const s = [...byId.values()].find((s) => s.id === trigger.stepRunId && active(s));
+    if (!s) return reject();
     const step = definition(s);
-    if (trigger.type === "thread_started" && step.kind === "agent")
-      put({ ...s, threadId: trigger.threadId });
+    const applicable =
+      trigger.type === "approval_answered"
+        ? step.kind === "approval" &&
+          s.status === "waiting_approval" &&
+          state.approvals.some((a) => a.stepRunId === s.id)
+        : trigger.type === "command_finished"
+          ? step.kind === "command" && s.status === "running"
+          : trigger.type === "action_failed"
+            ? inFlight(s)
+            : step.kind === "agent" && (s.status === "running" || s.status === "waiting_report");
+    if (!applicable) return reject();
+    if (trigger.type === "action_failed") complete(s, s.output, trigger.error);
     if (trigger.type === "report_received" && step.kind === "agent") {
       const result = validateFlowReport(step.outputs ?? [], trigger.fields);
-      if (!result.valid) throw new Error(JSON.stringify(result.errors));
+      if (!result.valid) return reject("invalid_report", result.errors);
       const output = {
         kind: "agent",
         text: s.output?.kind === "agent" ? s.output.text : "",
@@ -359,7 +501,8 @@ export function decide(
       put({ ...s, output, reportReceived: true });
     }
     if (trigger.type === "step_thread_settled" && step.kind === "agent") {
-      if (s.lastSettledTurnId === trigger.turnId) return { transitions, actions };
+      if (s.lastSettledTurnId === trigger.turnId || s.expectedMessageId !== trigger.messageId)
+        return reject();
       put({ ...s, lastSettledTurnId: trigger.turnId });
       const output: FlowStepOutput = {
         ...(s.output?.kind === "agent" ? s.output : {}),
@@ -370,18 +513,22 @@ export function decide(
       else if (!step.outputs?.length || s.reportReceived) complete(get(s.id), output);
       else if (s.reminderSent) complete(get(s.id), output, fault("missing_report"));
       else {
-        put({ ...get(s.id), output, status: "waiting_report", reminderSent: true });
-        actions.push({ type: "send_reminder", stepRunId: s.id, threadId: s.threadId });
+        const messageId = `${s.id}:reminder`;
+        put({
+          ...get(s.id),
+          output,
+          status: "waiting_report",
+          reminderSent: true,
+          expectedMessageId: messageId,
+        });
+        actions.push({ type: "send_reminder", stepRunId: s.id, threadId: s.threadId, messageId });
       }
     }
     if (trigger.type === "command_finished" && step.kind === "command")
       complete(
         s,
         trigger.output ?? null,
-        trigger.error ??
-          (trigger.output && "timedOut" in trigger.output && trigger.output.timedOut
-            ? fault("command_timeout")
-            : undefined),
+        trigger.error ?? (trigger.output?.timedOut ? fault("command_timeout") : undefined),
       );
     if (trigger.type === "approval_answered" && step.kind === "approval") {
       const approval = state.approvals.find((a) => a.stepRunId === s.id)!;
@@ -401,7 +548,7 @@ export function decide(
         ...(trigger.comment === undefined ? {} : { comment: trigger.comment }),
       });
     }
-  } else if (state.run.status !== "starting") return { transitions, actions };
+  } else if (state.run.status !== "starting") return reject();
 
   const runScope = (
     steps: ReadonlyArray<FlowStep>,
@@ -410,15 +557,15 @@ export function decide(
     parent: StepRun | null,
     index?: number,
   ): "active" | "done" | "failed" => {
-    const rows = () => state.stepRuns.filter((s) => s.scope === scope && !s.superseded);
+    const rows = () => [...(byScope.get(scope)?.values() ?? [])].filter((s) => !s.superseded);
     for (const step of steps)
       if (!rows().some((r) => r.stepPath.at(-1) === step.id)) {
         const path = [...(parent?.stepPath ?? []), step.id];
-        const attempts = state.stepRuns.filter(
+        const attempts = [...byId.values()].filter(
           (r) => r.scope === scope && r.stepPath.at(-1) === step.id,
         ).length;
         put({
-          id: FlowStepRunId.make(`${state.run.id}/${scope}/${step.id}/${attempts + 1}`),
+          id: FlowStepRunId.make(opaqueId(`${state.run.id}/${scope}/${step.id}/${attempts + 1}`)),
           flowRunId: state.run.id,
           stepPath: path,
           scope,
@@ -462,21 +609,21 @@ export function decide(
           else {
             put({ ...s, status: "running", startedAt: trigger.at });
             s = get(s.id);
-            try {
+            {
               const ctx = context(scope, parent);
               const render = (text: string) =>
                 renderFlowTemplate(
                   text,
                   ctx,
                   (id) =>
-                    state.stepRuns.findLast((r) => r.stepPath.at(-1) === id && r.threadId)
+                    [...byId.values()].findLast((r) => r.stepPath.at(-1) === id && r.threadId)
                       ?.threadId ?? id,
                 );
               if (step.kind === "agent") {
                 const previous = step.thread === "continue" ? previousRun(s) : undefined;
                 const sameAs = typeof step.thread === "object" ? step.thread.sameAs : undefined;
                 const same = sameAs
-                  ? state.stepRuns.findLast(
+                  ? [...byId.values()].findLast(
                       (r) =>
                         !r.superseded &&
                         r.stepPath.at(-1) === sameAs &&
@@ -484,10 +631,22 @@ export function decide(
                         (r.scope === scope || ctx.steps?.[sameAs]?.output === r.output),
                     )
                   : undefined;
-                const threadId = (previous ?? same)?.threadId ?? null;
+                const candidateThreadId = (previous ?? same)?.threadId ?? null;
+                const wasCancelled =
+                  candidateThreadId &&
+                  initial.stepRuns.some(
+                    (old) =>
+                      old.threadId === candidateThreadId &&
+                      inFlight(old) &&
+                      (get(old.id).status === "cancelled" || get(old.id).superseded),
+                  );
+                const reusedThreadId = wasCancelled ? null : candidateThreadId;
+                const threadId = reusedThreadId ?? ThreadId.make(`flow-${opaqueId(s.id)}`);
                 if (
-                  threadId &&
-                  state.stepRuns.some((r) => r.id !== s.id && active(r) && r.threadId === threadId)
+                  reusedThreadId &&
+                  [...byId.values()].some(
+                    (r) => r.id !== s.id && active(r) && r.threadId === threadId,
+                  )
                 ) {
                   complete(s, null, fault("other", "Thread already has an active flow step"));
                   continue;
@@ -495,16 +654,19 @@ export function decide(
                 put({
                   ...s,
                   threadId,
-                  ...(sameAs && !threadId
+                  expectedMessageId: s.id,
+                  ...(sameAs && !reusedThreadId
                     ? { error: fault("other", `sameAs target ${sameAs} had no thread`) }
                     : {}),
                 });
                 actions.push({
-                  type: threadId ? "continue_thread" : "launch_step_thread",
+                  type: reusedThreadId ? "continue_thread" : "launch_step_thread",
                   stepRunId: s.id,
                   threadId,
+                  messageId: s.id,
                   prompt: render(step.prompt),
-                  model: step.model ?? (threadId ? undefined : state.definition.defaults?.model),
+                  model:
+                    step.model ?? (reusedThreadId ? undefined : state.definition.defaults?.model),
                   runtimeMode: step.runtimeMode ?? state.definition.defaults?.runtimeMode,
                   interactionMode:
                     step.interactionMode ?? state.definition.defaults?.interactionMode,
@@ -518,7 +680,7 @@ export function decide(
                     step.env ?? {},
                     ctx,
                     (id) =>
-                      state.stepRuns.findLast((r) => r.stepPath.at(-1) === id && r.threadId)
+                      [...byId.values()].findLast((r) => r.stepPath.at(-1) === id && r.threadId)
                         ?.threadId ?? id,
                   ),
                   ...(step.cwd ? { cwd: step.cwd } : {}),
@@ -539,12 +701,11 @@ export function decide(
               } else if (step.kind === "map") {
                 try {
                   put({ ...s, items: resolveFlowMapItems(step.over, ctx, step.maxItems) });
-                } catch {
+                } catch (error) {
+                  if (!(error instanceof FlowValueError)) throw error;
                   complete(s, null, fault("max_items"));
                 }
               }
-            } catch {
-              complete(get(s.id), null, fault("other", "invalid reference"));
             }
           }
           changed = true;
@@ -553,15 +714,15 @@ export function decide(
         if (s.status === "running" && (step.kind === "loop" || step.kind === "map")) {
           const outputs = (childScope: string) =>
             Object.fromEntries(
-              state.stepRuns
+              [...byId.values()]
                 .filter((r) => r.scope === childScope && !r.superseded && r.output)
                 .map((r) => [r.stepPath.at(-1)!, r.output!]),
             );
           if (step.kind === "loop") {
             let iteration = Math.max(
               0,
-              ...state.stepRuns
-                .filter((r) => r.parentStepRunId === s.id && !r.superseded)
+              ...[...(children.get(s.id)?.values() ?? [])]
+                .filter((r) => !r.superseded)
                 .map((r) => r.iteration ?? 0),
             );
             while (true) {
@@ -572,20 +733,17 @@ export function decide(
                 complete(s, null, fault("other", "child failed"));
                 break;
               }
-              try {
+              {
                 const condition = evaluateFlowCondition(step.until, context(childScope, s));
                 if (condition || iteration + 1 >= step.maxIterations) {
                   complete(s, {
-                    ...outputs(childScope),
+                    steps: outputs(childScope),
                     kind: "loop",
                     iterations: iteration + 1,
                     exitReason: condition ? "condition" : "maxIterations",
                   });
                   break;
                 }
-              } catch {
-                complete(s, null, fault("other", "invalid reference"));
-                break;
               }
               iteration++;
             }
@@ -597,7 +755,9 @@ export function decide(
             let running = 0;
             for (let i = 0; i < (s.items?.length ?? 0); i++) {
               const childScope = `${s.id}:${i}`;
-              const exists = state.stepRuns.some((r) => r.scope === childScope && !r.superseded);
+              const exists = [...byId.values()].some(
+                (r) => r.scope === childScope && !r.superseded,
+              );
               if (!exists && running >= (step.concurrency ?? 1)) break;
               const result = runScope(step.steps, step.edges, childScope, s, i);
               if (result === "active") running++;
@@ -616,9 +776,9 @@ export function decide(
           }
           s = get(s.id);
         }
-        if (terminal(s) && s.takenEdges === undefined) {
+        if (terminal(s) && s.status !== "cancelled" && s.takenEdges === undefined) {
           const taken: number[] = [];
-          try {
+          {
             for (const [i, edge] of edges.entries())
               if (
                 edge.from === step.id &&
@@ -626,23 +786,21 @@ export function decide(
                 (!edge.when || evaluateFlowCondition(edge.when, context(scope, parent)))
               )
                 taken.push(i);
-          } catch {
-            s = { ...s, status: "failed", error: fault("other", "invalid reference") };
           }
           put({ ...s, takenEdges: taken });
           changed = true;
         }
       }
     }
-    const unhandled = rows().some(
-      (s) => failed(s) && !edges.some((e) => e.from === s.stepPath.at(-1) && e.on === "failure"),
+    const unhandled = rows().find(
+      (s) => failed(s) && !s.takenEdges?.some((i) => edges[i]?.on === "failure"),
     );
     if (unhandled) {
-      for (const running of state.stepRuns.filter(active)) {
+      for (const running of [...byId.values()].filter(active)) {
         let owner = running.parentStepRunId ? get(running.parentStepRunId) : null;
         while (owner && owner.scope !== scope)
           owner = owner.parentStepRunId ? get(owner.parentStepRunId) : null;
-        if (running.scope === scope || owner) cancel(running, "flow_failed");
+        if (running.scope === scope || owner) cancel(running, "flow_failed", unhandled.id);
       }
       return "failed";
     }
@@ -650,19 +808,19 @@ export function decide(
   };
   const result = runScope(state.definition.steps, state.definition.edges, "root", null);
   // A failed container cannot leave commands or agent turns running in its descendants.
-  for (const s of state.stepRuns.filter(active)) {
+  for (const s of [...byId.values()].filter(active)) {
     let parent = s.parentStepRunId ? get(s.parentStepRunId) : null;
     while (parent && !failed(parent))
       parent = parent.parentStepRunId ? get(parent.parentStepRunId) : null;
-    if (result === "failed" || parent) cancel(s, "flow_failed");
+    if (parent) cancel(s, "flow_failed", parent.id);
   }
-  const activeStepRunIds = state.stepRuns.filter(active).map((s) => s.id);
+  const activeStepRunIds = [...byId.values()].filter(inFlight).map((s) => s.id);
   const status =
     result === "failed"
       ? "failed"
       : result === "done"
         ? "succeeded"
-        : state.stepRuns.some((s) => !s.superseded && s.status === "waiting_approval")
+        : [...byId.values()].some((s) => !s.superseded && s.status === "waiting_approval")
           ? "waiting_approval"
           : "running";
   const run = {
@@ -677,5 +835,5 @@ export function decide(
     emit({ type: "run", run });
     actions.push({ type: result === "active" ? "update_flow_run_thread" : "finish", status });
   }
-  return { transitions, actions };
+  return finishDecision();
 }

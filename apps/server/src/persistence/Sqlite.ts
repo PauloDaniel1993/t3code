@@ -8,6 +8,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrations } from "./Migrations.ts";
 // fork(ticket-28:ledger): the fork's own migration ledger and V1 preparation.
 import { reconcileBaseMigrationLedger, runForkMigrations } from "./ForkMigrations.ts";
+import { sweepOrphanedFlowRuns } from "../flows/FlowCleanup.ts";
 import TaskDeliveryIndex from "./ForkMigrations/011_TaskDeliveryIndex.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import { initializeIsolatedAttachments } from "../attachmentIsolation.ts";
@@ -45,6 +46,7 @@ const layerSetup = Layer.effectDiscard(
     yield* runForkMigrations();
     // Ticket 32: restore the task delivery index after any upstream table rebuild.
     yield* TaskDeliveryIndex;
+    yield* sweepOrphanedFlowRuns();
     // Ticket 36: the index is verified on every start, after the fork migrations.
     yield* initializeAttachmentReferenceIndex();
     // Stale planner statistics can turn growing indexed tables into scans; collecting fresh stats reads every page.

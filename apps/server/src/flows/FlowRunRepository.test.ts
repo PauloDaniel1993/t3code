@@ -3,12 +3,19 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
-import { FlowRunId, FlowStepRunId, ThreadId, ProjectId } from "@t3tools/contracts";
+import {
+  FlowRunId,
+  FlowStepRunId,
+  ThreadId,
+  ProjectId,
+  type FlowStepOutput,
+} from "@t3tools/contracts";
 import FlowMigration from "../persistence/ForkMigrations/013_FlowRuns.ts";
 import ScheduleMigration from "../persistence/ForkMigrations/014_ScheduledTaskFlow.ts";
 import * as FlowRunRepository from "./FlowRunRepository.ts";
 import { applyTransitions, decide } from "./FlowEngine.ts";
-import { initialState } from "./flowTestUtils.ts";
+import { initialState } from "./FlowEngine.test-support.ts";
+import { sweepOrphanedFlowRuns } from "./FlowCleanup.ts";
 
 const database = NodeSqliteClient.layer({ filename: ":memory:" });
 const testLayer = FlowRunRepository.layer.pipe(Layer.provideMerge(database));
@@ -36,9 +43,13 @@ it.effect(
       yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${state.run.flowRunThreadId}, NULL)`;
       yield* repository.create(state);
       const decision = decide(state, { type: "start", at: state.run.createdAt });
-      yield* repository.apply(state.run.id, decision.transitions);
-      const expected = applyTransitions(state, decision.transitions);
+      yield* repository.apply(state.run.id, 0, decision.transitions);
+      const expected = { ...applyTransitions(state, decision.transitions), version: 1 };
       expect(yield* repository.read(state.run.id)).toEqual(expected);
+      expect(
+        (yield* repository.apply(state.run.id, 0, decision.transitions).pipe(Effect.exit))._tag,
+      ).toBe("Failure");
+      expect((yield* repository.read(state.run.id))?.version).toBe(1);
       expect((yield* repository.list(state.run.projectId)).runs).toEqual([expected.run]);
       const step = expected.stepRuns[0]!;
       const answer = decide(expected, {
@@ -48,13 +59,13 @@ it.effect(
         decision: "approve",
         answeredBy: "tester",
       });
-      yield* repository.apply(state.run.id, answer.transitions);
+      yield* repository.apply(state.run.id, 1, answer.transitions);
       expect(yield* repository.stepOutput(step.id)).toEqual({
         kind: "approval",
         decision: "approve",
       });
       const rollback = yield* repository
-        .apply(state.run.id, [
+        .apply(state.run.id, 2, [
           { type: "run", run: { ...expected.run, status: "failed" } },
           {
             type: "approval",
@@ -64,12 +75,44 @@ it.effect(
         .pipe(Effect.exit);
       expect(rollback._tag).toBe("Failure");
       expect((yield* repository.read(state.run.id))?.run.status).toBe("succeeded");
+      const outputs: FlowStepOutput[] = [
+        { kind: "agent", text: "result", decision: "approve", risk: 2 },
+        {
+          kind: "command",
+          text: "output",
+          lines: ["output"],
+          lineCount: 1,
+          exitCode: 5,
+          timedOut: false,
+        },
+        {
+          kind: "loop",
+          iterations: 1,
+          exitReason: "condition",
+          steps: { kind: { kind: "agent", text: "nested" } },
+        },
+        {
+          kind: "map",
+          items: [{ status: "succeeded", outputs: { inner: { kind: "agent", text: "map" } } }],
+        },
+      ];
+      yield* repository.apply(
+        state.run.id,
+        2,
+        outputs.map((output, index) => ({
+          type: "step",
+          step: { ...step, id: FlowStepRunId.make(`output-${index}`), output },
+        })),
+      );
+      for (const [index, output] of outputs.entries())
+        expect(yield* repository.stepOutput(FlowStepRunId.make(`output-${index}`))).toEqual(output);
       yield* sql`UPDATE orchestration_v2_projection_threads SET deleted_at = 'now' WHERE thread_id = ${state.run.flowRunThreadId}`;
+      yield* repository.deleteForThread(state.run.flowRunThreadId);
       expect(yield* repository.read(state.run.id)).toBeNull();
       expect(yield* sql`SELECT * FROM flow_step_runs`).toEqual([]);
       expect(yield* sql`SELECT * FROM flow_approvals`).toEqual([]);
       yield* repository.create(state);
-      yield* repository.deleteForThread(state.run.flowRunThreadId);
+      yield* sweepOrphanedFlowRuns();
       expect((yield* repository.list(state.run.projectId)).runs).toEqual([]);
     }).pipe(Effect.provide(testLayer)),
 );
@@ -124,7 +167,7 @@ it.effect(
       expect(summary.runNumber).toBe(53);
       const state = { ...initial, run: summary };
       const decision = decide(state, { type: "start", at: summary.createdAt });
-      yield* repository.apply(summary.id, decision.transitions);
+      yield* repository.apply(summary.id, 0, decision.transitions);
       const restored = yield* repository.read(summary.id);
       const parent = restored?.stepRuns.find((s) => s.stepPath.at(-1) === "loop");
       const child = restored?.stepRuns.find((s) => s.stepPath.at(-1) === "gate");

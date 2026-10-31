@@ -371,8 +371,9 @@ function outputType(step: FlowStep, fields: ReadonlyArray<string>): ReferenceTyp
     if (rest.length === 0 && name === "iterations") return { type: "number" };
     if (rest.length === 0 && name === "exitReason")
       return { type: "enum", values: ["condition", "maxIterations"] };
-    const inner = step.steps.find((child) => child.id === name);
-    return inner ? outputType(inner, rest) : undefined;
+    const [id, ...innerFields] = rest;
+    const inner = name === "steps" ? step.steps.find((child) => child.id === id) : undefined;
+    return inner ? outputType(inner, innerFields) : undefined;
   }
   if (rest.length > 0) return undefined;
   if (step.kind === "agent")
@@ -590,11 +591,6 @@ export function validateFlowDefinition(
             fail(`${p}.cwd`, "Command cwd must stay inside the workspace");
         }
       } else {
-        if (step.kind === "loop")
-          step.steps.forEach((child, j) => {
-            if (child.id === "iterations" || child.id === "kind")
-              fail(`${p}.steps[${j}].id`, "Reserved loop output key");
-          });
         if (step.kind === "map")
           protect(`${p}.over`, () => {
             if (checkRef(step.over, `${p}.over`, scope).type !== "string[]")
