@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./flow": {
+      "types": "./src/flow.ts",
+      "import": "./src/flow.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"
