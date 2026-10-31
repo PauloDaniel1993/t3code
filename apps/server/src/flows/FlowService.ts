@@ -704,7 +704,10 @@ const make = Effect.gen(function* () {
           const continuingMessageIds: Record<string, string> = {};
           for (const step of state.stepRuns)
             if (step.threadId && ["running", "waiting_report"].includes(step.status)) {
-              const messageId = yield* runtime.continuing(step.threadId);
+              const messageId = yield* runtime.continuing(
+                step.threadId,
+                step.expectedMessageId ?? "",
+              );
               if (messageId) {
                 continuingThreadIds.push(step.threadId);
                 continuingMessageIds[step.threadId] = messageId;
@@ -719,6 +722,7 @@ const make = Effect.gen(function* () {
             continuingMessageIds,
             at: "",
           });
+          for (const threadId of continuingThreadIds) yield* settleThread(threadId);
         }
         const pending = recoveryActions!;
         recoveryActions = undefined;

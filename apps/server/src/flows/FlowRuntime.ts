@@ -66,7 +66,10 @@ export class FlowRuntime extends Context.Service<
       } | null,
       FlowError
     >;
-    readonly continuing: (threadId: ThreadId) => Effect.Effect<string | null, FlowError>;
+    readonly continuing: (
+      threadId: ThreadId,
+      messageId: string,
+    ) => Effect.Effect<string | null, FlowError>;
     readonly events: Stream.Stream<ThreadId, FlowError>;
   }
 >()("t3/flows/FlowRuntime") {}
@@ -275,6 +278,7 @@ const make = Effect.gen(function* () {
         });
     }, Effect.mapError(failure)),
     settled: Effect.fn("FlowRuntime.settled")(function* (threadId, messageId) {
+      if (!(yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure)))) return null;
       const projection = yield* threads
         .getThreadRecords(threadId, ["runs", "messages", "turnItems"])
         .pipe(Effect.mapError(failure));
@@ -300,14 +304,22 @@ const make = Effect.gen(function* () {
         failed: run.status !== "completed",
       };
     }),
-    continuing: Effect.fn("FlowRuntime.continuing")(function* (threadId) {
+    continuing: Effect.fn("FlowRuntime.continuing")(function* (threadId, messageId) {
+      if (!(yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure)))) return null;
       const projection = yield* threads
         .getThreadRecords(threadId, ["runs"])
         .pipe(Effect.mapError(failure));
-      const continuation = projection.runs.findLast(
-        (run) => run.restartContinuationOfRunId !== undefined,
-      );
-      if (continuation) return continuation.userMessageId;
+      const source = projection.runs.find((run) => run.userMessageId === messageId);
+      if (!source) return null;
+      let latest = source;
+      for (let remaining = projection.runs.length; remaining > 0; remaining--) {
+        const continuation = projection.runs.find(
+          (run) => run.restartContinuationOfRunId === latest.id,
+        );
+        if (!continuation) break;
+        latest = continuation;
+      }
+      if (latest !== source) return latest.userMessageId;
       const rows = yield* sql<{
         payload_json: string;
       }>`SELECT payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND effect_type = 'provider-runtime.continue' AND status IN ('pending', 'running') ORDER BY rowid DESC LIMIT 1`.pipe(
@@ -317,7 +329,9 @@ const make = Effect.gen(function* () {
       const request = yield* decodeContinuation(rows[0].payload_json).pipe(
         Effect.mapError(failure),
       );
-      return `message:restart-continuation:${request.sourceRunId}`;
+      return request.sourceRunId === source.id
+        ? `message:restart-continuation:${request.sourceRunId}`
+        : null;
     }),
     events: sink.stream({ afterSequence: sequence }).pipe(
       Stream.filter(
