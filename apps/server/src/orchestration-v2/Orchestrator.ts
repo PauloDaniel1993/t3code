@@ -508,6 +508,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.active.reorder":
     case "thread.visit":
     case "thread.mark-unread":
+    case "thread.flow-metadata.update":
     case "thread.metadata.update":
     case "thread.pull-request.link":
     case "thread.pull-request.unlink":
@@ -2971,6 +2972,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.pin.reorder"
           | "thread.active.reorder"
           | "thread.mark-unread"
+          | "thread.flow-metadata.update"
           | "thread.metadata.update"
           | "thread.pull-request.link"
           | "thread.pull-request.unlink"
@@ -3561,6 +3563,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : {}),
           };
         }
+        case "thread.flow-metadata.update":
+          return {
+            ...thread,
+            ...(command.flowNeedsInput === undefined
+              ? {}
+              : { flowNeedsInput: command.flowNeedsInput }),
+            ...(command.lineage === undefined ? {} : { lineage: command.lineage }),
+          };
         case "thread.metadata.update": {
           const previousRecovery =
             thread.limitRecovery?.runId === command.limitRecovery?.runId &&
@@ -3585,10 +3595,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? thread
               : { ...unboundThread, ...workspaceBinding.success }),
             ...(command.title === undefined ? {} : { title: command.title }),
-            ...(command.flowNeedsInput === undefined
-              ? {}
-              : { flowNeedsInput: command.flowNeedsInput }),
-            ...(command.lineage === undefined ? {} : { lineage: command.lineage }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -3926,6 +3932,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.active-reordered" as const;
         case "thread.mark-unread":
           return "thread.marked-unread" as const;
+        case "thread.flow-metadata.update":
         case "thread.metadata.update":
         case "thread.title.regeneration.complete":
           return "thread.metadata-updated" as const;
@@ -12929,6 +12936,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.pin.reorder":
       case "thread.active.reorder":
       case "thread.mark-unread":
+      case "thread.flow-metadata.update":
       case "thread.metadata.update":
       case "thread.pull-request.link":
       case "thread.pull-request.unlink":

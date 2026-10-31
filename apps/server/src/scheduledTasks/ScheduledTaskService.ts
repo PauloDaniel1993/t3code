@@ -276,6 +276,8 @@ export class ScheduledTaskService extends Context.Service<
   }
 >()("t3/scheduledTasks/ScheduledTaskService") {}
 
+const sameFlowTarget = Schema.toEquivalence(Schema.UndefinedOr(FlowScheduledTarget));
+
 function taskError(message: string, input?: { taskId?: ScheduledTaskId; cause?: unknown }) {
   return new ScheduledTaskError({
     message,
@@ -1202,30 +1204,6 @@ export const layer = Layer.effect(
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
     )(function* (input) {
-      if (input.flow) {
-        if (Option.isNone(flows)) return yield* taskError("Flow service is unavailable.");
-        const entry = yield* flows.value
-          .read(input.projectId, input.flow.flowId)
-          .pipe(Effect.mapError((cause) => taskError("Flow not found.", { cause })));
-        if (!entry.definition || !entry.validation.valid)
-          return yield* taskError("Scheduled flow is invalid.");
-        const fields = entry.definition.inputs ?? [];
-        const values = input.flow.inputs;
-        yield* Effect.try({
-          try: () => {
-            if (input.schedule.type !== "webhook") return coerceFlowInputs(fields, values);
-            for (const key of Object.keys(values))
-              if (!fields.some((field) => field.name === key))
-                throw new Error("Unknown flow input");
-            for (const field of fields) {
-              const value = values[field.name];
-              if (value?.includes("{{")) continue;
-              coerceFlowInputs([field], value === undefined ? {} : { [field.name]: value });
-            }
-          },
-          catch: (cause) => taskError("Invalid flow inputs.", { cause }),
-        });
-      }
       const now = yield* localNow;
       const uuid =
         input.commandId === undefined
@@ -1246,6 +1224,39 @@ export const layer = Layer.effect(
       // keep their run history, and so real load failures propagate instead
       // of silently resetting an existing row.
       const existingTask = yield* findTask(id);
+      let prompt = input.flow ? (existingTask?.prompt ?? input.prompt) : input.prompt;
+      if (
+        input.flow &&
+        (!existingTask ||
+          input.projectId !== existingTask.projectId ||
+          !sameFlowTarget(input.flow, existingTask.flow) ||
+          (input.enabled && !existingTask.enabled))
+      ) {
+        if (Option.isNone(flows)) return yield* taskError("Flow service is unavailable.");
+        const entry = yield* flows.value
+          .read(input.projectId, input.flow.flowId)
+          .pipe(Effect.mapError((cause) => taskError("Flow not found.", { cause })));
+        if (!entry.definition || !entry.validation.valid)
+          return yield* taskError("Scheduled flow is invalid.");
+        prompt = `Run flow: ${entry.definition.title}`;
+        const fields = entry.definition.inputs ?? [];
+        const values = input.flow.inputs;
+        yield* Effect.try({
+          try: () => {
+            if (input.schedule.type !== "webhook") return coerceFlowInputs(fields, values);
+            for (const key of Object.keys(values))
+              if (!fields.some((field) => field.name === key))
+                throw new Error("Unknown flow input");
+            for (const field of fields) {
+              const value = values[field.name];
+              if (value?.includes("{{")) continue;
+              coerceFlowInputs([field], value === undefined ? {} : { [field.name]: value });
+            }
+          },
+          catch: (cause) => taskError("Invalid flow inputs.", { cause }),
+        });
+      }
+
       // Keep the existing next_run_at when the schedule itself is untouched:
       // editing a title or prompt must not postpone (or resurrect) a due
       // run — only schedule/enabled changes restart the clock.
@@ -1327,7 +1338,7 @@ export const layer = Layer.effect(
         id,
         ...(input.flow === undefined ? {} : { flow: input.flow }),
         title: input.title,
-        prompt: input.prompt,
+        prompt,
         enabled: input.enabled,
         schedule,
         projectId: input.projectId,

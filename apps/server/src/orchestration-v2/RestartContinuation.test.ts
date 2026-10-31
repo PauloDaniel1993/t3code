@@ -18,6 +18,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as FlowLifecycle from "../flows/FlowLifecycle.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { restartContinuationRun, continueRestartedRun } from "./RestartContinuation.ts";
 import { continuationStartRetryDelayMs } from "./RestartBackgroundNote.ts";
@@ -430,6 +431,7 @@ it.effect.each(["running", "waiting"])(
 
 it.effect("does not duplicate delivery and yields to newer user work or opt-out", () =>
   Effect.gen(function* () {
+    const declined: ThreadId[] = [];
     let projection = makeProjection();
     projection = { ...projection, runs: [{ ...projection.runs[0]!, status: "cancelled" }] };
     const commands: Parameters<
@@ -479,12 +481,19 @@ it.effect("does not duplicate delivery and yields to newer user work or opt-out"
     projection = { ...projection, runs: [projection.runs[0]!] };
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
       Effect.provide(
-        Layer.merge(
+        Layer.mergeAll(
           layerThreads,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
+          Layer.mock(FlowLifecycle.FlowLifecycle)({
+            continued: (id) =>
+              Effect.sync(() => {
+                declined.push(id);
+              }),
+          }),
         ),
       ),
     );
+    assert.deepEqual(declined, [threadId]);
     assert.lengthOf(commands, 1);
   }),
 );

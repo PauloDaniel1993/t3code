@@ -82,7 +82,7 @@ export function FlowRunActions({
           Stop
         </Button>
       )}
-      {summary.status === "cancelled" && (
+      {summary.status === "cancelled" && summary.startedAt !== null && (
         <Button
           size="xs"
           variant="outline"

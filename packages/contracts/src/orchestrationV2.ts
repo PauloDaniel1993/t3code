@@ -3126,8 +3126,6 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.metadata.update"),
-    flowNeedsInput: Schema.optional(Schema.Boolean),
-    lineage: Schema.optional(OrchestrationV2AppThreadLineage),
     commandId: CommandId,
     threadId: ThreadId,
     title: Schema.optional(TrimmedNonEmptyString),
@@ -3465,6 +3463,13 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread.flow-metadata.update"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    flowNeedsInput: Schema.optional(Schema.Boolean),
+    lineage: Schema.optional(OrchestrationV2AppThreadLineage),
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

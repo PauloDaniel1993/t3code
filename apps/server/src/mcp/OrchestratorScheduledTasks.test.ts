@@ -206,7 +206,7 @@ it.effect("keeps schedule defaults, inherited settings, idempotency and project 
     )!;
     expect(savedFlow.flow).toEqual(flow);
     expect(savedFlow.threadId).toBeNull();
-    expect(savedFlow.prompt).toBe("Run flow: test-flow");
+    expect(savedFlow.prompt).toBe("Run flow: Test flow");
   }).pipe(Effect.provide(layer)),
 );
 

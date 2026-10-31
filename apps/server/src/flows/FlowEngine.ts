@@ -54,6 +54,7 @@ type ErrorInfo = NonNullable<FlowStepRun["error"]>;
 export type Trigger = { readonly at: string } & (
   | { readonly type: "start" }
   | { readonly type: "stop" }
+  | { readonly type: "preparation_failed"; readonly error: ErrorInfo }
   | { readonly type: "resume" }
   | { readonly type: "retry_step"; readonly stepRunId: FlowStepRunId }
   | { readonly type: "action_failed"; readonly stepRunId: FlowStepRunId; readonly error: ErrorInfo }
@@ -377,7 +378,7 @@ export function decide(
     return finishDecision();
   }
   if (trigger.type === "resume") {
-    if (state.run.status !== "cancelled") return reject();
+    if (state.run.status !== "cancelled" || state.workspace === null) return reject();
     for (const s of [...byId.values()].filter(
       (s) => !s.superseded && s.cancelReason === "stopped",
     )) {
@@ -462,6 +463,14 @@ export function decide(
         put({ ...cancelled, status: "running", error: null, finishedAt: null });
       else retry(cancelled);
     }
+  } else if (trigger.type === "preparation_failed") {
+    if (state.run.status !== "starting") return reject();
+    emit({
+      type: "run",
+      run: { ...state.run, status: "failed", error: trigger.error, finishedAt: trigger.at },
+    });
+    actions.push({ type: "finish", status: "failed" });
+    return finishDecision();
   } else if (trigger.type === "recovered") {
     if (!["starting", "running", "waiting_approval"].includes(state.run.status)) return reject();
     if (state.run.status === "starting") {
@@ -627,6 +636,13 @@ export function decide(
             s = get(s.id);
             {
               const ctx = context(scope, parent);
+              const itemMap = ancestors(s)
+                .slice(1)
+                .map(definition)
+                .find((step) => step.kind === "map");
+              const untrustedItem =
+                itemMap?.kind === "map" &&
+                state.run.webhookInputs?.some((name) => itemMap.over === `inputs.${name}`);
               const webhookTag = `webhook-data-${state.run.id}`;
               const render = (text: string) =>
                 renderFlowTemplate(
@@ -638,7 +654,9 @@ export function decide(
                   "$",
                   step.kind === "agent"
                     ? (ref, value) =>
-                        state.run.webhookInputs?.some((name) => ref === `inputs.${name}`) && value
+                        (state.run.webhookInputs?.some((name) => ref === `inputs.${name}`) ||
+                          (ref === "item" && untrustedItem)) &&
+                        value
                           ? `<${webhookTag}>${value.replace(/@/g, "@\u2060")}</${webhookTag}>`
                           : value
                     : undefined,

@@ -23,6 +23,7 @@ import {
   type FlowStepOutput,
 } from "@t3tools/contracts";
 import { coerceFlowInputs, resolveFlowInputs, FlowValueError } from "@t3tools/shared/flow";
+import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -129,6 +130,7 @@ export class FlowService extends Context.Service<
   }
 >()("t3/flows/FlowService") {}
 const fail = (message: string) => new FlowError({ message });
+const isFlowError = Schema.is(FlowError);
 const mapError = (cause: { readonly message: string }) => fail(cause.message);
 const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 function stepDefinition(state: State, step: StepRun) {
@@ -212,7 +214,13 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const sql = yield* SqlClient.SqlClient;
   const scope = yield* Scope.Scope;
-  const changes = yield* PubSub.sliding<{ projectId: ProjectId; id: FlowRunId }>(128);
+  const changes = yield* PubSub.sliding<{
+    projectId: ProjectId;
+    id: FlowRunId;
+    state: Effect.Effect<State | null, FlowError>;
+    page: Effect.Effect<{ value: FlowRunsPage; revision: number }, FlowError>;
+  }>(128);
+  let pageRevision = 0;
   const filesGate = yield* Semaphore.make(1);
   const allocationLocks = new Map<ProjectId, Semaphore.Semaphore>();
   const threadRuns = new Map<ThreadId, FlowRunSummary>();
@@ -224,10 +232,18 @@ const make = Effect.gen(function* () {
     if (!state) return yield* fail("Flow run not found.");
     return state;
   });
-  const publish = Effect.fn("FlowService.publish")((run: FlowRunSummary) =>
-    PubSub.publish(changes, { projectId: run.projectId, id: run.id }).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("Flow broadcast failed", { cause })),
-    ),
+  const publish = Effect.fn("FlowService.publish")(
+    function* (run: FlowRunSummary) {
+      const state = yield* Effect.cached(repository.read(run.id).pipe(Effect.mapError(mapError)));
+      const page = yield* Effect.cached(
+        repository.list(run.projectId).pipe(
+          Effect.map((value) => ({ value, revision: ++pageRevision })),
+          Effect.mapError(mapError),
+        ),
+      );
+      yield* PubSub.publish(changes, { projectId: run.projectId, id: run.id, state, page });
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Flow broadcast failed", { cause })),
   );
   const logFailure = (message: string) => (cause: Cause.Cause<unknown>) =>
     Effect.logWarning(message, { cause });
@@ -294,7 +310,11 @@ const make = Effect.gen(function* () {
               messageId: action.messageId,
               title: `${next.definition.title} · ${step.stepPath.at(-1)}`,
               parentThreadId: next.run.flowRunThreadId,
-              workspace: { type: "existing_worktree" as const, worktreePath: next.workspace! },
+              workspace:
+                next.definition.workspace === "root" &&
+                next.workspace === (yield* runtime.root(next.run.projectId))
+                  ? { type: "root" as const }
+                  : { type: "existing_worktree" as const, worktreePath: next.workspace! },
               prompt:
                 (action.type === "send_reminder"
                   ? "Report the declared output fields for this step."
@@ -665,7 +685,17 @@ const make = Effect.gen(function* () {
                 flowRunId: id,
                 cause,
               });
-              yield* triggerRun(id, { type: "recovered", continuingThreadIds: [], at: "" }).pipe(
+              const error = Cause.squash(cause);
+              yield* triggerRun(id, {
+                type: "preparation_failed",
+                error: {
+                  code: "command_error",
+                  message: isFlowError(error)
+                    ? error.message
+                    : "Flow workspace preparation failed.",
+                },
+                at: "",
+              }).pipe(
                 Effect.catchCause(logFailure("Flow preparation failure could not be recorded")),
               );
             }),
@@ -754,12 +784,18 @@ const make = Effect.gen(function* () {
       Stream.unwrap(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
+          let revision = pageRevision;
           let page = yield* repository.list(projectId).pipe(Effect.mapError(mapError));
           return Stream.concat(
             Stream.make({ type: "snapshot", ...page } satisfies FlowRunsEvent),
             Stream.fromSubscription(subscription).pipe(
               Stream.filter((change) => change.projectId === projectId),
-              Stream.mapEffect(() => repository.list(projectId).pipe(Effect.mapError(mapError))),
+              Stream.mapEffect((change) => change.page),
+              Stream.filter((current) => current.revision > revision),
+              Stream.map((current) => {
+                revision = current.revision;
+                return current.value;
+              }),
               Stream.map((current): FlowRunsEvent => {
                 const previous = new Map(page.runs.map((run) => [run.id, JSON.stringify(run)]));
                 const removed = page.runs.some(
@@ -783,13 +819,18 @@ const make = Effect.gen(function* () {
       Stream.unwrap(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
-          let previous = snapshotOf(yield* readState(id));
+          const initial = yield* readState(id);
+          let version = initial.version;
+          let previous = snapshotOf(initial);
           return Stream.concat(
             Stream.make({ type: "snapshot", ...previous } satisfies FlowRunEvent),
             Stream.fromSubscription(subscription).pipe(
               Stream.filter((change) => change.id === id),
-              Stream.mapEffect(() => readState(id)),
+              Stream.mapEffect((change) => change.state),
+              Stream.filter((state) => state === null || state.version > version),
+              Stream.takeWhile((state): state is State => state !== null),
               Stream.map((state): FlowRunEvent => {
+                version = state.version;
                 const current = snapshotOf(state);
                 const oldSteps = new Map(
                   previous.stepRuns.map((step) => [step.id, JSON.stringify(step)]),

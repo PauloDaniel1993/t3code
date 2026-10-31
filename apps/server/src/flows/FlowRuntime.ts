@@ -98,7 +98,7 @@ const make = Effect.gen(function* () {
   const commit = Effect.fn("FlowRuntime.link")(function* (childId: ThreadId, parentId: ThreadId) {
     const parent = (yield* threads.getThreadRecords(parentId, [])).thread;
     yield* threads.dispatch({
-      type: "thread.metadata.update",
+      type: "thread.flow-metadata.update",
       commandId: CommandId.make(`flow-link:${childId}`),
       threadId: childId,
       lineage: {
@@ -148,7 +148,9 @@ const make = Effect.gen(function* () {
       const fallback = project.value.defaultModelSelection ?? defaults.defaultModelSelection;
       const instances = yield* registry.listInstances;
       const instance = input.model?.providerInstanceId ?? fallback?.instanceId;
-      const selected = instances.find((item) => item.instanceId === instance && item.enabled);
+      const selected = instance
+        ? instances.find((item) => item.instanceId === instance && item.enabled)
+        : instances.find((item) => item.enabled);
       if (!selected) return yield* new FlowError({ message: "No enabled provider instance." });
       const snapshot = yield* selected.snapshot.getSnapshot;
       const model =
@@ -290,7 +292,7 @@ const make = Effect.gen(function* () {
       const flowNeedsInput = run.status === "waiting_approval";
       if ((thread.flowNeedsInput ?? false) === flowNeedsInput) return;
       yield* threads.dispatch({
-        type: "thread.metadata.update",
+        type: "thread.flow-metadata.update",
         threadId: thread.id,
         commandId: CommandId.make(
           `flow-attention:${run.id}:${run.status}:${run.finishedAt}:${run.activeStepRunIds.join(":")}`,

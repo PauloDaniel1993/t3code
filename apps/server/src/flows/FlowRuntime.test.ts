@@ -4,6 +4,8 @@ import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import {
   MessageId,
+  ProjectId,
+  ProviderDriverKind,
   RunId,
   ThreadId,
   ProviderInstanceId,
@@ -96,4 +98,120 @@ it.effect(
         ),
       );
     }).pipe(Effect.scoped, Effect.provide(Sqlite.layerMemory)),
+);
+
+it.effect("launches a command-only flow run when provider defaults are absent", () =>
+  Effect.gen(function* () {
+    const id = ProviderInstanceId.make("devReplay");
+    const driver = ProviderDriverKind.make("devReplay");
+    const snapshot = Effect.succeed({
+      instanceId: id,
+      driver,
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready" as const,
+      auth: { status: "authenticated" as const },
+      checkedAt: "2026-10-31T00:00:00Z",
+      models: [
+        {
+          slug: "showcase",
+          name: "Showcase",
+          isCustom: false,
+          isDefault: true,
+          capabilities: null,
+        },
+      ],
+      slashCommands: [],
+      skills: [],
+    });
+    const instance = {
+      instanceId: id,
+      driverKind: driver,
+      displayName: undefined,
+      enabled: true,
+      continuationIdentity: { driverKind: driver, continuationKey: id },
+      snapshot: {
+        getSnapshot: snapshot,
+        refresh: snapshot,
+        streamChanges: Stream.empty,
+        applyUsageLimits: () => Effect.void,
+        resolveMaintenance: () => Effect.die("unused"),
+      },
+      get orchestrationAdapter(): never {
+        throw new Error("unused");
+      },
+      get textGeneration(): never {
+        throw new Error("unused");
+      },
+    };
+    const projectId = ProjectId.make("project");
+    const shell = liveThreadShell(ThreadId.make("flow"));
+    const inputs: Launch.ThreadLaunchInput[] = [];
+    yield* Effect.gen(function* () {
+      const runtime = yield* Runtime.FlowRuntime;
+      expect(
+        yield* runtime.launch({
+          projectId,
+          threadId: shell.id,
+          commandId: "flow",
+          title: "Command-only run",
+          workspace: { type: "root" },
+        }),
+      ).toBe("/workspace");
+      expect(inputs[0]?.modelSelection).toEqual({ instanceId: id, model: "showcase" });
+    }).pipe(
+      Effect.provide(
+        Runtime.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Outbox.layer,
+              Layer.mock(Settings.ServerSettingsService)({
+                getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+              }),
+              Layer.mock(Projects.ProjectService)({
+                getById: (id) =>
+                  Effect.succeedSome({
+                    id,
+                    title: "Test",
+                    workspaceRoot: "/workspace",
+                    repositoryIdentity: null,
+                    workspaceFile: null,
+                    defaultModelSelection: null,
+                    defaultThreadEnvMode: null,
+                    autoPull: false,
+                    faviconPath: null,
+                    projectIcon: null,
+                    scripts: [],
+                    createdAt: "2026-10-31T00:00:00Z",
+                    updatedAt: "2026-10-31T00:00:00Z",
+                    deletedAt: null,
+                  }),
+              }),
+              Layer.mock(Registry.ProviderInstanceRegistry)({
+                listInstances: Effect.succeed([instance]),
+              }),
+              Layer.mock(Launch.ThreadLaunchService)({
+                launch: (input) => {
+                  inputs.push(input);
+                  return Effect.succeed({
+                    projection: idleThreadProjection(shell),
+                    threadId: shell.id,
+                    projectId,
+                    resumed: false,
+                    workspacePath: "/workspace",
+                  });
+                },
+              }),
+              Layer.mock(Threads.ThreadManagementService)({}),
+              Layer.mock(Sink.EventSinkV2)({
+                latestSequence: () => Effect.succeed(0),
+                stream: () => Stream.empty,
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(Sqlite.layerMemory)),
 );

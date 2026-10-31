@@ -1,6 +1,6 @@
 import { McpServer, McpSchema } from "effect/ai";
 import * as Schema from "effect/Schema";
-import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, FlowError } from "@t3tools/contracts";
 import * as FlowMcp from "./FlowMcp.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
@@ -87,7 +87,7 @@ const reportMcp = Effect.fn("test.reportMcp")(function* (
 
 const setup = Effect.fn("test.setup")(function* (
   definition: FlowDefinition,
-  preparation?: Effect.Effect<void>,
+  preparation?: Effect.Effect<void, FlowError>,
   attentionFailure?: Effect.Effect<void>,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -159,6 +159,7 @@ const setup = Effect.fn("test.setup")(function* (
     delete: () => Effect.void,
     stream: () => Stream.make([entry()]),
   });
+  const reads: FlowRunId[] = [];
   const services = Layer.mergeAll(
     Layer.succeed(Runtime.FlowRuntime, runtime),
     Layer.succeed(Definitions.FlowDefinitions, definitions),
@@ -176,7 +177,19 @@ const setup = Effect.fn("test.setup")(function* (
           };
         }),
     }),
-    Repository.layer,
+    Layer.effect(
+      Repository.FlowRunRepository,
+      Effect.gen(function* () {
+        const repository = yield* Repository.FlowRunRepository;
+        return {
+          ...repository,
+          read: (id: FlowRunId) => {
+            reads.push(id);
+            return repository.read(id);
+          },
+        };
+      }),
+    ).pipe(Layer.provide(Repository.layer)),
     Lock.layer,
     NodeCrypto.layer,
   );
@@ -202,6 +215,7 @@ const setup = Effect.fn("test.setup")(function* (
     repository,
     launched,
     settled,
+    reads,
   };
 });
 const database = NodeSqliteClient.layer({ filename: ":memory:" });
@@ -582,5 +596,73 @@ it.effect("isolates presentation defects after commit and malformed runs during 
     yield* sql`UPDATE flow_runs SET status = 'running', summary_json = 'invalid' WHERE id = ${run.id}`;
     yield* service.recover();
     expect((yield* repository.read(next.id))?.run.status).toBe("waiting_approval");
+  }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect("binds root flow steps to root instead of an existing worktree", () =>
+  Effect.gen(function* () {
+    const { service, launched } = yield* setup({
+      version: 1,
+      title: "Root",
+      workspace: "root",
+      steps: [{ id: "a", kind: "agent", prompt: "Work" }],
+      edges: [],
+    });
+    yield* service.start({
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      inputs: {},
+    });
+    yield* Queue.take(launched);
+    expect((yield* Queue.take(launched)).workspace).toEqual({ type: "root" });
+  }).pipe(Effect.scoped, Effect.provide(database)),
+);
+it.effect("records preparation failure separately from restart interruption", () =>
+  Effect.gen(function* () {
+    const { service } = yield* setup(
+      { version: 1, title: "Prepare", steps: [], edges: [] },
+      Effect.fail(new FlowError({ message: "No enabled provider instance." })),
+    );
+    const run = yield* service.start({
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      inputs: {},
+    });
+    yield* awaitStatus(service, run.id, "failed");
+    expect((yield* service.snapshot(run.id)).summary.error).toMatchObject({
+      code: "command_error",
+      message: "No enabled provider instance.",
+    });
+  }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect("shares a transition read across run subscribers", () =>
+  Effect.gen(function* () {
+    const { service, reads } = yield* setup({
+      version: 1,
+      title: "Gate",
+      workspace: "root",
+      steps: [{ id: "gate", kind: "approval", prompt: "Review" }],
+      edges: [],
+    });
+    const run = yield* service.start({
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      inputs: {},
+    });
+    yield* awaitStatus(service, run.id, "waiting_approval");
+    const events = yield* Queue.unbounded<void>();
+    for (let i = 0; i < 2; i++) {
+      yield* service.run(run.id).pipe(
+        Stream.runForEach(() => Queue.offer(events, undefined)),
+        Effect.forkChild,
+      );
+      yield* Queue.take(events);
+    }
+    const before = reads.length;
+    yield* service.stop(run.id);
+    yield* Queue.take(events);
+    yield* Queue.take(events);
+    expect(reads.length - before).toBe(2);
   }).pipe(Effect.scoped, Effect.provide(database)),
 );

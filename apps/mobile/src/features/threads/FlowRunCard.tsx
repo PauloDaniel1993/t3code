@@ -141,7 +141,7 @@ function FlowRunDetails({
           {error}
         </Text>
       ) : null}
-      {summary.status === "cancelled" ||
+      {(summary.status === "cancelled" && summary.startedAt !== null) ||
       ["starting", "running", "waiting_approval"].includes(summary.status) ? (
         <Button
           label={summary.status === "cancelled" ? "Resume" : "Stop"}

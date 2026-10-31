@@ -27,23 +27,26 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const calls: FlowService.FlowStart[] = [];
+      let missing = false;
       const layer = Scheduled.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(FlowService.FlowService)({
               read: () =>
-                Effect.succeed({
-                  flowId: FlowId.make("example"),
-                  definition: {
-                    version: 1,
-                    title: "Flow",
-                    inputs: [{ name: "count", type: "number", required: true }],
-                    steps: [],
-                    edges: [],
-                  },
-                  revision: "test",
-                  validation: { valid: true, errors: [] },
-                }),
+                missing
+                  ? Effect.fail(new FlowError({ message: "Flow not found." }))
+                  : Effect.succeed({
+                      flowId: FlowId.make("example"),
+                      definition: {
+                        version: 1,
+                        title: "Flow",
+                        inputs: [{ name: "count", type: "number", required: true }],
+                        steps: [],
+                        edges: [],
+                      },
+                      revision: "test",
+                      validation: { valid: true, errors: [] },
+                    }),
               start: (input) => {
                 calls.push(input);
                 if (calls.length > 1)
@@ -96,6 +99,7 @@ it.effect(
         interactionMode: "default",
       });
       expect(task.flow).toEqual(target);
+      expect(task.prompt).toBe("Run flow: Flow");
       expect(task.threadId).toBeNull();
       expect(
         (yield* tasks
@@ -120,5 +124,11 @@ it.effect(
       }>`SELECT last_run_error, last_run_status FROM scheduled_tasks WHERE task_id = ${task.id}`;
       expect(row?.last_run_status).toBe("failed");
       expect(row?.last_run_error).toContain("previous flow run still active");
+      missing = true;
+      expect((yield* tasks.upsert({ ...task, title: "Renamed" })).task.title).toBe("Renamed");
+      expect((yield* tasks.upsert({ ...task, enabled: false })).task.enabled).toBe(false);
+      expect((yield* tasks.upsert({ ...task, enabled: true }).pipe(Effect.exit))._tag).toBe(
+        "Failure",
+      );
     }).pipe(Effect.scoped, Effect.provide(Sqlite.layerMemory)),
 );

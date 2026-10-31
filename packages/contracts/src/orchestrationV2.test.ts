@@ -1422,3 +1422,17 @@ describe("latestProviderTurnForAttempt", () => {
     expect(latestProviderTurnForAttempt(turns, null)).toBeUndefined();
   });
 });
+
+it("excludes flow metadata from public dispatch commands", () => {
+  const command = {
+    type: "thread.metadata.update",
+    commandId: "flow-metadata",
+    threadId: "thread",
+    flowNeedsInput: true,
+    lineage: { parentThreadId: "parent", relationshipToParent: "subagent", rootThreadId: "parent" },
+  };
+  const decoded = decodePublicCommand(command);
+  expect(decoded).not.toHaveProperty("lineage");
+  expect(decoded).not.toHaveProperty("flowNeedsInput");
+  expect(() => decodePublicCommand({ ...command, type: "thread.flow-metadata.update" })).toThrow();
+});
