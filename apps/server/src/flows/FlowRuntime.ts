@@ -180,7 +180,12 @@ const make = Effect.gen(function* () {
           },
           runtimeMode: input.runtimeMode ?? defaults.defaultRuntimeMode,
           interactionMode: input.interactionMode ?? "default",
-          createdBy: "user",
+          createdBy:
+            input.creationSource === "mcp"
+              ? "agent"
+              : input.creationSource === "server"
+                ? "system"
+                : "user",
           creationSource: input.creationSource ?? "web",
         })
         .pipe(Effect.mapError(failure));
@@ -199,7 +204,12 @@ const make = Effect.gen(function* () {
             text: input.prompt,
             attachments: [],
             mode: "queue",
-            createdBy: "user",
+            createdBy:
+              input.creationSource === "mcp"
+                ? "agent"
+                : input.creationSource === "server"
+                  ? "system"
+                  : "user",
             creationSource: input.creationSource ?? "web",
           })
           .pipe(Effect.mapError(failure));
@@ -239,7 +249,12 @@ const make = Effect.gen(function* () {
           text: input.prompt,
           attachments: [],
           mode: "queue",
-          createdBy: "user",
+          createdBy:
+            input.creationSource === "mcp"
+              ? "agent"
+              : input.creationSource === "server"
+                ? "system"
+                : "user",
           creationSource: input.creationSource ?? "web",
           ...(input.model
             ? {

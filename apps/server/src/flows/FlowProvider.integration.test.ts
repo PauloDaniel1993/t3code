@@ -296,6 +296,9 @@ it.effect(
           revision: flowDefinitionRevision(definition),
           validation: validateFlowDefinition(definition),
         };
+        const commandStarted = yield* Queue.unbounded<void>();
+        let holdCommands = false;
+        let killedCommands = 0;
         const context = yield* Layer.build(
           Service.layer.pipe(
             Layer.provide(
@@ -307,14 +310,23 @@ it.effect(
                 Layer.mock(Definitions.FlowDefinitions)({ read: () => Effect.succeed(entry) }),
                 Layer.succeed(Commands.FlowCommandRunner, {
                   run: () =>
-                    Effect.succeed({
-                      kind: "command",
-                      text: "checked",
-                      lines: ["checked"],
-                      lineCount: 1,
-                      exitCode: 0,
-                      timedOut: false,
-                    }),
+                    holdCommands
+                      ? Queue.offer(commandStarted, undefined).pipe(
+                          Effect.andThen(Effect.never),
+                          Effect.ensuring(
+                            Effect.sync(() => {
+                              killedCommands++;
+                            }),
+                          ),
+                        )
+                      : Effect.succeed({
+                          kind: "command",
+                          text: "checked",
+                          lines: ["checked"],
+                          lineCount: 1,
+                          exitCode: 0,
+                          timedOut: false,
+                        }),
                 }),
               ),
             ),
@@ -347,6 +359,17 @@ it.effect(
         const snapshot = yield* service.snapshot(run.id);
         expect((yield* orchestrator.getThreadProjection(run.flowRunThreadId)).runs).toHaveLength(0);
         expect(snapshot.stepRuns.filter((step) => step.status === "succeeded")).toHaveLength(4);
+        const gate = snapshot.approvals[0]!;
+        const stepThread = snapshot.stepRuns.find((step) => step.threadId)!.threadId!;
+        expect(
+          (yield* service
+            .answerApproval(
+              { stepRunId: gate.stepRunId, decision: "approve" },
+              stepThread,
+              stepThread,
+            )
+            .pipe(Effect.exit))._tag,
+        ).toBe("Failure");
         expect(
           (yield* rpc["flow.answerApproval"]({
             stepRunId: snapshot.approvals[0]!.stepRunId,
@@ -363,29 +386,15 @@ it.effect(
           Stream.runHead,
         );
         expect((yield* rpc["flow.stop"]({ flowRunId: stopped.id })).status).toBe("cancelled");
+        yield* worker.drain();
+        holdCommands = true;
         for (const type of ["thread.archive", "thread.delete"] as const) {
           const owned = yield* rpc["flow.start"]({
             projectId: ProjectId.make("flow-project"),
             flowId: entry.flowId,
             inputs: {},
           });
-          yield* service.run(owned.id).pipe(
-            Stream.filter((event) => event.summary?.status === "waiting_approval"),
-            Stream.runHead,
-          );
-          const gate = (yield* service.snapshot(owned.id)).approvals[0]!;
-          const stepThread = (yield* service.snapshot(owned.id)).stepRuns.find(
-            (step) => step.threadId,
-          )!.threadId!;
-          expect(
-            (yield* service
-              .answerApproval(
-                { stepRunId: gate.stepRunId, decision: "approve" },
-                stepThread,
-                stepThread,
-              )
-              .pipe(Effect.exit))._tag,
-          ).toBe("Failure");
+          yield* Queue.take(commandStarted);
           yield* orchestrator.dispatch({
             type,
             commandId: CommandId.make(type),
@@ -399,6 +408,7 @@ it.effect(
                 (run) => run.id === owned.id,
               ),
             ).toBe(false);
+          expect(killedCommands).toBe(type === "thread.archive" ? 1 : 2);
         }
       }).pipe(Effect.provide(Layer.mergeAll(harness, database, Lifecycle.layer)));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
