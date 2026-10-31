@@ -16,6 +16,8 @@ it("maps the latest step attempt without putting flow-run state into canvas data
   const summary: FlowRunSnapshot["summary"] = {
     id: FlowRunId.make("run"),
     flowId: FlowId.make("flow"),
+    runNumber: 1,
+    flowTitle: "Flow",
     projectId: ProjectId.make("project"),
     flowRunThreadId: ThreadId.make("thread"),
     status: "running",
@@ -26,12 +28,15 @@ it("maps the latest step attempt without putting flow-run state into canvas data
     finishedAt: null,
   };
   const snapshot: FlowRunSnapshot = {
+    definition: { version: 1, title: "Flow", steps: [], edges: [] },
+    inputs: {},
     summary,
     approvals: [],
     stepRuns: [
       {
         id: FlowStepRunId.make("failed"),
         flowRunId: summary.id,
+        parentStepRunId: null,
         stepPath: ["check"],
         attempt: 1,
         status: "failed",

@@ -6,12 +6,42 @@ import type {
   FlowRunSnapshot,
   FlowRunSummary,
   FlowStepRunState,
+  FlowStepOutput,
+  FlowOutputFields,
 } from "@t3tools/contracts";
 import { flowStepRunList } from "@t3tools/client-runtime/flows";
 import { flowEnvironment } from "../../state/flows";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { TextField } from "./FlowFields";
+
+function outputFieldsText(output: FlowOutputFields) {
+  switch (output.kind) {
+    case "agent":
+      return JSON.stringify(output.fields, null, 2);
+    case "command":
+      return `Exit code: ${output.exitCode ?? "none"}\nTimed out: ${output.timedOut}\nOutput lines: ${output.lineCount}`;
+    case "approval":
+      return `${output.decision}${output.comment ? `\n${output.comment}` : ""}`;
+    case "loop":
+      return `${output.iterations} iterations · ${output.exitReason}`;
+    case "map":
+      return output.items.map((item, index) => `Item ${index + 1}: ${item.status}`).join("\n");
+  }
+}
+
+function outputText(output: FlowStepOutput | null) {
+  if (!output) return "No step output yet.";
+  switch (output.kind) {
+    case "agent":
+    case "command":
+      return output.text;
+    case "approval":
+    case "loop":
+    case "map":
+      return JSON.stringify(output, null, 2);
+  }
+}
 
 export function FlowRunActions({
   environmentId,
@@ -96,7 +126,7 @@ export function StepRunInspector({
       )}
       {stepRun.outputFields && (
         <pre className="max-h-48 overflow-auto whitespace-pre-wrap">
-          {JSON.stringify(stepRun.outputFields, null, 2)}
+          {outputFieldsText(stepRun.outputFields)}
         </pre>
       )}
       <Button
@@ -106,14 +136,7 @@ export function StepRunInspector({
         onClick={async () => {
           setBusy(true);
           const result = await fetchOutput({ environmentId, input: { stepRunId: stepRun.id } });
-          if (result._tag === "Success")
-            setOutput(
-              result.value === null
-                ? "No step output yet."
-                : "text" in result.value && typeof result.value.text === "string"
-                  ? result.value.text
-                  : JSON.stringify(result.value, null, 2),
-            );
+          if (result._tag === "Success") setOutput(outputText(result.value));
           setBusy(false);
         }}
       >
@@ -192,7 +215,7 @@ export function FlowRunTimeline({
             >
               <span>
                 {step.stepId} · {step.status.replaceAll("_", " ")} · attempt {step.attempt}{" "}
-                {step.iterationLabel} {step.itemLabel}
+                {step.scopeLabel}
                 {step.finishedAt && step.startedAt ? ` · ${Math.max(0, to - from)} ms` : ""}
               </span>
               <span className="h-1.5 w-full rounded bg-muted">

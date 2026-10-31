@@ -3,8 +3,12 @@ import {
   FlowRunId,
   type FlowRunSnapshot,
   type FlowRunSummary,
+  type FlowRunEvent,
+  type FlowRunsEvent,
+  type FlowRunsPage,
   type FlowStepRunState,
 } from "@t3tools/contracts";
+import * as Stream from "effect/Stream";
 import { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -21,28 +25,70 @@ export function flowRunIdFromMetadata(metadata: unknown) {
   return typeof value === "string" && value.trim() ? FlowRunId.make(value) : null;
 }
 
+function upsertById<A>(
+  current: ReadonlyArray<A>,
+  updates: ReadonlyArray<A>,
+  id: (row: A) => string,
+) {
+  const rows = new Map(current.map((row) => [id(row), row]));
+  for (const row of updates) rows.set(id(row), row);
+  return [...rows.values()];
+}
+
+export function applyFlowRunEvent(
+  state: FlowRunSnapshot | null,
+  event: FlowRunEvent,
+): FlowRunSnapshot | null {
+  if (event.type === "snapshot") {
+    const { type: _type, ...snapshot } = event;
+    return snapshot;
+  }
+  if (!state) return null;
+  return {
+    ...state,
+    summary: event.summary ?? state.summary,
+    stepRuns: upsertById(state.stepRuns, event.stepRuns, (row) => row.id),
+    approvals: upsertById(state.approvals, event.approvals, (row) => row.stepRunId),
+  };
+}
+
+export function applyFlowRunsEvent(state: FlowRunsPage, event: FlowRunsEvent): FlowRunsPage {
+  if (event.type === "snapshot") return { runs: event.runs, nextCursor: event.nextCursor };
+  return { ...state, runs: upsertById(state.runs, event.runs, (row) => row.id) };
+}
+
 export function flowStepRunList(snapshot: FlowRunSnapshot) {
+  const byId = new Map(snapshot.stepRuns.map((row) => [row.id, row]));
   return [...snapshot.stepRuns]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
     .map((stepRun) => {
-      const parentPath = stepRun.stepPath.slice(0, -1);
-      const parent = snapshot.stepRuns.findLast(
-        (candidate) =>
-          candidate.stepPath.join("/") === parentPath.join("/") &&
-          candidate.createdAt <= stepRun.createdAt,
-      );
-      const itemCount =
-        parent?.outputFields?.kind === "map" ? parent.outputFields.items.length : undefined;
+      const chain = [stepRun];
+      const seen = new Set([stepRun.id]);
+      let parent = stepRun.parentStepRunId ? byId.get(stepRun.parentStepRunId) : undefined;
+      while (parent && !seen.has(parent.id)) {
+        chain.unshift(parent);
+        seen.add(parent.id);
+        parent = parent.parentStepRunId ? byId.get(parent.parentStepRunId) : undefined;
+      }
+      const coordinates = chain.flatMap((row) => {
+        const container = row.parentStepRunId ? byId.get(row.parentStepRunId) : undefined;
+        const count =
+          container?.outputFields?.kind === "map" ? container.outputFields.items.length : undefined;
+        return [
+          ...(row.iteration === undefined ? [] : [`iteration ${row.iteration + 1}`]),
+          ...(row.itemIndex === undefined
+            ? []
+            : [`item ${row.itemIndex + 1}${count === undefined ? "" : ` of ${count}`}`]),
+        ];
+      });
       return {
         ...stepRun,
         stepId: stepRun.stepPath.at(-1) ?? "",
-        depth: Math.max(0, stepRun.stepPath.length - 1),
+        depth: chain.length - 1,
         iterationLabel:
-          stepRun.iteration === undefined ? null : `iteration ${stepRun.iteration + 1}`,
-        itemLabel:
-          stepRun.itemIndex === undefined
-            ? null
-            : `item ${stepRun.itemIndex + 1}${itemCount === undefined ? "" : ` of ${itemCount}`}`,
+          coordinates.filter((label) => label.startsWith("iteration")).join(" / ") || null,
+        itemLabel: coordinates.filter((label) => label.startsWith("item")).join(" / ") || null,
+        scopeLabel: coordinates.join(" / ") || null,
       };
     });
 }
@@ -75,11 +121,25 @@ export function createFlowEnvironmentAtoms<R, E>(
       label: "flows:runs",
       tag: FLOW_WS_METHODS.flowRuns,
       idleTtlMs: 0,
+      transform: (stream) =>
+        stream.pipe(
+          Stream.scan((): FlowRunsPage => ({ runs: [], nextCursor: null }), applyFlowRunsEvent),
+          Stream.drop(1),
+        ),
     }),
     run: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "flows:run",
       tag: FLOW_WS_METHODS.flowRun,
       idleTtlMs: 0,
+      transform: (stream) =>
+        stream.pipe(
+          Stream.scan((): FlowRunSnapshot | null => null, applyFlowRunEvent),
+          Stream.filter((snapshot): snapshot is FlowRunSnapshot => snapshot !== null),
+        ),
+    }),
+    runsPage: createEnvironmentRpcCommand(runtime, {
+      label: "flows:runs-page",
+      tag: FLOW_WS_METHODS.flowRunsPage,
     }),
     save: createEnvironmentRpcCommand(runtime, {
       label: "flows:save",

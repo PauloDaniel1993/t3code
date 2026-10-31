@@ -8,7 +8,9 @@ import {
   type ScopedThreadRef,
   type FlowRunId,
   type FlowEdge,
+  type FlowRunsPage,
 } from "@t3tools/contracts";
+import { applyFlowRunsEvent } from "@t3tools/client-runtime/flows";
 import { coerceFlowInputs, validateFlowDefinition } from "@t3tools/shared/flow";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { serverEnvironment } from "../../state/server";
@@ -51,7 +53,20 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
     setPreviousRequest(request);
     if (request?.flowId) setSelected(request.flowId);
   }
-  const entry = list.data?.flows.find((entry) => entry.flowId === selected) ?? list.data?.flows[0];
+  const requestedRun = useEnvironmentQuery(
+    request?.flowRunId
+      ? flowEnvironment.run({ environmentId, input: { flowRunId: request.flowRunId } })
+      : null,
+  );
+  const currentEntry = list.data?.flows.find((entry) => entry.flowId === selected);
+  const entry =
+    request?.flowRunId && requestedRun.data && !currentEntry?.definition
+      ? {
+          flowId: requestedRun.data.summary.flowId,
+          definition: requestedRun.data.definition,
+          validation: { valid: true, errors: [] },
+        }
+      : (currentEntry ?? list.data?.flows[0]);
   return (
     <div className="flex h-full min-h-0 flex-col text-sm">
       <header className="flex flex-wrap items-end gap-2 border-b border-border p-2">
@@ -251,16 +266,23 @@ function FlowEditor({
     setSaveError(false);
     setServerErrors([]);
   };
-  const runs = (history.data?.runs ?? [])
-    .filter((run) => run.flowId === flowId)
-    .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const [older, setOlder] = useState<FlowRunsPage>({ runs: [], nextCursor: null });
+  const [loadedOlder, setLoadedOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [pageError, setPageError] = useState(false);
+  const loadOlder = useAtomCommand(flowEnvironment.runsPage);
+  const cursor = loadedOlder ? older.nextCursor : history.data?.nextCursor;
   const snapshot = detail.data;
+  const runs = applyFlowRunsEvent(older, { type: "upsert", runs: history.data?.runs ?? [] })
+    .runs.filter((run) => run.flowId === flowId)
+    .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
   const selectedRun =
     snapshot?.stepRuns.find((step) => step.id === stepRunId) ??
     (selection?.kind === "step"
       ? snapshot?.stepRuns.findLast((step) => step.stepPath.at(-1) === selection.id)
       : undefined);
-  const step = selection?.kind === "step" ? findStep(draft.steps, selection.id) : undefined;
+  const displayed = snapshot?.definition ?? draft;
+  const step = selection?.kind === "step" ? findStep(displayed.steps, selection.id) : undefined;
   const edgeParent =
     selection?.kind === "edge" ? selection.id.slice(0, selection.id.lastIndexOf(":")) : null;
   const edgeIndex =
@@ -367,9 +389,9 @@ function FlowEditor({
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-2 text-xs">
           <span>
             Viewing run{" "}
-            {runs.findIndex((run) => run.id === flowRunId) < 0
-              ? flowRunId
-              : runs.length - runs.findIndex((run) => run.id === flowRunId)}
+            {snapshot?.summary.runNumber ??
+              runs.find((run) => run.id === flowRunId)?.runNumber ??
+              "..."}
           </span>
           <Button
             size="xs"
@@ -388,7 +410,7 @@ function FlowEditor({
       {tab === "runs" ? (
         <div className="min-h-0 flex-1 overflow-auto p-2">
           {history.error && <p role="alert">{history.error}</p>}
-          {runs.map((run, index) => (
+          {runs.map((run) => (
             <Button
               key={run.id}
               size="sm"
@@ -398,9 +420,36 @@ function FlowEditor({
                 setStepRunId(null);
               }}
             >
-              Flow run {runs.length - index} · {run.status.replaceAll("_", " ")} · {run.createdAt}
+              {run.flowTitle} · Flow run {run.runNumber} · {run.status.replaceAll("_", " ")} ·{" "}
+              {run.createdAt}
             </Button>
           ))}
+          {cursor && (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={loadingOlder}
+              onClick={async () => {
+                setLoadingOlder(true);
+                setPageError(false);
+                const result = await loadOlder({
+                  environmentId,
+                  input: { projectId, before: cursor },
+                });
+                if (result._tag === "Success") {
+                  setOlder((previous) => ({
+                    ...applyFlowRunsEvent(previous, { type: "upsert", runs: result.value.runs }),
+                    nextCursor: result.value.nextCursor,
+                  }));
+                  setLoadedOlder(true);
+                } else setPageError(true);
+                setLoadingOlder(false);
+              }}
+            >
+              Load older flow runs
+            </Button>
+          )}
+          {pageError && <p role="alert">Could not load older flow runs.</p>}
           {snapshot && (
             <>
               <Button size="xs" variant="outline" onClick={() => setTab("design")}>
@@ -412,14 +461,14 @@ function FlowEditor({
         </div>
       ) : (
         <div className="relative min-h-0 flex-1">
-          {flowRunId && !snapshot?.definitionSnapshot ? (
+          {flowRunId && !snapshot?.definition ? (
             <p className="p-3 text-xs text-muted-foreground">
               This environment has not provided the flow-run definition snapshot. Use the Runs
               timeline to inspect its steps.
             </p>
           ) : (
             <FlowCanvas
-              definition={snapshot?.definitionSnapshot ?? draft}
+              definition={displayed}
               snapshot={snapshot}
               locked={locked}
               onChange={change}

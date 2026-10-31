@@ -37,7 +37,9 @@ export function FlowRunThreadCard({
       className="max-h-80 shrink-0 overflow-auto border-b border-border p-3"
     >
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-medium">{snapshot.summary.flowId} · Flow run</h2>
+        <h2 className="text-sm font-medium">
+          {snapshot.summary.flowTitle} · Flow run {snapshot.summary.runNumber}
+        </h2>
         <Button
           size="xs"
           variant="outline"

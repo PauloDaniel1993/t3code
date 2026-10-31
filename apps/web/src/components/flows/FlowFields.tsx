@@ -634,6 +634,52 @@ export function StepForm({
             value={step.command}
             onChange={(command) => onChange({ ...step, command })}
           />
+          <p className="text-xs text-muted-foreground">
+            Command lines are literal. Put flow references in environment values and read them from
+            the shell.
+          </p>
+          {Object.entries(step.env ?? {}).map(([name, value]) => (
+            <div key={name} className="flex flex-col gap-2">
+              <TextField
+                label="Environment variable"
+                value={name}
+                onChange={(next) => {
+                  const env = { ...step.env };
+                  delete env[name];
+                  env[next] = value;
+                  onChange({ ...step, env });
+                }}
+              />
+              <TextField
+                label={`Environment value ${name}`}
+                multiline
+                value={value}
+                onChange={(next) => onChange({ ...step, env: { ...step.env, [name]: next } })}
+              />
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => {
+                  const env = { ...step.env };
+                  delete env[name];
+                  onChange({ ...step, env });
+                }}
+              >
+                Remove environment variable
+              </Button>
+            </div>
+          ))}
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => {
+              let name = "VALUE";
+              for (let i = 2; Object.hasOwn(step.env ?? {}, name); i++) name = `VALUE_${i}`;
+              onChange({ ...step, env: { ...step.env, [name]: "" } });
+            }}
+          >
+            Add environment variable
+          </Button>
           <TextField
             label="Working directory"
             value={step.cwd ?? ""}
