@@ -8,6 +8,7 @@ import { flowDrafts, useFlowPanelRequest } from "./flowPanelState";
 
 const state = vi.hoisted(() => ({
   definition: null as FlowDefinition | null,
+  noFlows: false,
   calls: [] as Array<{ kind: string; input: unknown }>,
 }));
 vi.mock("@effect/atom-react", async (importOriginal) => ({
@@ -40,19 +41,22 @@ vi.mock("../../state/server", () => ({
 }));
 vi.mock("../../state/query", () => ({
   useEnvironmentQuery: (query: { kind: string } | null) => ({
-    isPending: false,
+    // An open subscription keeps waiting after its first value.
+    isPending: query?.kind === "list",
     error: null,
     data:
       query?.kind === "list"
         ? {
-            flows: [
-              {
-                flowId: "demo",
-                definition: state.definition,
-                revision: "r1",
-                validation: { valid: true, errors: [] },
-              },
-            ],
+            flows: state.noFlows
+              ? []
+              : [
+                  {
+                    flowId: "demo",
+                    definition: state.definition,
+                    revision: "r1",
+                    validation: { valid: true, errors: [] },
+                  },
+                ],
           }
         : query?.kind === "runs"
           ? { runs: [], nextCursor: null }
@@ -77,8 +81,9 @@ vi.mock("./FlowCanvas", () => ({ FlowCanvas: () => <div aria-label="Design canva
 vi.mock("../settings/ScheduledTasksSettings", () => ({ ScheduledTaskEditorDialog: () => null }));
 vi.mock("../settings/SettingsScopeContext", () => ({ SettingsScopeProvider: () => null }));
 
-function setup(definition?: FlowDefinition) {
+function setup(definition?: FlowDefinition, options: { noFlows?: boolean } = {}) {
   state.calls.length = 0;
+  state.noFlows = options.noFlows ?? false;
   state.definition = definition ?? {
     version: 1,
     title: "Demo",
@@ -95,6 +100,11 @@ function setup(definition?: FlowDefinition) {
     />
   );
 }
+
+it("offers to create a flow once an empty project list arrives", async () => {
+  await using screen = await render(setup(undefined, { noFlows: true }));
+  await expect.element(screen.getByText("Create your first flow")).toBeVisible();
+});
 
 it("starts an input-free flow directly from the toolbar", async () => {
   await using screen = await render(setup());

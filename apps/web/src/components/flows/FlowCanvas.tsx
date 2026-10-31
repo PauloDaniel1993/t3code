@@ -297,6 +297,13 @@ function Canvas({
             nodeTypes={nodeTypes}
             colorMode={resolvedTheme}
             fitView
+            // Small flows otherwise zoom past 1:1; the left inset keeps the palette off the first step.
+            fitViewOptions={{
+              maxZoom: 1,
+              padding: locked
+                ? "24px"
+                : { top: "24px", right: "24px", bottom: "24px", left: "144px" },
+            }}
             minZoom={0.1}
             maxZoom={1.6}
             nodesDraggable={!locked}

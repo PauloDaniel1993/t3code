@@ -271,7 +271,7 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
           request={request?.flowId && request.flowId !== entry.flowId ? undefined : request}
         />
       ) : (
-        !list.isPending && (
+        list.data && (
           <Empty size="compact">
             <EmptyMedia variant="icon">
               <Workflow />
@@ -906,7 +906,7 @@ function FlowEditor({
             )}
           </div>
         )}
-        {(selection || selectedRun) && (
+        {(tab === "runs" ? stepRunId !== null && selectedRun : selection || selectedRun) && (
           <section
             aria-label="Flow inspector"
             className="absolute inset-x-0 bottom-0 z-10 max-h-[55%] overflow-auto scrollbar-gutter-both rounded-t-2xl border-t border-border bg-popover p-3 text-xs shadow-xl"
