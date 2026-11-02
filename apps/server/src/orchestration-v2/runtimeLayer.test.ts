@@ -1296,7 +1296,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
             error.cause,
             status === "stale"
               ? `Checkpoint ${checkpointId} is stale and cannot be restored.`
-              : "Files weren't checkpointed at that point. Rewind the conversation without restoring files instead.",
+              : "Files weren't checkpointed at that point. Rewind the conversation without restoring files instead, or delete side chats you no longer need.",
           );
           assert.equal(yield* orchestrator.getThreadEventSequence(threadId), previousSequence);
           assert.deepEqual(

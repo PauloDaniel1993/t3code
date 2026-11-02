@@ -57,7 +57,13 @@ vi.mock("../state/use-atom-command", () => ({
 // The commands are replaced above; importing their runtime would connect a client.
 vi.mock("../state/terminal", () => ({ terminalEnvironment: { open: {}, close: {}, write: {} } }));
 vi.mock("../state/preview", () => ({ previewEnvironment: { close: {} } }));
-vi.mock("../state/threads", () => ({ threadEnvironment: { delete: {} } }));
+vi.mock("../state/threads", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    threadEnvironment: { delete: {} },
+    environmentThreadDetails: { threadAtom: Atom.family(() => Atom.make(null)) },
+  };
+});
 vi.mock("../state/shell", () => ({ environmentShell: { stateValueAtom: () => null } }));
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: () => false,
