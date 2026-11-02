@@ -1,5 +1,6 @@
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
+import { isAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
   type ChatAttachment,
@@ -139,7 +140,10 @@ const make = Effect.gen(function* () {
         context =
           message === undefined
             ? { message: "", attachments: [] }
-            : { message: message.text, attachments: message.attachments };
+            : {
+                message: isAttachmentOnlyBootstrapPrompt(message.text) ? "" : message.text,
+                attachments: message.attachments,
+              };
       } else {
         context = formatThreadTitleContext(
           projection.messages.filter((message) => !message.streaming),

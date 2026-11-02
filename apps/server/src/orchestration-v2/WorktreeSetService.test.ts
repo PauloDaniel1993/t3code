@@ -150,10 +150,16 @@ const withCoordinator = <A, E, R>(
                 const driver = yield* GitVcsDriver.GitVcsDriver;
                 return Layer.mock(GitWorkflow.GitWorkflowService)({
                   hasCommit: ({ cwd, refName }) =>
-                    branchExists(cwd, refName.replace(/^refs\/heads\//, "")).pipe(
-                      Effect.provideService(GitVcsDriver.GitVcsDriver, driver),
-                    ),
+                    driver
+                      .execute({
+                        operation: "WorktreeSetService.test.hasCommit",
+                        cwd,
+                        args: ["rev-parse", "--verify", `${refName}^{commit}`],
+                        allowNonZeroExit: true,
+                      })
+                      .pipe(Effect.map((result) => result.exitCode === 0)),
                   resolveWorktreeBaseRemote: driver.resolveWorktreeBaseRemote,
+                  fetchWorktreeBaseCommit: driver.fetchWorktreeBaseCommit,
                   remoteExists: driver.remoteExists,
                   fetchRemote: driver.fetchRemote,
                   remoteBranchExists: driver.remoteBranchExists,
@@ -233,6 +239,108 @@ const withCoordinator = <A, E, R>(
   );
 
 const noProgress = WorktreeSet.noWorktreeSetProgress;
+
+it.effect("recovers missing members from pushed refs before detached default refs", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { api, workspaceFolders } = yield* makeSiblingWorkspace;
+    const set = yield* withCoordinator(
+      createSet({
+        workspaceFolders: workspaceFolders.slice(0, 2),
+        baseRef: api.branch,
+        branch: "recover-remote",
+      }),
+    );
+    const expected: string[] = [];
+    for (const [index, member] of set.members.entries()) {
+      yield* git(member.repositoryRoot, ["remote", "add", "origin", member.repositoryRoot]);
+      const defaultTip = yield* git(member.repositoryRoot, ["rev-parse", "HEAD"]);
+      yield* git(member.repositoryRoot, ["update-ref", "refs/remotes/origin/main", defaultTip]);
+      yield* git(member.repositoryRoot, [
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+      ]);
+      yield* fileSystem.writeFileString(path.join(member.path, "pushed.txt"), "pushed tip");
+      yield* git(member.path, ["add", "."]);
+      yield* git(member.path, ["commit", "-m", "pushed tip"]);
+      const pushedTip = yield* git(member.path, ["rev-parse", "HEAD"]);
+      if (index === 0)
+        yield* git(member.repositoryRoot, [
+          "update-ref",
+          `refs/remotes/origin/${member.branch}`,
+          pushedTip,
+        ]);
+      expected.push(index === 0 ? pushedTip : defaultTip);
+      yield* fileSystem.remove(member.path, { recursive: true });
+      yield* git(member.repositoryRoot, ["worktree", "prune"]);
+      yield* git(member.repositoryRoot, ["branch", "-D", member.branch]);
+      yield* git(member.repositoryRoot, ["switch", "--detach", pushedTip]);
+    }
+    yield* withCoordinator(
+      Effect.flatMap(WorktreeSet.WorktreeSetService, (service) =>
+        service.recreateMissing({
+          id: threadId,
+          projectId,
+          ...WorktreeSet.worktreeSetBinding(set),
+          workspaceFolders,
+        }),
+      ),
+    );
+    for (const [index, member] of set.members.entries()) {
+      assert.equal(yield* git(member.path, ["rev-parse", "HEAD"]), expected[index]);
+      assert.equal(yield* git(member.path, ["branch", "--show-current"]), member.branch);
+      assert.equal(
+        yield* git(member.path, [
+          "for-each-ref",
+          "--format=%(upstream)",
+          `refs/heads/${member.branch}`,
+        ]),
+        index === 0 ? `refs/remotes/origin/${member.branch}` : "",
+      );
+    }
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("resolves each member's base remote once and passes it to the fetch", () =>
+  Effect.gen(function* () {
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const { api, workspaceFolders } = yield* makeSiblingWorkspace;
+    const resolved: string[] = [];
+    const fetched: string[] = [];
+    const remote = { remoteName: "upstream", branchName: "main" };
+    yield* withCoordinator(
+      createSet({
+        workspaceFolders: workspaceFolders.slice(0, 2),
+        baseRef: api.branch,
+        branch: "from-remote",
+        startFromOrigin: true,
+      }),
+      {
+        git: {
+          resolveWorktreeBaseRemote: ({ cwd }) =>
+            Effect.sync(() => {
+              resolved.push(cwd);
+              return remote;
+            }),
+          fetchWorktreeBaseCommit: (input) =>
+            Effect.gen(function* () {
+              assert.strictEqual(input.remote, remote);
+              fetched.push(input.cwd);
+              const { commitSha } = yield* driver.resolveCommit({
+                cwd: input.cwd,
+                revision: "HEAD",
+              });
+              return { commitSha, remoteRefName: "upstream/main" };
+            }),
+        },
+      },
+    );
+    assert.equal(resolved.length, 2);
+    assert.deepEqual(fetched, resolved);
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
 
 it.effect(
   "recovers each missing member from its surviving branch or its own current checkout",
@@ -1138,7 +1246,27 @@ it.effect(
 
       yield* fileSystem.remove(worktreePath, { recursive: true });
       yield* git(repo.root, ["switch", "--detach"]);
-      const error = yield* recreate("missing-on-detached-head").pipe(Effect.flip);
+      yield* recreate("missing-on-detached-head");
+      assert.equal(
+        yield* git(worktreePath, ["branch", "--show-current"]),
+        "missing-on-detached-head",
+      );
+      assert.equal(
+        yield* git(worktreePath, ["rev-parse", "HEAD"]),
+        yield* git(repo.root, ["rev-parse", "HEAD"]),
+      );
+      assert.equal(
+        yield* git(repo.root, [
+          "for-each-ref",
+          "--format=%(upstream)",
+          "refs/heads/missing-on-detached-head",
+        ]),
+        "",
+      );
+
+      yield* fileSystem.remove(worktreePath, { recursive: true });
+      yield* git(repo.root, ["switch", "--orphan", "unborn"]);
+      const error = yield* recreate("no-commit").pipe(Effect.flip);
       assert.equal(error._tag, "WorktreeRecreateError");
       assert.equal(error.path, worktreePath);
       assert.isFalse(yield* fileSystem.exists(worktreePath));

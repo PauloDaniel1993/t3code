@@ -223,6 +223,8 @@ export default function FileBrowserPanel({
         workspaceRoot: reference?.folder.effectivePath ?? cwd,
       };
       const fileMenuItems = fileContextMenu.buildItems(fileTarget);
+      // The app menu owns focus; the tree's outside-click handler would dismiss it before click.
+      context.close({ restoreFocus: !pointerIsFresh });
       void settlePromise(async () => {
         const clicked = await api.contextMenu.show(
           [
@@ -277,7 +279,6 @@ export default function FileBrowserPanel({
           }
         }
       }).then((result) => {
-        context.close();
         if (!AsyncResult.isSuccess(result)) throw Cause.squash(result.cause);
       });
     },

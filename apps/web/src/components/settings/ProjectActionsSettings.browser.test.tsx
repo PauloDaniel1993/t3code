@@ -114,6 +114,8 @@ const first = member("a");
 const second = member("b");
 const group: SidebarProjectSnapshot = {
   ...first,
+  pinned: false,
+  archived: false,
   projectKey: "workspace",
   displayName: "Workspace",
   memberProjects: [first, second],

@@ -16,6 +16,10 @@
       "types": "./src/state/sidebarTaskSubthreads.ts",
       "default": "./src/state/sidebarTaskSubthreads.ts"
     },
+    "./assembly-highlighting": {
+      "types": "./src/assemblyHighlighting.ts",
+      "default": "./src/assemblyHighlighting.ts"
+    },
     "./zip/bounded-zip": {
       "types": "./src/zip/boundedZip.ts",
       "default": "./src/zip/boundedZip.ts"

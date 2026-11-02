@@ -5,7 +5,6 @@ import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { makeThreadFixture } from "../test-fixtures";
 import { useUiStateStore } from "../uiStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
-import { archiveSelectedThreadEntries } from "./Sidebar.logic";
 import Sidebar from "./Sidebar";
 
 const sidebarHarness = getSidebarHarness();
@@ -13,7 +12,6 @@ const environmentId = EnvironmentId.make("local");
 function setup() {
   sidebarHarness.menu.mockClear();
   sidebarHarness.remove.mockClear();
-  sidebarHarness.archive.mockClear();
   sidebarHarness.settle.mockReset();
   sidebarHarness.navigate.mockClear();
   sidebarHarness.newThread.mockClear();
@@ -97,82 +95,63 @@ it.each(["Current thread", "No matching thread"])(
     expect(sidebarHarness.newThread).not.toHaveBeenCalled();
   },
 );
-it.each(["delete", "archive"])(
-  "bulk %s uses the actual Sidebar selection and excludes collapsed tasks and filtered rows",
-  async (action) => {
-    setup();
-    sidebarHarness.menu.mockResolvedValue(action === "delete" ? "delete" : "dismiss");
-    const parent = makeThreadFixture({
-      environmentId,
-      projectId: ProjectId.make("shown"),
-      id: ThreadId.make("parent"),
-      title: "Visible parent",
-      settledOverride: "active",
-    });
-    const child = makeThreadFixture({
-      environmentId,
-      projectId: parent.projectId,
-      id: ThreadId.make("task"),
-      title: "Hidden task",
-      lineage: {
-        parentThreadId: parent.id,
-        rootThreadId: parent.id,
-        relationshipToParent: "subagent",
-      },
-    });
-    const filtered = makeThreadFixture({
-      environmentId,
-      projectId: ProjectId.make("hidden"),
-      id: ThreadId.make("filtered"),
-      title: "Other thread",
-      settledOverride: "active",
-    });
-    sidebarHarness.threads = [parent, child, filtered];
-    // The harness supplies the router and captures navigation.
-    await using screen = await render(
-      <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />,
-      { router: false },
-    );
-    await act(() =>
-      useThreadSelectionStore.setState({
-        selectedThreadKeys: new Set(["local:parent", "local:task", "local:filtered"]),
-      }),
-    );
-    const rendered = screen.container.querySelectorAll(
-      '[data-testid="sidebar-row-card"], [data-testid="sidebar-row-slim"]',
-    );
-    expect(rendered.length).toBeGreaterThan(0);
-    await act(() =>
-      rendered[0]!.dispatchEvent(
-        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
-      ),
-    );
-    await vi.waitFor(() => expect(sidebarHarness.menu).toHaveBeenCalled());
-    if (action === "delete")
-      await vi.waitFor(() =>
-        expect(sidebarHarness.remove).toHaveBeenCalledExactlyOnceWith(
-          { environmentId, threadId: parent.id },
-          expect.anything(),
-        ),
-      );
-    else expect(sidebarHarness.remove).not.toHaveBeenCalled();
-    expect(sidebarHarness.selection.map((entry) => entry.threadKey)).toEqual(["local:parent"]);
-    expect(sidebarHarness.menu.mock.calls[0]?.[0]).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: "delete", label: "Delete (1)", destructive: true }),
-      ]),
-    );
-    // V2's bulk menu has Settle/Delete, not Archive. Apply its captured, real
-    // actionable selection to the shared archive executor as well.
-    if (action === "archive") {
-      await archiveSelectedThreadEntries({
-        entries: sidebarHarness.selection,
-        archive: sidebarHarness.archive,
-      });
-      expect(sidebarHarness.archive).toHaveBeenCalledExactlyOnceWith(
-        { threadKey: "local:parent", thread: parent },
-        expect.any(Function),
-      );
-    }
-  },
-);
+it("bulk delete uses the actual Sidebar selection and excludes collapsed tasks and filtered rows", async () => {
+  setup();
+  sidebarHarness.menu.mockResolvedValue("delete");
+  const parent = makeThreadFixture({
+    environmentId,
+    projectId: ProjectId.make("shown"),
+    id: ThreadId.make("parent"),
+    title: "Visible parent",
+    settledOverride: "active",
+  });
+  const child = makeThreadFixture({
+    environmentId,
+    projectId: parent.projectId,
+    id: ThreadId.make("task"),
+    title: "Hidden task",
+    lineage: {
+      parentThreadId: parent.id,
+      rootThreadId: parent.id,
+      relationshipToParent: "subagent",
+    },
+  });
+  const filtered = makeThreadFixture({
+    environmentId,
+    projectId: ProjectId.make("hidden"),
+    id: ThreadId.make("filtered"),
+    title: "Other thread",
+    settledOverride: "active",
+  });
+  sidebarHarness.threads = [parent, child, filtered];
+  // The harness supplies the router and captures navigation.
+  await using screen = await render(
+    <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />,
+    { router: false },
+  );
+  await act(() =>
+    useThreadSelectionStore.setState({
+      selectedThreadKeys: new Set(["local:parent", "local:task", "local:filtered"]),
+    }),
+  );
+  const rendered = screen.container.querySelectorAll(
+    '[data-testid="sidebar-row-card"], [data-testid="sidebar-row-slim"]',
+  );
+  expect(rendered.length).toBeGreaterThan(0);
+  await act(() =>
+    rendered[0]!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })),
+  );
+  await vi.waitFor(() => expect(sidebarHarness.menu).toHaveBeenCalled());
+  await vi.waitFor(() =>
+    expect(sidebarHarness.remove).toHaveBeenCalledExactlyOnceWith(
+      { environmentId, threadId: parent.id },
+      expect.anything(),
+    ),
+  );
+  expect(sidebarHarness.selection.map((entry) => entry.threadKey)).toEqual(["local:parent"]);
+  expect(sidebarHarness.menu.mock.calls[0]?.[0]).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "delete", label: "Delete (1)", destructive: true }),
+    ]),
+  );
+});

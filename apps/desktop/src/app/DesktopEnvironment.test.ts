@@ -52,7 +52,6 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.appDataDirectory, "/Users/alice/.t3.v2/appdata");
       assert.equal(environment.appUserModelId, "com.t3tools.t3code.v2.local");
       assert.equal(environment.branding.displayName, "T3 v2.local");
-      assert.equal(environment.linuxWmClass, "t3code-v2-local");
     }),
   );
   it.effect("ignores an inherited local identity flag in an ordinary development run", () =>

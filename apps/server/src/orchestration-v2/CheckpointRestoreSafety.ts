@@ -16,9 +16,10 @@ import type { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import type * as ProjectStore from "./ProjectStore.ts";
 
 const SHARED_WORKSPACE_RESTORE_REASON =
-  "File restore requires an isolated worktree. This workspace may contain changes from another thread.";
+  "File restore requires an isolated worktree. This workspace may contain changes from another thread or a side chat.";
 
-const CONVERSATION_ONLY = "Rewind the conversation without restoring files instead.";
+const CONVERSATION_ONLY =
+  "Rewind the conversation without restoring files instead, or delete side chats you no longer need.";
 
 export const SHARED_WORKSPACE_RESTORE_MESSAGE = `${SHARED_WORKSPACE_RESTORE_REASON} ${CONVERSATION_ONLY}`;
 
@@ -35,7 +36,7 @@ export function fileRestoreRefusalReason(refusal: FileRestoreRefusal): string {
       return `${named ? `The checkpoint for ${folders}` : "That checkpoint"} is no longer available.`;
     case "shared":
       return named
-        ? `File restore requires isolated worktrees. ${folders} may contain changes from another thread.`
+        ? `File restore requires isolated worktrees. ${folders} may contain changes from another thread or a side chat.`
         : SHARED_WORKSPACE_RESTORE_REASON;
   }
 }
@@ -114,6 +115,17 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
     const checkedPaths = new Set<string>();
     for (const otherThread of [...shell.threads, ...shell.archivedThreads]) {
       if (otherThread.id === thread.id || otherThread.deletedAt !== null) continue;
+      // An idle side chat that only answered questions never touched the shared worktree.
+      if (
+        otherThread.lineage?.sideChat === true &&
+        otherThread.activeRunId === null &&
+        otherThread.worktreePath === thread.worktreePath
+      ) {
+        const { turnItems } = yield* projections.getThreadRecords(otherThread.id, ["turnItems"], {
+          turnItemTypes: ["command_execution", "file_change", "dynamic_tool"],
+        });
+        if (turnItems.length === 0) continue;
+      }
       const other = yield* projections.getCheckpointContext(otherThread.id);
       const providerContext = yield* projections.getThreadProviderContext(otherThread.id);
       const paths = [

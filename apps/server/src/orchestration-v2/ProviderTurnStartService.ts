@@ -31,7 +31,9 @@ import { makeCheckoutLeaseKeys } from "./checkoutLease.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
+import { isActiveRun } from "./CommandPolicy.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -41,7 +43,7 @@ import {
   historicalMessage,
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
-import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
+import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDelivery.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -124,6 +126,7 @@ export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const worktreeSets = yield* WorktreeSet.WorktreeSetService;
@@ -275,27 +278,40 @@ export const layer: Layer.Layer<
           .filter((transfer) => transfer.type === "subagent_result")
           .map((transfer) => transfer.id),
       );
+      const isPendingForRun = (handoff: OrchestrationV2ContextHandoff, anyProviderThread = false) =>
+        handoff.status === "ready" &&
+        (handoff.targetRunId === run.id ||
+          ((anyProviderThread || handoff.toProviderThreadId === run.providerThreadId) &&
+            projection.runs.some(
+              (source) =>
+                source.id === handoff.targetRunId &&
+                (source.status === "failed" ||
+                  source.status === "interrupted" ||
+                  source.status === "cancelled" ||
+                  (source.status === "completed" &&
+                    handoff.delivery === undefined &&
+                    // Compaction and /goal turns defer history to the next turn.
+                    projection.messages.some(
+                      (message) =>
+                        message.id === source.userMessageId &&
+                        (isCompactionCommandMessage(message) || parseGoalCommand(message) !== null),
+                    ))),
+            )));
+      const isSideChatHandoff = (handoff: OrchestrationV2ContextHandoff) =>
+        projection.thread.lineage.sideChat === true &&
+        ContextHandoffService.isSideChatContextHandoff(handoff);
       const handoffs = projection.contextHandoffs.filter(
         (handoff) =>
+          !isSideChatHandoff(handoff) &&
           (handoff.transferId == null || !subagentResultTransfers.has(handoff.transferId)) &&
-          handoff.status === "ready" &&
-          (handoff.targetRunId === run.id ||
-            (handoff.toProviderThreadId === run.providerThreadId &&
-              projection.runs.some(
-                (source) =>
-                  source.id === handoff.targetRunId &&
-                  (source.status === "failed" ||
-                    source.status === "interrupted" ||
-                    (source.status === "completed" &&
-                      handoff.delivery === undefined &&
-                      // Compaction and /goal turns defer history to the next turn.
-                      projection.messages.some(
-                        (message) =>
-                          message.id === source.userMessageId &&
-                          (isCompactionCommandMessage(message) ||
-                            parseGoalCommand(message) !== null),
-                      ))),
-              ))),
+          isPendingForRun(handoff),
+      );
+      // Carried forward until a provider turn accepts it, also after a provider switch.
+      const sideChatHandoff = projection.contextHandoffs.find(
+        (handoff) =>
+          isSideChatHandoff(handoff) &&
+          handoff.delivery === undefined &&
+          isPendingForRun(handoff, true),
       );
       const nativeForkTransfer = projection.contextTransfers.find(
         (transfer) =>
@@ -394,13 +410,22 @@ export const layer: Layer.Layer<
               } satisfies OrchestrationV2DomainEvent;
             }),
           );
-          yield* eventSink.writeIfRunCurrent({
+          const written = yield* eventSink.writeIfRunCurrent({
             threadId: projection.thread.id,
             runId,
             activeAttemptId: attempt.id,
             expectedStatus: "starting",
             events,
           });
+          // A steering restart that cannot start still ends a run whose earlier turns counted.
+          if (written.committed) {
+            yield* turnAnalytics.runSettled({
+              runId,
+              status,
+              completedAt: now,
+              childrenRunning: false,
+            });
+          }
         },
       );
       const settleStartFailure = Effect.fn("ProviderTurnStartService.settleStartFailure")(
@@ -524,11 +549,31 @@ export const layer: Layer.Layer<
       // The provider opens on the folders the run was admitted with. A scope
       // that spans workspace folders its provider can't reach fails here,
       // before the provider sees it, so no resume fallback can drop them.
-      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
-        thread: projection.thread,
-        modelSelection: run.modelSelection,
-        unavailableFolderPaths: run.unavailableFolderPaths,
-      });
+      // A side chat shares its parent's worktree; the turn that gets its context asks before acting.
+      const resolvedPolicy = yield* runtimePolicy
+        .resolve({
+          thread:
+            projection.thread.lineage.sideChat === true &&
+            (sideChatHandoff !== undefined ||
+              !projection.runs.some((previous) => previous.ordinal < run.ordinal))
+              ? { ...projection.thread, runtimeMode: "approval-required" }
+              : projection.thread,
+          modelSelection: run.modelSelection,
+          unavailableFolderPaths: run.unavailableFolderPaths,
+        })
+        .pipe(Effect.result);
+      if (resolvedPolicy._tag === "Failure") {
+        const error = resolvedPolicy.failure;
+        if (error._tag !== "RuntimePolicyAboveCeilingError") return yield* error;
+        yield* settleStartFailure({
+          signal: "runtime-mode-above-ceiling",
+          title: "Thread mode is above the policy limit",
+          error,
+          message: error.message,
+        });
+        return;
+      }
+      const resolvedRuntimePolicy = resolvedPolicy.success;
       const folderAccess = yield* Effect.result(
         runtimePolicy.requireWorkspaceFolderAccess({
           threadId: projection.thread.id,
@@ -1007,6 +1052,7 @@ export const layer: Layer.Layer<
       };
       let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
+      let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
@@ -1033,18 +1079,91 @@ export const layer: Layer.Layer<
               cause: `Native fork transfer ${nativeForkTransfer.id} has no source provider execution.`,
             });
           }
-          return yield* loadFromProvider(
-            session.forkThread({
-              sourceProviderThread,
-              sourceProviderTurns: sourceProjection.providerTurns,
-              targetThreadId: projection.thread.id,
+          // Providers refuse to fork a busy thread, so a source that started a turn after
+          // dispatch planned this fork gets the portable context dispatch gives a busy source.
+          const sourceBusy = sourceProjection.runs.some(
+            (candidate) => candidate.ordinal > sourceRun.ordinal && isActiveRun(candidate),
+          );
+          if (!sourceBusy) {
+            return yield* loadFromProvider(
+              session.forkThread({
+                sourceProviderThread,
+                sourceProviderTurns: sourceProjection.providerTurns,
+                targetThreadId: projection.thread.id,
+                modelSelection: run.modelSelection,
+                runtimePolicy: resolvedRuntimePolicy,
+                ...(sourceProviderTurn === undefined
+                  ? {}
+                  : { providerTurnId: sourceProviderTurn.id }),
+              }),
+            );
+          }
+          const sourceItems = yield* ContextHandoffService.readForkHistoryItems(
+            projectionStore,
+            sourceProjection,
+            sourceRun,
+          );
+          const createdAt = yield* DateTime.now;
+          const handoff = yield* contextHandoffService.prepareProviderHandoff({
+            threadId: projection.thread.id,
+            targetRunId: run.id,
+            transferId: nativeForkTransfer.id,
+            fromProviderThreadIds: [sourceProviderThread.id],
+            toProviderThreadId: providerThread.id,
+            fromProviderInstanceId: sourceRun.providerInstanceId,
+            toProviderInstanceId: run.providerInstanceId,
+            coveredRunOrdinals: ContextHandoffService.visibleDeltaRunOrdinals(
+              sourceProjection,
+              sourceItems,
+            ),
+            strategy: "full_thread_summary",
+            items: sourceItems,
+            runs: sourceProjection.runs,
+            createdAt,
+          });
+          const loaded = yield* loadFromProvider(
+            session.ensureThread({
+              threadId: projection.thread.id,
+              title: projection.thread.title,
               modelSelection: run.modelSelection,
               runtimePolicy: resolvedRuntimePolicy,
-              ...(sourceProviderTurn === undefined
-                ? {}
-                : { providerTurnId: sourceProviderTurn.id }),
+              providerSessionId,
+              existingProviderThread: { ...providerThread, forkedFrom: null },
             }),
           );
+          if (loaded === undefined) return undefined;
+          portableForkFallback = handoff;
+          effectiveHandoffs = [handoff, ...effectiveHandoffs];
+          yield* eventSink.write({
+            events: [
+              {
+                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                type: "context-handoff.updated",
+                threadId: projection.thread.id,
+                runId: run.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: createdAt,
+                payload: handoff,
+              },
+              {
+                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                type: "context-transfer.updated",
+                threadId: projection.thread.id,
+                runId: run.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: createdAt,
+                payload: {
+                  ...nativeForkTransfer,
+                  targetProviderInstanceId: run.providerInstanceId,
+                  status: "resolved_portable",
+                  resolution: { strategy: "portable_context", contextHandoffId: handoff.id },
+                  error: null,
+                  updatedAt: createdAt,
+                },
+              },
+            ],
+          });
+          return loaded;
         }
         if (providerThread.nativeThreadRef === null) {
           // Pass the stored provider row for adoption; adapter-minted duplicates make activeProviderThreadId flap.
@@ -1234,8 +1353,11 @@ export const layer: Layer.Layer<
         ownerNodeId: providerThread.ownerNodeId,
         firstRunOrdinal: providerThread.firstRunOrdinal ?? run.ordinal,
         lastRunOrdinal: run.ordinal,
-        handoffIds: providerThread.handoffIds,
-        forkedFrom: providerThread.forkedFrom,
+        handoffIds:
+          portableForkFallback === undefined
+            ? providerThread.handoffIds
+            : [...providerThread.handoffIds, portableForkFallback.id],
+        forkedFrom: portableForkFallback === undefined ? providerThread.forkedFrom : null,
         status: "active",
         createdAt: providerThread.createdAt,
         updatedAt: now,
@@ -1280,7 +1402,9 @@ export const layer: Layer.Layer<
           occurredAt: now,
           payload: runningProviderThread,
         },
-        ...(nativeForkTransfer === undefined || runningProviderThread.nativeThreadRef === null
+        ...(nativeForkTransfer === undefined ||
+        portableForkFallback !== undefined ||
+        runningProviderThread.nativeThreadRef === null
           ? []
           : [
               {
@@ -1350,6 +1474,26 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
+      const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
+        handoff: OrchestrationV2ContextHandoff,
+      ) {
+        const updatedAt = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: yield* idAllocator.allocate.event({
+                threadId: projection.thread.id,
+              }),
+              type: "context-handoff.updated",
+              threadId: projection.thread.id,
+              runId: run.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: updatedAt,
+              payload: { ...handoff, updatedAt },
+            },
+          ],
+        });
+      });
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const delivery = yield* deliverContextHandoffs({
@@ -1367,28 +1511,16 @@ export const layer: Layer.Layer<
                       ...history,
                     }),
                 }),
-            persist: Effect.fn("ProviderTurnStartService.persist")(function* (handoff) {
-              const updatedAt = yield* DateTime.now;
-              yield* eventSink.write({
-                events: [
-                  {
-                    id: yield* idAllocator.allocate.event({
-                      threadId: projection.thread.id,
-                    }),
-                    type: "context-handoff.updated",
-                    threadId: projection.thread.id,
-                    runId: run.id,
-                    providerInstanceId: run.providerInstanceId,
-                    occurredAt: updatedAt,
-                    payload: { ...handoff, updatedAt },
-                  },
-                ],
-              });
-            }),
+            persist: persistHandoff,
           });
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
           const start = compact ? session.compactThread! : session.startTurn;
-          const context = [delivery.context, restartNote]
+          // Like history, the side chat context waits for a turn that sends a prompt.
+          const sideChatContext =
+            sideChatHandoff === undefined || compact || goalCommand
+              ? ""
+              : sideChatHandoff.summaryText;
+          const context = [delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
@@ -1396,10 +1528,7 @@ export const layer: Layer.Layer<
             ...(noteContinuation ? promptedInput : turnInput),
             message: {
               ...turnInput.message,
-              text:
-                context === "" || goalCommand
-                  ? userText
-                  : `${context}\n\nUser message:\n${userText}`,
+              text: goalCommand ? userText : withInlineContext(context, userText),
             },
           }).pipe(
             // Clear pending handoff markers for refused prompts so the next turn retains the native session.
@@ -1416,13 +1545,30 @@ export const layer: Layer.Layer<
             ),
           );
           // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
-          yield* delivery.delivered.pipe(
-            Effect.catchCause(() =>
-              Effect.logWarning("Failed to record accepted context handoff delivery", {
-                runId: run.id,
-                deliveryStatus: "pending",
-              }),
-            ),
+          const nativeThreadId = runningProviderThread.nativeThreadRef?.nativeId;
+          yield* Effect.forEach(
+            [
+              delivery.delivered,
+              ...(sideChatContext === "" || sideChatHandoff === undefined || nativeThreadId == null
+                ? []
+                : [
+                    persistHandoff({
+                      ...sideChatHandoff,
+                      toProviderThreadId: runningProviderThread.id,
+                      delivery: { nativeThreadId, status: "inline" as const, itemIds: [] },
+                    }),
+                  ]),
+            ],
+            (record) =>
+              record.pipe(
+                Effect.catchCause(() =>
+                  Effect.logWarning("Failed to record accepted context handoff delivery", {
+                    runId: run.id,
+                    deliveryStatus: "pending",
+                  }),
+                ),
+              ),
+            { discard: true },
           );
         },
         Effect.mapError((cause) =>
@@ -1440,6 +1586,7 @@ export const layer: Layer.Layer<
       const deliverySession =
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
+        sideChatHandoff === undefined &&
         restartNote === "" &&
         !noteContinuation
           ? session

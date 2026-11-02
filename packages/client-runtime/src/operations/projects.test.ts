@@ -1,11 +1,11 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, SourceControlProviderKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 
 import {
   findExistingAddProject,
   getCloneDirectoryName,
   getDefaultCloneUrl,
+  githubIncompleteOwnerRepositoryMessage,
   normalizePastedCloneUrl,
   resolveAddProjectKind,
   listProjectsUsingFolder,
@@ -59,6 +59,35 @@ describe("add project shared logic", () => {
       plain,
       linked,
     ]);
+  });
+  it("asks for a repository name when GitHub input is only an owner path", () => {
+    const github = SourceControlProviderKind.make("github");
+    expect(githubIncompleteOwnerRepositoryMessage(github, "pingdotgg/")).toBe(
+      "Enter the full owner/repository name.",
+    );
+    expect(githubIncompleteOwnerRepositoryMessage(github, "  pingdotgg//  ")).toBe(
+      "Enter the full owner/repository name.",
+    );
+    expect(githubIncompleteOwnerRepositoryMessage(github, "mona-cat_octo/")).toBe(
+      "Enter the full owner/repository name.",
+    );
+
+    for (const input of [
+      "pingdotgg/t3code",
+      "mona-cat_octo/repo",
+      "pingdotgg",
+      "https://github.com/pingdotgg/t3code.git",
+      "git@github.com:pingdotgg/t3code.git",
+    ]) {
+      expect(githubIncompleteOwnerRepositoryMessage(github, input)).toBeNull();
+    }
+    expect(
+      githubIncompleteOwnerRepositoryMessage(SourceControlProviderKind.make("gitlab"), "group/"),
+    ).toBeNull();
+    expect(githubIncompleteOwnerRepositoryMessage("url", "owner/")).toBeNull();
+    expect(
+      githubIncompleteOwnerRepositoryMessage(SourceControlProviderKind.make("forgejo"), "owner/"),
+    ).toBeNull();
   });
 
   it("routes owner/repository shorthand to GitHub over HTTPS", () => {

@@ -382,6 +382,19 @@ export function createObservedToastManager<Data extends ObservableToastData>(
     },
   });
 
+  const observeUpdate = <T extends Data>(
+    toastId: string,
+    updates: ToastManagerUpdateOptions<T>,
+  ) => {
+    const previousCallbacks = callbacksByToastId.get(toastId);
+    callbacksByToastId.set(toastId, {
+      onClose: updates.onClose ?? previousCallbacks?.onClose,
+      onRemove: updates.onRemove ?? previousCallbacks?.onRemove,
+    });
+    observer.updated(managerName, toastId, updates);
+    return { ...updates, ...observedCallbacks(() => toastId) };
+  };
+
   return {
     " subscribe": manager[" subscribe"],
     add(options) {
@@ -406,16 +419,13 @@ export function createObservedToastManager<Data extends ObservableToastData>(
       manager.close(toastId);
     },
     update(toastId, updates) {
-      const previousCallbacks = callbacksByToastId.get(toastId);
-      callbacksByToastId.set(toastId, {
-        onClose: updates.onClose ?? previousCallbacks?.onClose,
-        onRemove: updates.onRemove ?? previousCallbacks?.onRemove,
-      });
-      manager.update(toastId, {
-        ...updates,
-        ...observedCallbacks(() => toastId),
-      });
-      observer.updated(managerName, toastId, updates);
+      manager.update(
+        toastId,
+        typeof updates === "function"
+          ? (previous) =>
+              observeUpdate(toastId, updates({ ...previous, ...callbacksByToastId.get(toastId) }))
+          : observeUpdate(toastId, updates),
+      );
     },
     promise(promiseValue, options) {
       return manager.promise(promiseValue, options);

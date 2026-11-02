@@ -225,7 +225,6 @@ export function NewThreadTaskDialog(props: {
                     model={model.model}
                     modelOptions={model.options}
                     planModeEnabled={settings.planModeEnabled}
-                    isComposerOwned={false}
                     promptUltrathink={readPromptUltrathink(draft.prompt)}
                     onPromptEdit={(edit) =>
                       setDraft((current) => ({ ...current, prompt: edit(current.prompt) }))

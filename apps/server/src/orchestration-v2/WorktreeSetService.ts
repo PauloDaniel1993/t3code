@@ -42,6 +42,7 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import type { GitWorktreeBaseRemote } from "../vcs/GitVcsDriver.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -55,12 +56,12 @@ export class WorktreeRecreateError extends Schema.TaggedError<WorktreeRecreateEr
   {
     threadId: ThreadId,
     path: Schema.String,
-    reason: Schema.optional(Schema.Literal("no-current-branch")),
+    reason: Schema.optional(Schema.Literal("no-base-commit")),
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Could not recreate the worktree at ${this.path}.${this.reason === "no-current-branch" ? " The repository has no current branch to start from." : ""}`;
+    return `Could not recreate the worktree at ${this.path}.${this.reason === "no-base-commit" ? " The repository has no commit to start from." : ""}`;
   }
 }
 
@@ -348,6 +349,8 @@ export const makeRecreateMissingWorktrees = ({
     | "pruneWorktrees"
     | "createWorktree"
     | "listLocalBranchNames"
+    | "hasCommit"
+    | "resolveRemoteTrackingCommit"
     | "invalidateLocalStatus"
     | "localStatus"
   >;
@@ -376,26 +379,52 @@ export const makeRecreateMissingWorktrees = ({
           });
           return;
         }
-        yield* git.invalidateLocalStatus(member.repositoryRoot);
-        const { refName } = yield* git.localStatus({ cwd: member.repositoryRoot });
-        if (refName === null) {
+        const cwd = member.repositoryRoot;
+        const pushedRef = `refs/remotes/origin/${member.branch}`;
+        if (yield* git.hasCommit({ cwd, refName: pushedRef })) {
+          yield* git.createWorktree({
+            cwd,
+            refName: pushedRef,
+            newRefName: member.branch,
+            path: member.path,
+          });
+          return;
+        }
+        yield* git.invalidateLocalStatus(cwd);
+        const { refName: currentBranch } = yield* git.localStatus({ cwd });
+        let refName: string;
+        let baseRefName: string | undefined;
+        if (currentBranch !== null) {
+          refName = `refs/heads/${currentBranch}`;
+          baseRefName = refName;
+        } else if (yield* git.hasCommit({ cwd, refName: "refs/remotes/origin/HEAD" })) {
+          const { commitSha } = yield* git.resolveRemoteTrackingCommit({
+            cwd,
+            refName: "HEAD",
+            fallbackRemoteName: "origin",
+          });
+          refName = commitSha;
+          baseRefName = "refs/remotes/origin/HEAD";
+        } else if (yield* git.hasCommit({ cwd, refName: "HEAD" })) {
+          refName = "HEAD";
+        } else {
           return yield* new WorktreeRecreateError({
             threadId: thread.id,
             path: member.path,
-            reason: "no-current-branch",
+            reason: "no-base-commit",
             cause: new GitCommandError({
               operation: "WorktreeSetService.recreateMember",
               command: "git",
-              cwd: member.repositoryRoot,
-              detail: `Could not recreate branch '${member.branch}': its repository has no current branch to start from.`,
+              cwd,
+              detail: `Could not recreate branch '${member.branch}': its repository has no commit to start from.`,
             }),
           });
         }
         yield* git.createWorktree({
-          cwd: member.repositoryRoot,
-          refName: `refs/heads/${refName}`,
+          cwd,
+          refName,
           newRefName: member.branch,
-          baseRefName: `refs/heads/${refName}`,
+          ...(baseRefName === undefined ? {} : { baseRefName }),
           path: member.path,
         });
       },
@@ -677,17 +706,19 @@ const make = Effect.gen(function* () {
   const originStart = Effect.fn("WorktreeSetService.originStart")(function* (
     member: PlannedMember,
     baseBranch: string,
+    remote: GitWorktreeBaseRemote,
   ) {
-    const remote = yield* git.fetchWorktreeBaseCommit({
+    const fetched = yield* git.fetchWorktreeBaseCommit({
       cwd: member.repositoryRoot,
       refName: baseBranch,
+      remote,
     });
-    return remote === null
+    return fetched === null
       ? { ref: member.startRef, fromOrigin: false, baseRefName: baseBranch }
       : {
-          ref: remote.commitSha,
+          ref: fetched.commitSha,
           fromOrigin: true,
-          baseRefName: `refs/remotes/${remote.remoteRefName}`,
+          baseRefName: `refs/remotes/${fetched.remoteRefName}`,
         };
   });
 
@@ -697,27 +728,26 @@ const make = Effect.gen(function* () {
       return yield* Effect.gen(function* () {
         // "Start from origin" is a stored default; repos without an origin, or
         // without the base there, start from the local base.
-        const fetching = yield* Effect.forEach(planned.members, (member) =>
+        const remotes = yield* Effect.forEach(planned.members, (member) =>
           planned.startFromOrigin && member.baseBranch !== null
-            ? git
-                .resolveWorktreeBaseRemote({
-                  cwd: member.repositoryRoot,
-                  refName: member.baseBranch,
-                })
-                .pipe(Effect.map((remote) => remote !== null))
-            : Effect.succeed(false),
+            ? git.resolveWorktreeBaseRemote({
+                cwd: member.repositoryRoot,
+                refName: member.baseBranch,
+              })
+            : Effect.succeed(null),
         );
-        const fetches = fetching.some(Boolean);
+        const fetches = remotes.some((remote) => remote !== null);
         yield* progress.stage("fetch", fetches ? "running" : "skipped");
-        const starts = yield* Effect.forEach(planned.members, (member, index) =>
-          fetching[index] === true && member.baseBranch !== null
-            ? originStart(member, member.baseBranch)
+        const starts = yield* Effect.forEach(planned.members, (member, index) => {
+          const remote = remotes[index];
+          return remote != null && member.baseBranch !== null
+            ? originStart(member, member.baseBranch, remote)
             : Effect.succeed({
                 ref: member.startRef,
                 fromOrigin: false,
                 baseRefName: member.baseBranch,
-              }),
-        );
+              });
+        });
         if (fetches) yield* progress.stage("fetch", "done");
 
         yield* progress.stage("checkout", "running");

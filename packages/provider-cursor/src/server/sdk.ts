@@ -53,19 +53,34 @@ function installCursorShellSpawnGuard(): void {
 // Arm before the SDK loads. Its shell tools spawn from this process.
 installCursorShellSpawnGuard();
 
-// Cursor's Webpack chunks and local helpers must stay beside the SDK entry.
-// createRequire also loads that disk-backed package from a Node SEA executable.
+// createRequire preserves adjacent Webpack chunks and native modules in bundled/SEA builds.
 const requireCursorSdk = NodeModule.createRequire(import.meta.url);
-export const {
-  Agent,
-  AuthenticationError,
-  ConfigurationError,
-  createAgentPlatform,
-  Cursor,
-  CursorSdkError,
-  InMemoryCredentialStore,
-  JsonlLocalAgentStore,
-} = requireCursorSdk("@cursor/sdk") as typeof import("@cursor/sdk");
-export const { SqliteLocalAgentStore } = requireCursorSdk(
-  "@cursor/sdk/sqlite",
-) as typeof import("@cursor/sdk/sqlite");
+let sdk: typeof import("@cursor/sdk") | undefined;
+let sqlite: typeof import("@cursor/sdk/sqlite") | undefined;
+
+export function loadCursorSdk(): typeof import("@cursor/sdk") {
+  if (sdk !== undefined) return sdk;
+  const start = performance.now();
+  sdk = requireCursorSdk("@cursor/sdk") as typeof import("@cursor/sdk");
+  if (process.env.T3CODE_STARTUP_PROFILE_DIR) {
+    performance.measure("provider.cursor.importSdk", { start });
+  }
+  return sdk;
+}
+
+export function loadCursorSqlite(): typeof import("@cursor/sdk/sqlite") {
+  if (sqlite !== undefined) return sqlite;
+  const start = performance.now();
+  sqlite = requireCursorSdk("@cursor/sdk/sqlite") as typeof import("@cursor/sdk/sqlite");
+  if (process.env.T3CODE_STARTUP_PROFILE_DIR) {
+    performance.measure("provider.cursor.importSqliteStore", { start });
+  }
+  return sqlite;
+}
+
+// Error classification must not initialize the SDK when the load itself failed.
+export function isCursorSdkError<
+  K extends "AuthenticationError" | "ConfigurationError" | "CursorSdkError",
+>(cause: unknown, kind: K): cause is InstanceType<(typeof import("@cursor/sdk"))[K]> {
+  return sdk !== undefined && cause instanceof sdk[kind];
+}

@@ -1,3 +1,4 @@
+import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -84,6 +85,7 @@ const dependencies = Layer.mergeAll(
 
 const testLayer = Layer.mergeAll(
   Project.layer,
+  Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ discard: () => Effect.void }),
   Layer.succeed(McpInvocationContext.McpInvocationContext, {
     environmentId: EnvironmentId.make("environment:mcp-project"),
     requestNamespace: "session",

@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  type ManagedPolicySummary,
   type ModelSelection,
   type OrchestrationV2AppThread,
   PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
@@ -19,6 +20,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -97,46 +99,51 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
       } as ProviderInstance);
 
 let projectReads = 0;
-const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
-  Layer.provide(
-    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-      getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
-      listInstances: Effect.succeed([]),
-      listUnavailable: Effect.succeed([]),
-      streamChanges: Stream.empty,
-      subscribeChanges: Effect.never,
-    }),
-  ),
-  Layer.provide(
-    Layer.mock(ProjectStore.ProjectStoreV2)({
-      get: (requestedProjectId) =>
-        Effect.sync(() => {
-          projectReads += 1;
-        }).pipe(
-          Effect.as(
-            requestedProjectId !== projectId
-              ? Option.none()
-              : Option.some({
-                  projectId,
-                  title: "Project",
-                  workspaceRoot: "/project-root",
-                  workspaceFile: null,
-                  folders: null,
-                  defaultModelSelection: null,
-                  defaultThreadEnvMode: null,
-                  autoPull: false,
-                  faviconPath: null,
-                  projectIcon: null,
-                  scripts: [],
-                  createdAt: "2026-06-21T00:00:00.000Z",
-                  updatedAt: "2026-06-21T00:00:00.000Z",
-                  deletedAt: null,
-                }),
+const layerWithPolicy = (policy?: ManagedPolicySummary) =>
+  RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(ServerSettings.layerTest({}, policy)),
+    Layer.provide(
+      Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+        getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
+        listInstances: Effect.succeed([]),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.never,
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(ProjectStore.ProjectStoreV2)({
+        get: (requestedProjectId) =>
+          Effect.sync(() => {
+            projectReads += 1;
+          }).pipe(
+            Effect.as(
+              requestedProjectId !== projectId
+                ? Option.none()
+                : Option.some({
+                    projectId,
+                    title: "Project",
+                    workspaceRoot: "/project-root",
+                    workspaceFile: null,
+                    folders: null,
+                    defaultModelSelection: null,
+                    defaultThreadEnvMode: null,
+                    autoPull: false,
+                    pinnedAt: null,
+                    archivedAt: null,
+                    faviconPath: null,
+                    projectIcon: null,
+                    scripts: [],
+                    createdAt: "2026-06-21T00:00:00.000Z",
+                    updatedAt: "2026-06-21T00:00:00.000Z",
+                    deletedAt: null,
+                  }),
+            ),
           ),
-        ),
-    }),
-  ),
-);
+      }),
+    ),
+  );
+const layerTest = layerWithPolicy();
 
 const folder = (path: string, checkoutRoot: string | null = null) => ({
   path,
@@ -362,5 +369,35 @@ it("reads a policy without additional directories as a one-folder scope", () => 
       cwd: "/work/app",
     }).additionalDirectories,
     [],
+  );
+});
+
+it.layer(
+  layerWithPolicy({
+    organization: "Example Corp",
+    lockedSettings: [],
+    limits: { maxRuntimeMode: "auto-accept-edits" },
+  }),
+)("RuntimePolicyV2 under a runtime mode ceiling", (it) => {
+  it.effect("refuses to start a turn above the ceiling, such as one resumed after a restart", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const resolve = (runtimeMode: RuntimeMode) =>
+        policy.resolve({
+          thread: makeThread({ now, worktreePath: "/work", runtimeMode }),
+          modelSelection,
+        });
+
+      const refused = yield* resolve("full-access").pipe(Effect.flip);
+      assert.equal(refused._tag, "RuntimePolicyAboveCeilingError");
+      assert.equal(
+        refused.message,
+        "Example Corp limits threads to Auto-accept edits. Switch this thread's mode to continue.",
+      );
+      const allowed = yield* resolve("auto-accept-edits");
+      assert.equal(allowed.runtimeMode, "auto-accept-edits");
+      assert.equal(allowed.maxRuntimeMode, "auto-accept-edits");
+    }),
   );
 });

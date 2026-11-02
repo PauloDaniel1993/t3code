@@ -44,7 +44,6 @@ import { loadRepoEnv } from "./lib/public-config.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { LOCAL_DESKTOP_IDENTITY, hasLocalDesktopBootstrap } from "./lib/local-desktop-identity.ts";
-import { copyDesktopArtifacts } from "./lib/copy-desktop-artifacts.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -2795,6 +2794,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   localIdentity = false,
 ) {
   const buildConfig: Record<string, unknown> = {
+    afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
     appId: localIdentity ? LOCAL_DESKTOP_IDENTITY.appId : DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version, localIdentity),
     ...(localIdentity ? { executableName: LOCAL_DESKTOP_IDENTITY.productName } : {}),
@@ -4100,13 +4100,19 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     yield* validateMacPackagedPayload({ stageDistDir, verbose: options.verbose });
   }
 
-  const { copiedArtifacts, copiedDirectory } = yield* copyDesktopArtifacts({
+  const copiedArtifacts = yield* copyDesktopBuildArtifacts(
     stageDistDir,
-    outputDir: options.outputDir,
-    target: options.target,
-  });
+    options.outputDir,
+    options.target === "dir",
+  );
 
-  if (copiedArtifacts.length === 0 || (options.target === "dir" && !copiedDirectory)) {
+  if (
+    copiedArtifacts.length === 0 ||
+    (options.target === "dir" &&
+      !(yield* Effect.forEach(copiedArtifacts, (artifact) => fs.stat(artifact))).some(
+        (stat) => stat.type === "Directory",
+      ))
+  ) {
     return yield* new DesktopBuildNoArtifactsProducedError({
       distPath: stageDistDir,
       platform: options.platform,
@@ -4124,6 +4130,41 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 ) {
   const repoRoot = yield* RepoRoot;
   return yield* withDesktopBuildLock(repoRoot, buildDesktopArtifactUnlocked(options));
+});
+
+export const copyDesktopBuildArtifacts = Effect.fn("copyDesktopBuildArtifacts")(function* (
+  stageDistDir: string,
+  outputDir: string,
+  includeDirectories = false,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const stageEntries = yield* fs.readDirectory(stageDistDir);
+  yield* fs.makeDirectory(outputDir, { recursive: true });
+
+  const copiedArtifacts: string[] = [];
+  for (const entry of stageEntries) {
+    const from = path.join(stageDistDir, entry);
+    const stat = yield* fs.stat(from).pipe(Effect.orElseSucceed(() => null));
+    if (!stat || (stat.type !== "File" && !(includeDirectories && stat.type === "Directory")))
+      continue;
+
+    const to = path.join(outputDir, entry);
+    // Replace whatever a reused output dir already holds at this path. fs.cp refuses to
+    // overwrite a directory with a file or a file with a directory, and only merges into
+    // an existing directory, so a stale entry of either type must go first.
+    yield* fs.remove(to, { recursive: true, force: true });
+    yield* Effect.tryPromise(() =>
+      NodeFSP.cp(from, to, {
+        recursive: true,
+        force: true,
+        verbatimSymlinks: true,
+      }),
+    );
+    copiedArtifacts.push(to);
+  }
+
+  return copiedArtifacts;
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
