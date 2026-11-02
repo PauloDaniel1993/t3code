@@ -59,6 +59,7 @@ export function createSidebarTaskGrouper() {
       if (
         thread.archivedAt !== null ||
         thread.deletedAt !== null ||
+        thread.lineage.sideChat === true ||
         (input.scopedProjectKeys !== null &&
           !input.scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`))
       )
