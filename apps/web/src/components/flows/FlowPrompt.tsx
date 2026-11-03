@@ -36,6 +36,66 @@ interface Props {
   onImages: (update: (images: ReadonlyArray<string>) => ReadonlyArray<string>) => void;
 }
 
+interface ImageJob {
+  readonly name: string;
+  readonly url: string;
+  abort?: (() => void) | undefined;
+  attachmentId?: string | undefined;
+}
+
+// Outside the component: React Compiler cannot lower try/finally or a throw inside try.
+async function uploadPromptImage(input: {
+  readonly source: File;
+  readonly environmentId: NonNullable<ContextType<typeof FlowModelContext>>["environmentId"];
+  readonly job: ImageJob;
+  readonly live: () => boolean;
+  readonly importUploaded: (attachmentId: string) => Promise<string>;
+}): Promise<{ readonly path: string } | { readonly error: string } | null> {
+  const { source, environmentId, job, live } = input;
+  try {
+    const prepared = await prepareImageForAttachment(source, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES);
+    if (!live()) return null;
+    if (!prepared.ok)
+      return {
+        error:
+          prepared.reason === "too-large"
+            ? "Image exceeds the attachment size limit."
+            : "Could not read this image.",
+      };
+    const file = prepared.file;
+    const inferredMimeType = imageMimeType({ name: file.name, mimeType: file.type });
+    const mimeType = PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
+      (type) => type === inferredMimeType,
+    );
+    if (!mimeType) return { error: "Unsupported image type." };
+    const uploaded = await runAttachmentUploadCycle({
+      registry: appAtomRegistry,
+      createUploadUrl: attachmentEnvironment.createUploadUrl,
+      remove: attachmentEnvironment.remove,
+      environmentId,
+      upload: { name: file.name, mimeType, sizeBytes: file.size },
+      resolveUploadUrl: (relativeUrl) => {
+        const connection = readPreparedConnection(environmentId);
+        return connection ? resolveAssetUrl(connection.httpBaseUrl, relativeUrl) : null;
+      },
+      transport: (url) => uploadBytes({ url, file, mimeType, onProgress: () => {} }),
+      onMinted: (attachmentId) => {
+        job.attachmentId = attachmentId;
+        return live() ? "continue" : "cancel";
+      },
+      onTransferStart: (abort) => {
+        job.abort = abort;
+        if (!live()) abort();
+      },
+    });
+    if (!live() || uploaded.status === "cancelled") return null;
+    if (uploaded.status === "failed") throw uploaded.error;
+    return { path: await input.importUploaded(uploaded.attachmentId) };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export function FlowPrompt(props: Props) {
   const context = useContext(FlowModelContext);
   return context ? (
@@ -67,18 +127,7 @@ function ImagePrompt({
   const importImage = useAtomCommand(flowEnvironment.importImage, { reportFailure: false });
   const picker = useRef<HTMLInputElement>(null);
   const active = useRef(true);
-  const [jobs] = useState(
-    () =>
-      new Map<
-        string,
-        {
-          name: string;
-          url: string;
-          abort?: (() => void) | undefined;
-          attachmentId?: string | undefined;
-        }
-      >(),
-  );
+  const [jobs] = useState(() => new Map<string, ImageJob>());
   const [pending, setPending] = useState<
     ReadonlyArray<{ id: string; name: string; url: string; file: File }>
   >([]);
@@ -117,6 +166,12 @@ function ImagePrompt({
     };
   }, [jobs, release]);
 
+  const importUploaded = async (attachmentId: string) => {
+    const result = await importImage({ environmentId, input: { projectId, attachmentId } });
+    if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+    return result.value.path;
+  };
+
   const add = async (files: ReadonlyArray<File>) => {
     if (!allowed) return;
     for (const source of files) {
@@ -133,71 +188,27 @@ function ImagePrompt({
         continue;
       }
       const id = randomUUID();
-      const job = {
-        name: source.name,
-        url: URL.createObjectURL(source),
-        attachmentId: undefined as string | undefined,
-        abort: undefined as (() => void) | undefined,
-      };
+      const job: ImageJob = { name: source.name, url: URL.createObjectURL(source) };
       jobs.set(id, job);
-      setPending((previous) => [...previous, { id, ...job, file: source }]);
-      try {
-        const prepared = await prepareImageForAttachment(
-          source,
-          PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-        );
-        if (!jobs.has(id)) continue;
-        if (!prepared.ok)
-          throw new Error(
-            prepared.reason === "too-large"
-              ? "Image exceeds the attachment size limit."
-              : "Could not read this image.",
-          );
-        const file = prepared.file;
-        const inferredMimeType = imageMimeType({ name: file.name, mimeType: file.type });
-        const mimeType = PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
-          (type) => type === inferredMimeType,
-        );
-        if (!mimeType) throw new Error("Unsupported image type.");
-        const uploaded = await runAttachmentUploadCycle({
-          registry: appAtomRegistry,
-          createUploadUrl: attachmentEnvironment.createUploadUrl,
-          remove: attachmentEnvironment.remove,
-          environmentId,
-          upload: { name: file.name, mimeType, sizeBytes: file.size },
-          resolveUploadUrl: (relativeUrl) => {
-            const connection = readPreparedConnection(environmentId);
-            return connection ? resolveAssetUrl(connection.httpBaseUrl, relativeUrl) : null;
-          },
-          transport: (url) => uploadBytes({ url, file, mimeType, onProgress: () => {} }),
-          onMinted: (attachmentId) => {
-            job.attachmentId = attachmentId;
-            return jobs.has(id) ? "continue" : "cancel";
-          },
-          onTransferStart: (abort) => {
-            job.abort = abort;
-            if (!jobs.has(id)) abort();
-          },
-        });
-        if (!jobs.has(id) || uploaded.status === "cancelled") continue;
-        if (uploaded.status === "failed") throw uploaded.error;
-        const result = await importImage({
-          environmentId,
-          input: { projectId, attachmentId: uploaded.attachmentId },
-        });
-        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-        if (jobs.has(id)) updateImages((current) => [...new Set([...current, result.value.path])]);
-      } catch (error) {
-        if (jobs.has(id))
+      setPending((previous) => [...previous, { id, name: job.name, url: job.url, file: source }]);
+      const outcome = await uploadPromptImage({
+        source,
+        environmentId,
+        job,
+        live: () => jobs.has(id),
+        importUploaded,
+      });
+      if (outcome && jobs.has(id)) {
+        if ("path" in outcome) updateImages((current) => [...new Set([...current, outcome.path])]);
+        else
           toastManager.add({
             type: "error",
             title: `Could not attach ${source.name}`,
-            description: error instanceof Error ? error.message : String(error),
+            description: outcome.error,
           });
-      } finally {
-        release(id);
-        setPending((previous) => previous.filter((entry) => entry.id !== id));
       }
+      release(id);
+      setPending((previous) => previous.filter((entry) => entry.id !== id));
     }
   };
   const previews = images.map((name, index) => ({ name, src: urls[index] ?? null }));
