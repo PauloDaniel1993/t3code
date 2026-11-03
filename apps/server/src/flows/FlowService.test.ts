@@ -609,6 +609,29 @@ it.effect("isolates presentation defects after commit and malformed runs during 
   }).pipe(Effect.scoped, Effect.provide(database)),
 );
 
+it.effect("recovery drops runs whose thread was deleted while flows were not running", () =>
+  Effect.gen(function* () {
+    const { service, repository } = yield* setup({
+      version: 1,
+      title: "Gate",
+      workspace: "root",
+      steps: [{ id: "gate", kind: "approval", prompt: "Review" }],
+      edges: [],
+    });
+    const start = () =>
+      service.start({ projectId: ProjectId.make("p"), flowId: FlowId.make("example"), inputs: {} });
+    const orphan = yield* start();
+    const kept = yield* start();
+    yield* awaitStatus(service, orphan.id, "waiting_approval");
+    yield* awaitStatus(service, kept.id, "waiting_approval");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE orchestration_v2_projection_threads SET deleted_at = 'now' WHERE thread_id = ${orphan.flowRunThreadId}`;
+    yield* service.recover();
+    expect(yield* repository.read(orphan.id)).toBeNull();
+    expect((yield* repository.read(kept.id))?.run.status).toBe("waiting_approval");
+  }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
 it.effect("binds root flow steps to root instead of an existing worktree", () =>
   Effect.gen(function* () {
     const { service, launched } = yield* setup({

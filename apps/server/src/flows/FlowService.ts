@@ -50,6 +50,7 @@ import {
   type StepRun,
   type Action,
 } from "./FlowEngine.ts";
+import { sweepOrphanedFlowRuns } from "./FlowCleanup.ts";
 import { flowReportInstruction } from "./FlowAgentInstructions.ts";
 
 export interface FlowStart {
@@ -887,6 +888,11 @@ const make = Effect.gen(function* () {
     settleThread,
     recover: Effect.fn("FlowService.recover")(function* () {
       yield* Effect.gen(function* () {
+        // Threads can be deleted while no Flows build is running, so no lifecycle hook saw it.
+        yield* sweepOrphanedFlowRuns().pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catchCause(logFailure("Flow orphan sweep failed")),
+        );
         const originals = new Map<FlowRunId, State>();
         for (const id of yield* repository.active().pipe(Effect.mapError(mapError)))
           yield* readState(id).pipe(
