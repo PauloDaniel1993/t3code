@@ -77,7 +77,28 @@ vi.mock("./FlowModelPicker", async () => {
   const { createContext } = await import("react");
   return { FlowModelContext: createContext(null), FlowModelPicker: () => null };
 });
-vi.mock("./FlowCanvas", () => ({ FlowCanvas: () => <div aria-label="Design canvas" /> }));
+vi.mock("./FlowCanvas", () => ({
+  FlowCanvas: (props: { onSelectStep: (id: string) => void }) => (
+    <button type="button" onClick={() => props.onSelectStep("ask")}>
+      Select ask
+    </button>
+  ),
+}));
+vi.mock("./FlowPrompt", () => ({
+  FlowPrompt: (props: {
+    onImages: (update: (images: ReadonlyArray<string>) => ReadonlyArray<string>) => void;
+  }) => (
+    <button
+      type="button"
+      onClick={() => {
+        props.onImages((images) => [...images, "a.png"]);
+        props.onImages((images) => [...images, "b.png"]);
+      }}
+    >
+      Import two images
+    </button>
+  ),
+}));
 vi.mock("../settings/ScheduledTasksSettings", () => ({ ScheduledTaskEditorDialog: () => null }));
 vi.mock("../settings/SettingsScopeContext", () => ({ SettingsScopeProvider: () => null }));
 
@@ -162,6 +183,25 @@ it("selects the offending step and exposes flow-level validation problems", asyn
     .element(screen.getByRole("textbox", { name: "Step id", exact: true }))
     .toHaveValue("check");
   await expect.element(screen.getByRole("button", { name: "Start", exact: true })).toBeDisabled();
+});
+
+it("keeps both images when two imports land before the step editor re-renders", async () => {
+  await using screen = await render(
+    setup({
+      version: 1,
+      title: "Images",
+      steps: [{ kind: "agent", id: "ask", prompt: "Review" }],
+      edges: [],
+    }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Select ask", exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "Import two images", exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+  await vi.waitFor(() =>
+    expect(state.calls.find((call) => call.kind === "save")?.input).toMatchObject({
+      definition: { steps: [{ id: "ask", images: ["a.png", "b.png"] }] },
+    }),
+  );
 });
 
 it("opens new, rename and delete as dismissible dialogs", async () => {

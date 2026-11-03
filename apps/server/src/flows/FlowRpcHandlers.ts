@@ -45,6 +45,7 @@ export const makeFlowRpcHandlers = Effect.fn("FlowRpcHandlers.make")(function* (
       before: Parameters<typeof service.runsPage>[1];
     }) => service.runsPage(projectId, before),
     [FLOW_WS_METHODS.flowSave]: service.save,
+    [FLOW_WS_METHODS.flowImportImage]: service.importImage,
     [FLOW_WS_METHODS.flowRename]: (input: {
       projectId: Parameters<typeof service.rename>[0];
       flowId: Parameters<typeof service.rename>[1];

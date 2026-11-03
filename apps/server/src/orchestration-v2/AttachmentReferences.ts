@@ -9,6 +9,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { Fragment } from "effect/sql/Statement";
+import { htmlRenderFromToolItem, mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
 
 import { attachmentRelativePath, parseThreadSegmentFromAttachmentId } from "../attachmentStore.ts";
 import { normalizeAttachmentRelativePath } from "../attachmentPaths.ts";
@@ -37,6 +38,40 @@ function attachmentReferences(payload: unknown): Array<{ id: string; relativePat
   if (Array.isArray(payload)) return payload.flatMap(attachmentReferences);
   return Predicate.isObject(payload) ? Object.values(payload).flatMap(attachmentReferences) : [];
 }
+
+/**
+ * Pages a live thread's tool calls published (`html_render`, captured MCP App
+ * documents) are stored as `<id>.html`. Providers wrap tool output in different
+ * envelopes, so this reads them with the parsers the client renders them with.
+ * Forks copy their source's items, so the page may be minted for another thread.
+ */
+const findToolPage = Effect.fnUntraced(function* (attachmentId: string, threadId?: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const owner = threadId ?? parseThreadSegmentFromAttachmentId(attachmentId);
+  if (owner === null || !attachmentId.endsWith("-html")) return null;
+  const rows = yield* sql<{ payload_json: string }>`
+    SELECT item.payload_json
+    FROM orchestration_v2_projection_turn_items AS item
+    JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = item.thread_id
+    JOIN projection_projects AS project ON project.project_id = thread.project_id
+    WHERE item.thread_id = ${owner} AND item.type = 'dynamic_tool'
+      AND instr(item.payload_json, ${attachmentId}) > 0
+      AND thread.deleted_at IS NULL AND project.deleted_at IS NULL
+  `;
+  const published = rows.some((row) => {
+    const item = decodePayload(row.payload_json);
+    if (!Predicate.isObject(item)) return false;
+    const tool = {
+      toolName: typeof item.toolName === "string" ? item.toolName : null,
+      output: item.output,
+    };
+    const page = htmlRenderFromToolItem(tool) ?? mcpAppFromToolItem(tool);
+    return page?.attachmentId === attachmentId;
+  });
+  return published
+    ? { threadId: ThreadId.make(owner), relativePath: `${attachmentId}.html` }
+    : null;
+});
 
 /** Prefer trusted partial rows; fallback parses only one thread's unread source rows. */
 export const findReadableAttachment = Effect.fnUntraced(function* (
@@ -81,7 +116,7 @@ export const findReadableAttachment = Effect.fnUntraced(function* (
         FROM (${yield* attachmentSourceRows(fallbackThread, undefined, state)}) AS payload, json_tree(payload.payload_json) AS attachment
         WHERE attachment.type = 'object' AND json_extract(attachment.value, '$.id') = ${attachmentId}
       `))[0]);
-      if (row === undefined) return null;
+      if (row === undefined) return yield* findToolPage(attachmentId, threadId);
       const reference = attachmentReferences(decodePayload(row.attachment_json))[0];
       return reference === undefined
         ? null

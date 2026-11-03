@@ -105,6 +105,7 @@ export const FlowAgentStep = Schema.Struct({
   id: FlowStepId,
   kind: Schema.Literal("agent"),
   prompt: Schema.String,
+  images: Schema.optional(Schema.Array(Schema.String)),
   ...FlowDefaults.fields,
   outputs: Schema.optional(Schema.Array(FlowOutputField)),
   thread: Schema.optional(

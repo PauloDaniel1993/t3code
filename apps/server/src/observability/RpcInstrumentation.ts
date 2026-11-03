@@ -32,6 +32,7 @@ const RPC_AGGREGATES = {
   [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: "orchestrationV2",
   [WS_METHODS.flowList]: "flow",
   [WS_METHODS.flowSave]: "flow",
+  [WS_METHODS.flowImportImage]: "flow",
   [WS_METHODS.flowRename]: "flow",
   [WS_METHODS.flowDelete]: "flow",
   [WS_METHODS.flowValidate]: "flow",

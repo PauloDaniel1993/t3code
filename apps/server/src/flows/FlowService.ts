@@ -65,6 +65,10 @@ export interface FlowStart {
 export class FlowService extends Context.Service<
   FlowService,
   {
+    readonly importImage: (input: {
+      readonly projectId: ProjectId;
+      readonly attachmentId: string;
+    }) => Effect.Effect<{ path: string }, FlowError>;
     readonly list: (
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyArray<typeof FlowDefinitionEntry.Type>, FlowError>;
@@ -302,7 +306,12 @@ const make = Effect.gen(function* () {
           case "send_reminder": {
             const step = next.stepRuns.find((step) => step.id === action.stepRunId)!;
             if (!action.threadId) return;
+            const definition = stepDefinition(next, step);
             const input = {
+              images:
+                action.type !== "send_reminder" && definition.kind === "agent"
+                  ? definition.images
+                  : undefined,
               creationSource: next.run.creationSource,
               projectId: next.run.projectId,
               threadId: action.threadId,
@@ -393,10 +402,14 @@ const make = Effect.gen(function* () {
         action.type !== "interrupt_turn" &&
         action.type !== "kill_command"
       ) {
+        const error = Cause.squash(result.cause);
         yield* drive(id, {
           type: "action_failed",
           stepRunId: action.stepRunId,
-          error: { code: "other", message: `Flow action ${action.type} failed.` },
+          error: {
+            code: "other",
+            message: isFlowError(error) ? error.message : `Flow action ${action.type} failed.`,
+          },
           at: yield* now,
         });
         next = yield* readState(id);
@@ -551,6 +564,12 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
+    importImage: Effect.fn("FlowService.importImage")(function* ({ projectId, attachmentId }) {
+      const path = yield* definitions
+        .importImage(yield* runtime.root(projectId), attachmentId)
+        .pipe(Effect.mapError(mapError));
+      return { path };
+    }),
     rename: Effect.fn("FlowService.rename")((projectId, flowId, newFlowId) =>
       filesGate.withPermits(1)(
         Effect.gen(function* () {

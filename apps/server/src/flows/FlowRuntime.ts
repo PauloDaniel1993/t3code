@@ -1,3 +1,14 @@
+import * as Schema from "effect/Schema";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { ChatAttachmentId, type ChatImageAttachment } from "@t3tools/contracts";
+import * as Definitions from "./FlowDefinitions.ts";
+import * as ServerConfig from "../config.ts";
+import {
+  attachmentRelativePath,
+  chatAttachmentStableKey,
+  createDeterministicAttachmentId,
+} from "../attachmentStore.ts";
 // @effect-diagnostics redundantMapError:off -- Each adapter operation normalizes failures at its I/O boundary.
 import {
   CommandId,
@@ -40,6 +51,7 @@ export interface FlowThreadInput {
   readonly parentThreadId?: ThreadId;
   readonly messageId?: string;
   readonly prompt?: string;
+  readonly images?: ReadonlyArray<string> | undefined;
   readonly model?: FlowModel | undefined;
   readonly runtimeMode?: RuntimeMode | undefined;
   readonly interactionMode?: ProviderInteractionMode | undefined;
@@ -83,9 +95,14 @@ export class FlowRuntime extends Context.Service<
     readonly events: Stream.Stream<ThreadId, FlowError>;
   }
 >()("t3/flows/FlowRuntime") {}
+const isFlowError = Schema.is(FlowError);
 const failure = (cause?: unknown) =>
   new FlowError({ message: "Flow thread operation failed.", cause });
 const make = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const config = yield* ServerConfig.ServerConfig;
+  const definitions = yield* Definitions.FlowDefinitions;
   const outbox = yield* Outbox.EffectOutboxV2;
   const settings = yield* Settings.ServerSettingsService;
   const launch = yield* ThreadLaunch.ThreadLaunchService;
@@ -107,6 +124,83 @@ const make = Effect.gen(function* () {
         rootThreadId: parent.lineage.rootThreadId,
       },
     });
+  });
+  const sendMessage = Effect.fn("FlowRuntime.sendMessage")(function* (
+    input: FlowThreadInput & { prompt: string; messageId: string },
+    commandId: string,
+    attachments: ChatImageAttachment[],
+  ) {
+    yield* threads
+      .sendToThread({
+        projectId: input.projectId,
+        threadId: input.threadId,
+        commandId: CommandId.make(commandId),
+        messageId: MessageId.make(input.messageId),
+        text: input.prompt,
+        attachments,
+        mode: "queue",
+        createdBy:
+          input.creationSource === "mcp"
+            ? "agent"
+            : input.creationSource === "server"
+              ? "system"
+              : "user",
+        creationSource: input.creationSource ?? "web",
+        ...(input.model
+          ? {
+              modelSelection: {
+                instanceId: ProviderInstanceId.make(input.model.providerInstanceId),
+                model: input.model.model,
+                ...(input.model.options
+                  ? {
+                      options: Object.entries(input.model.options).map(([id, value]) => ({
+                        id,
+                        value,
+                      })),
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      })
+      .pipe(Effect.mapError(failure));
+  });
+  const sendWithImages = Effect.fn("FlowRuntime.sendWithImages")(function* (
+    input: FlowThreadInput & { prompt: string; messageId: string },
+    commandId: string,
+  ) {
+    if (!input.images?.length) return yield* sendMessage(input, commandId, []);
+    const project = yield* projects.getById(input.projectId).pipe(Effect.mapError(failure));
+    if (Option.isNone(project)) return yield* new FlowError({ message: "Project not found." });
+    const files = yield* Effect.forEach(input.images, (image) =>
+      definitions
+        .readImage(project.value.workspaceRoot, image)
+        .pipe(Effect.mapError((cause) => new FlowError({ message: cause.message, cause }))),
+    );
+    // Stable ids per message and bytes let a resent command replay its original receipt.
+    const attachments = yield* Effect.forEach(files, (file, index) =>
+      Effect.gen(function* () {
+        const id = createDeterministicAttachmentId(
+          input.threadId,
+          chatAttachmentStableKey(input.messageId, index, file.bytes),
+        );
+        if (id === null) return yield* failure();
+        const attachment: ChatImageAttachment = {
+          type: "image",
+          id: ChatAttachmentId.make(id),
+          name: input.images![index]!.split("/").at(-1)!,
+          mimeType: file.mimeType,
+          sizeBytes: file.bytes.byteLength,
+        };
+        const target = path.join(config.attachmentsDir, attachmentRelativePath(attachment)!);
+        if (!(yield* fs.exists(target))) {
+          yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+          yield* fs.writeFile(target, file.bytes);
+        }
+        return attachment;
+      }).pipe(Effect.mapError((cause) => (isFlowError(cause) ? cause : failure(cause)))),
+    );
+    yield* sendMessage(input, commandId, attachments);
   });
   return FlowRuntime.of({
     belongsToRun: Effect.fn("FlowRuntime.belongsToRun")(function* (threadId, runId) {
@@ -197,24 +291,10 @@ const make = Effect.gen(function* () {
           Effect.mapError(failure),
         );
       if (input.prompt !== undefined && input.messageId !== undefined) {
-        yield* threads
-          .sendToThread({
-            projectId: input.projectId,
-            threadId: input.threadId,
-            commandId: CommandId.make(`${input.commandId}:message`),
-            messageId: MessageId.make(input.messageId),
-            text: input.prompt,
-            attachments: [],
-            mode: "queue",
-            createdBy:
-              input.creationSource === "mcp"
-                ? "agent"
-                : input.creationSource === "server"
-                  ? "system"
-                  : "user",
-            creationSource: input.creationSource ?? "web",
-          })
-          .pipe(Effect.mapError(failure));
+        yield* sendWithImages(
+          { ...input, prompt: input.prompt, messageId: input.messageId },
+          `${input.commandId}:message`,
+        );
       }
       return (
         result.projection.thread.worktreePath ??
@@ -227,56 +307,26 @@ const make = Effect.gen(function* () {
         ))
       );
     }),
-    send: Effect.fn("FlowRuntime.send")(function* (input) {
-      if (input.runtimeMode)
-        yield* threads.dispatch({
-          type: "thread.runtime-mode.set",
-          commandId: CommandId.make(`${input.commandId}:runtime-mode`),
-          threadId: input.threadId,
-          runtimeMode: input.runtimeMode,
-        });
-      if (input.interactionMode)
-        yield* threads.dispatch({
-          type: "thread.interaction-mode.set",
-          commandId: CommandId.make(`${input.commandId}:interaction-mode`),
-          threadId: input.threadId,
-          interactionMode: input.interactionMode,
-        });
-      yield* threads
-        .sendToThread({
-          projectId: input.projectId,
-          threadId: input.threadId,
-          commandId: CommandId.make(input.commandId),
-          messageId: MessageId.make(input.messageId),
-          text: input.prompt,
-          attachments: [],
-          mode: "queue",
-          createdBy:
-            input.creationSource === "mcp"
-              ? "agent"
-              : input.creationSource === "server"
-                ? "system"
-                : "user",
-          creationSource: input.creationSource ?? "web",
-          ...(input.model
-            ? {
-                modelSelection: {
-                  instanceId: ProviderInstanceId.make(input.model.providerInstanceId),
-                  model: input.model.model,
-                  ...(input.model.options
-                    ? {
-                        options: Object.entries(input.model.options).map(([id, value]) => ({
-                          id,
-                          value,
-                        })),
-                      }
-                    : {}),
-                },
-              }
-            : {}),
-        })
-        .pipe(Effect.asVoid);
-    }, Effect.mapError(failure)),
+    send: Effect.fn("FlowRuntime.send")(
+      function* (input) {
+        if (input.runtimeMode)
+          yield* threads.dispatch({
+            type: "thread.runtime-mode.set",
+            commandId: CommandId.make(`${input.commandId}:runtime-mode`),
+            threadId: input.threadId,
+            runtimeMode: input.runtimeMode,
+          });
+        if (input.interactionMode)
+          yield* threads.dispatch({
+            type: "thread.interaction-mode.set",
+            commandId: CommandId.make(`${input.commandId}:interaction-mode`),
+            threadId: input.threadId,
+            interactionMode: input.interactionMode,
+          });
+        yield* sendWithImages(input, input.commandId);
+      },
+      Effect.mapError((cause) => (isFlowError(cause) ? cause : failure(cause))),
+    ),
     interrupt: Effect.fn("FlowRuntime.interrupt")((projectId, threadId, key) =>
       threads
         .interruptThread({

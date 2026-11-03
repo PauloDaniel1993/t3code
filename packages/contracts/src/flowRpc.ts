@@ -18,6 +18,7 @@ import {
 export const FLOW_WS_METHODS = {
   flowList: "flow.list",
   flowSave: "flow.save",
+  flowImportImage: "flow.importImage",
   flowRename: "flow.rename",
   flowDelete: "flow.delete",
   flowValidate: "flow.validate",
@@ -66,6 +67,10 @@ export const FlowSaveInput = Schema.Struct({
   definition: FlowDefinition,
   baseRevision: Schema.NullOr(Schema.String),
 });
+export const FlowImportImageInput = Schema.Struct({
+  projectId: ProjectId,
+  attachmentId: Schema.String,
+});
 export const FlowRenameInput = Schema.Struct({
   projectId: ProjectId,
   flowId: FlowId,
@@ -92,6 +97,11 @@ export const FlowAnswerApprovalInput = Schema.Struct({
 });
 const error = Schema.Union([FlowError, EnvironmentAuthorizationError]);
 export const FlowRpcs = [
+  Rpc.make(FLOW_WS_METHODS.flowImportImage, {
+    payload: FlowImportImageInput,
+    success: Schema.Struct({ path: Schema.String }),
+    error,
+  }),
   Rpc.make(FLOW_WS_METHODS.flowList, {
     payload: FlowListInput,
     success: FlowListResult,

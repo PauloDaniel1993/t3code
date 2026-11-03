@@ -1,3 +1,13 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Content addressing uses Node SHA-256.
+import * as NodeCrypto from "node:crypto";
+import { PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
+import * as ServerConfig from "../config.ts";
+import { deletePendingAttachment } from "../assets/AttachmentUpload.ts";
+import {
+  parseThreadSegmentFromAttachmentId,
+  parseAttachmentFileExtension,
+  resolveAttachmentPathById,
+} from "../attachmentStore.ts";
 import * as Crypto from "effect/Crypto";
 // @effect-diagnostics preferSchemaOverJson:off -- Stable pretty-printing and snapshot comparison preserve file formatting.
 import * as Context from "effect/Context";
@@ -23,7 +33,9 @@ import {
   validateFlowDefinition,
   serializeFlowDefinition,
   flowDefinitionRevision,
+  flowImageMimeType,
 } from "@t3tools/shared/flow";
+import { imageMimeType } from "@t3tools/shared/image";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import {
   makeWayfinderFiles,
@@ -36,6 +48,7 @@ export class FlowDefinitionError extends Schema.TaggedError<FlowDefinitionError>
   "FlowDefinitionError",
   {
     operation: Schema.String,
+    path: Schema.optional(Schema.String),
     reason: Schema.Literals([
       "io",
       "missing",
@@ -44,6 +57,7 @@ export class FlowDefinitionError extends Schema.TaggedError<FlowDefinitionError>
       "invalid_schema",
       "destination_exists",
       "subscription_limit",
+      "invalid_image",
     ]),
     errors: Schema.optional(Schema.Array(FlowValidationError)),
     cause: Schema.optional(Schema.Defect()),
@@ -52,13 +66,21 @@ export class FlowDefinitionError extends Schema.TaggedError<FlowDefinitionError>
   static readonly is = Schema.is(FlowDefinitionError);
 
   override get message() {
-    return `Flow file ${this.operation}: ${this.reason}.`;
+    return `Flow file ${this.operation}${this.path ? ` "${this.path}"` : ""}: ${this.reason}.`;
   }
 }
 
 export class FlowDefinitions extends Context.Service<
   FlowDefinitions,
   {
+    readonly importImage: (
+      root: string,
+      attachmentId: string,
+    ) => Effect.Effect<string, FlowDefinitionError>;
+    readonly readImage: (
+      root: string,
+      relativePath: string,
+    ) => Effect.Effect<{ bytes: Uint8Array; mimeType: string }, FlowDefinitionError>;
     readonly list: (
       root: string,
     ) => Effect.Effect<ReadonlyArray<typeof FlowDefinitionEntry.Type>, FlowDefinitionError>;
@@ -100,6 +122,7 @@ const decodeId = Schema.decodeSync(FlowId);
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const make = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const crypto = yield* Crypto.Crypto;
   const path = yield* Path.Path;
@@ -301,7 +324,129 @@ const make = Effect.gen(function* () {
         );
       }),
     );
+  const readImage = Effect.fn("FlowDefinitions.readImage")(
+    function* (root: string, relativePath: string) {
+      const mimeType = flowImageMimeType(relativePath);
+      if (!mimeType)
+        return yield* new FlowDefinitionError({
+          operation: "read image",
+          path: relativePath,
+          reason: "invalid_image",
+        });
+      const { real, files } = yield* filesFor(root);
+      const file = yield* files.readBinaryBounded(relativePath, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES);
+      if (!file)
+        return yield* new FlowDefinitionError({
+          operation: "read image",
+          path: relativePath,
+          reason: (yield* fs.exists(path.join(real, relativePath))) ? "unsafe_path" : "missing",
+        });
+      if (file.truncated)
+        return yield* new FlowDefinitionError({
+          operation: "read image",
+          path: relativePath,
+          reason: "too_large",
+        });
+      return { bytes: file.bytes, mimeType };
+    },
+    (effect, _root, relativePath) =>
+      effect.pipe(
+        Effect.mapError((cause) =>
+          FlowDefinitionError.is(cause)
+            ? cause
+            : new FlowDefinitionError({
+                operation: "read image",
+                path: relativePath,
+                reason: "io",
+                cause,
+              }),
+        ),
+      ),
+  );
   return FlowDefinitions.of({
+    readImage,
+    importImage: Effect.fn("FlowDefinitions.importImage")(function* (root, attachmentId) {
+      return yield* wrap(
+        "import image",
+        Effect.gen(function* () {
+          const source =
+            parseThreadSegmentFromAttachmentId(attachmentId) === "pending" &&
+            !parseAttachmentFileExtension(attachmentId)
+              ? resolveAttachmentPathById({ attachmentsDir: config.attachmentsDir, attachmentId })
+              : null;
+          const mimeType = source ? imageMimeType({ name: source, mimeType: "" }) : null;
+          if (!source || !mimeType)
+            return yield* new FlowDefinitionError({
+              operation: "import image",
+              reason: "invalid_image",
+            });
+          if (Number((yield* fs.stat(source)).size) > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)
+            return yield* new FlowDefinitionError({
+              operation: "import image",
+              reason: "too_large",
+            });
+          const bytes = yield* fs.readFile(source);
+          const extension = mimeType === "image/jpeg" ? ".jpg" : `.${mimeType.slice(6)}`;
+          const relativePath = `.t3code/flow/images/${NodeCrypto.createHash("sha256").update(bytes).digest("hex").slice(0, 16)}${extension}`;
+          const { real, files } = yield* filesFor(root);
+          for (const directory of [".t3code", ".t3code/flow", ".t3code/flow/images"]) {
+            const destination = path.join(real, directory);
+            if (!(yield* fs.exists(destination)))
+              yield* fs.makeDirectory(destination).pipe(
+                Effect.catchIf(
+                  (error) => error.reason._tag === "AlreadyExists",
+                  () => Effect.void,
+                ),
+              );
+            if (!(yield* files.resolveDirectory(directory)))
+              return yield* new FlowDefinitionError({
+                operation: "import image",
+                reason: "unsafe_path",
+              });
+          }
+          const target = path.join(real, relativePath);
+          const exists = yield* fs.exists(target);
+          if (exists && !(yield* files.isFile(relativePath)))
+            return yield* new FlowDefinitionError({
+              operation: "import image",
+              reason: "unsafe_path",
+            });
+          // Names are content hashes, so an existing file, or one a concurrent import just
+          // renamed into place (Windows then refuses our rename), already holds these bytes.
+          if (!exists) {
+            const temp = path.join(
+              path.dirname(target),
+              `.image-${yield* crypto.randomUUIDv4()}.tmp`,
+            );
+            yield* fs
+              .writeFile(temp, bytes, { flag: "wx" })
+              .pipe(
+                Effect.andThen(
+                  fs
+                    .rename(temp, target)
+                    .pipe(
+                      Effect.catch((error) =>
+                        fs
+                          .exists(target)
+                          .pipe(
+                            Effect.flatMap((published) =>
+                              published ? Effect.void : Effect.fail(error),
+                            ),
+                          ),
+                      ),
+                    ),
+                ),
+                Effect.ensuring(fs.remove(temp, { force: true }).pipe(Effect.ignore)),
+              );
+          }
+          yield* deletePendingAttachment(attachmentId).pipe(
+            Effect.provideService(ServerConfig.ServerConfig, config),
+            Effect.provideService(FileSystem.FileSystem, fs),
+          );
+          return relativePath;
+        }),
+      );
+    }),
     validate,
     read,
     list,

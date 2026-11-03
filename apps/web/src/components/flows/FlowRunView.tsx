@@ -27,7 +27,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { TextField } from "./FlowFields";
 
-function outputFieldsText(output: FlowOutputFields) {
+export function outputFieldsText(output: FlowOutputFields) {
   switch (output.kind) {
     case "agent":
       return JSON.stringify(output.fields, null, 2);
@@ -53,6 +53,37 @@ function outputText(output: FlowStepOutput | null) {
     case "map":
       return JSON.stringify(output, null, 2);
   }
+}
+
+export function useStepRunOutput(environmentId: EnvironmentId, stepRunId: FlowStepRunState["id"]) {
+  const fetchOutput = useAtomCommand(flowEnvironment.stepRunOutput);
+  const canRead = useAtomValue(flowEnvironment.stepRunOutput.permissionAtom(environmentId));
+  const [output, setOutput] = useState<FlowStepOutput | null>(null);
+  const [loading, setLoading] = useState(canRead);
+  const [error, setError] = useState<string | null>(null);
+  const read = useEffectEvent(async (active: () => boolean) => {
+    setError(null);
+    const result = await fetchOutput({ environmentId, input: { stepRunId } });
+    if (!active()) return;
+    if (result._tag === "Success") setOutput(result.value);
+    else setError(reportFlowFailure(result, "Could not fetch step output"));
+    setLoading(false);
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads persisted output when a step run is opened
+  useEffect(() => {
+    if (!canRead) return;
+    let active = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- publishes output only after the request resolves
+    void read(() => active);
+    return () => {
+      active = false;
+    };
+  }, [canRead]);
+  const refresh = () => {
+    setLoading(true);
+    void read(() => true);
+  };
+  return { output, loading, error, canRead, refresh };
 }
 
 export function FlowRunActions({
@@ -130,33 +161,13 @@ function StepRunDetails({
   snapshot: FlowRunSnapshot;
   stepRun: FlowStepRunState;
 }) {
-  const fetchOutput = useAtomCommand(flowEnvironment.stepRunOutput);
   const retry = useAtomCommand(flowEnvironment.retryStep);
   const answer = useAtomCommand(flowEnvironment.answerApproval);
   const canRetry = useAtomValue(flowEnvironment.retryStep.permissionAtom(environmentId));
   const canAnswer = useAtomValue(flowEnvironment.answerApproval.permissionAtom(environmentId));
-  const canRead = useAtomValue(flowEnvironment.stepRunOutput.permissionAtom(environmentId));
   const [comment, setComment] = useState("");
-  const [output, setOutput] = useState<string | null>(null);
-  const [loadingOutput, setLoadingOutput] = useState(canRead);
-  const [outputError, setOutputError] = useState<string | null>(null);
-  const readOutput = useEffectEvent(async (active: () => boolean) => {
-    const result = await fetchOutput({ environmentId, input: { stepRunId: stepRun.id } });
-    if (!active()) return;
-    if (result._tag === "Success") setOutput(outputText(result.value));
-    else setOutputError(reportFlowFailure(result, "Could not fetch step output"));
-    setLoadingOutput(false);
-  });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads persisted output when a step run is opened
-  useEffect(() => {
-    if (!canRead) return;
-    let active = true;
-    // oxlint-disable-next-line react/set-state-in-effect -- publishes output only after the request resolves
-    void readOutput(() => active);
-    return () => {
-      active = false;
-    };
-  }, [canRead]);
+  const stepOutput = useStepRunOutput(environmentId, stepRun.id);
+  const output = stepOutput.loading ? null : outputText(stepOutput.output);
   const [busy, setBusy] = useState(false);
   const approval = snapshot.approvals.find(
     (entry) => entry.stepRunId === stepRun.id && entry.decision === null,
@@ -200,18 +211,8 @@ function StepRunDetails({
                 size="icon-xs"
                 variant="ghost"
                 aria-label="Refresh step output"
-                disabled={!canRead || loadingOutput}
-                onClick={async () => {
-                  setLoadingOutput(true);
-                  setOutputError(null);
-                  const result = await fetchOutput({
-                    environmentId,
-                    input: { stepRunId: stepRun.id },
-                  });
-                  if (result._tag === "Success") setOutput(outputText(result.value));
-                  else setOutputError(reportFlowFailure(result, "Could not fetch step output"));
-                  setLoadingOutput(false);
-                }}
+                disabled={!stepOutput.canRead || stepOutput.loading}
+                onClick={stepOutput.refresh}
               />
             }
           >
@@ -220,13 +221,13 @@ function StepRunDetails({
           <TooltipPopup>Refresh step output</TooltipPopup>
         </Tooltip>
       </div>
-      {loadingOutput && <Skeleton className="h-16 w-full" />}
-      {outputError && (
+      {stepOutput.loading && <Skeleton className="h-16 w-full" />}
+      {stepOutput.error && (
         <p role="alert" className="text-destructive">
-          {outputError}
+          {stepOutput.error}
         </p>
       )}
-      {output !== null && (
+      {output !== null && !stepOutput.error && stepOutput.canRead && (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-xs">
           {output}
         </pre>

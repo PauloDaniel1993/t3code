@@ -1,8 +1,16 @@
+import { FlowPrompt } from "./FlowPrompt";
 import { X } from "lucide-react";
 import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from "../ui/collapsible";
 /* oxlint-disable react/no-array-index-key -- Form slots are controlled values; their editable names and condition shapes cannot serve as keys. */
-import { createContext, useContext, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import type {
   FlowCondition,
   FlowInput,
@@ -157,7 +165,7 @@ export function Choice({
           if (value !== null) onChange(value);
         }}
       >
-        <SelectTrigger size="xs" aria-label={label}>
+        <SelectTrigger size="compact" aria-label={label}>
           <SelectValue>{labels?.[value] ?? optionLabels[value] ?? value}</SelectValue>
         </SelectTrigger>
         <SelectPopup>
@@ -346,13 +354,13 @@ export function ConditionForm({
         </>
       ) : (
         <>
-          <div className="grid grid-cols-[minmax(0,1fr)_100px_minmax(0,1fr)] items-end gap-2">
-            <TextField
-              label="Reference"
-              mono
-              value={value.ref}
-              onChange={(ref) => onChange({ ...value, ref })}
-            />
+          <TextField
+            label="Reference"
+            mono
+            value={value.ref}
+            onChange={(ref) => onChange({ ...value, ref })}
+          />
+          <div className="grid grid-cols-[9rem_minmax(0,1fr)_9rem] items-end gap-2">
             <Choice
               label="Operator"
               value={value.op}
@@ -372,38 +380,32 @@ export function ConditionForm({
               }}
             />
             {"value" in value && (
-              <ValueField
-                label="Value"
-                value={value.value}
-                onChange={(next) => onChange({ ...value, value: next })}
-              />
-            )}
-          </div>
-          {"value" in value && (
-            <Collapsible>
-              <CollapsibleTrigger render={<Button size="xs" variant="ghost" />}>
-                Value type
-              </CollapsibleTrigger>
-              <CollapsiblePanel>
+              <>
+                <ValueField
+                  label="Value"
+                  value={value.value}
+                  onChange={(next) => onChange({ ...value, value: next })}
+                />
                 <Choice
-                  label="Value type"
+                  label="Type"
                   value={valueType(value.value)}
                   values={valueTypes}
                   onChange={(type) => onChange({ ...value, value: emptyValue(type) })}
                 />
-              </CollapsiblePanel>
-            </Collapsible>
-          )}
+              </>
+            )}
+          </div>
         </>
       )}
-      <div className="flex gap-1">
-        <Button size="xs" variant="ghost" onClick={() => wrap("all")}>
-          + and
+      <div className="flex items-center gap-1.5">
+        <span className="text-2xs text-muted-foreground">Combine</span>
+        <Button size="xs" variant="outline" onClick={() => wrap("all")}>
+          + And
         </Button>
-        <Button size="xs" variant="ghost" onClick={() => wrap("any")}>
-          + or
+        <Button size="xs" variant="outline" onClick={() => wrap("any")}>
+          + Or
         </Button>
-        <Button size="xs" variant="ghost" onClick={() => wrap("not")}>
+        <Button size="xs" variant="outline" onClick={() => wrap("not")}>
           Not
         </Button>
       </div>
@@ -437,7 +439,7 @@ function OutputFieldsForm({
         const update = (next: FlowOutputField) =>
           onChange(fields.map((entry, i) => (i === index ? next : entry)));
         return (
-          <div key={index} className="grid grid-cols-[minmax(0,1fr)_100px_24px] items-end gap-2">
+          <div key={index} className="grid grid-cols-[minmax(0,1fr)_9rem_24px] items-end gap-2">
             <TextField
               label="Output name"
               value={field.name}
@@ -511,7 +513,7 @@ export function InputFieldsForm({
         return (
           <div
             key={index}
-            className="grid grid-cols-[minmax(0,1fr)_90px_auto_24px] items-end gap-2"
+            className="grid grid-cols-[minmax(0,1fr)_9rem_auto_24px] items-end gap-2"
           >
             <TextField
               label="Input name"
@@ -688,7 +690,7 @@ export function StepForm({
   onRename: (id: string) => void;
   errors?: ReadonlyArray<{ path: string; message: string }>;
   step: FlowStep;
-  onChange: (step: FlowStep) => void;
+  onChange: Dispatch<SetStateAction<FlowStep>>;
 }) {
   const [id, setId] = useState(step.id);
   const [idError, setIdError] = useState<string | null>(null);
@@ -720,12 +722,20 @@ export function StepForm({
         </Field>
         {step.kind === "agent" && (
           <>
-            <TextField
-              label="Prompt"
-              multiline
-              value={step.prompt}
-              onChange={(prompt) => onChange({ ...step, prompt })}
-            />
+            <Field label="Prompt">
+              <FlowPrompt
+                prompt={step.prompt}
+                images={step.images ?? []}
+                onPrompt={(prompt) => onChange({ ...step, prompt })}
+                onImages={(update) =>
+                  onChange((current) => {
+                    if (current.kind !== "agent") return current;
+                    const images = update(current.images ?? []);
+                    return { ...current, images: images.length ? images : undefined };
+                  })
+                }
+              />
+            </Field>
             <ModelFields value={step.model} onChange={(model) => onChange({ ...step, model })} />
             <AgentModes value={step} onChange={(modes) => onChange({ ...step, ...modes })} />
             <Choice

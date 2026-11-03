@@ -321,17 +321,21 @@ const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
+const layerFlowDefinitionsProvided = FlowDefinitions.layer.pipe(
+  Layer.provide(WorkspacePaths.layer),
+);
 const layerFlowProvided = FlowService.layer.pipe(
   Layer.provide(FlowLifecycle.layer),
   Layer.provide(
     Layer.mergeAll(
-      FlowDefinitions.layer.pipe(Layer.provide(WorkspacePaths.layer)),
+      layerFlowDefinitionsProvided,
       FlowRunRepository.layer,
       FlowRunLock.layer,
       FlowCommandRunner.layer,
       FlowRuntime.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            layerFlowDefinitionsProvided,
             layerThreadLaunchProvided,
             layerThreadManagementProvided,
             layerProjectService,

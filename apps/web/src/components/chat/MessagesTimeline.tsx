@@ -294,6 +294,8 @@ interface MessagesTimelineProps {
   onFooterGrow?: () => void;
   findOpen?: boolean;
   hideEmptyPlaceholder?: boolean;
+  /** Replaces the empty-thread placeholder, such as a flow run thread's run card. */
+  emptyState?: ReactNode;
   /** Composer space to center the empty state against; held steady through collapse. */
   emptyPlaceholderInset: number;
   topFadeEnabled?: boolean;
@@ -389,6 +391,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   onViewportAttach,
   onFooterGrow,
   hideEmptyPlaceholder = false,
+  emptyState,
   emptyPlaceholderInset,
   topFadeEnabled = false,
   historyControls,
@@ -1273,6 +1276,19 @@ const ConversationTimeline = memo(function ConversationTimeline({
         <>
           {activityAnnouncer}
           <div className="h-full min-h-0 bg-background" data-timeline-loading="true" />
+        </>
+      );
+    }
+    if (emptyState) {
+      return (
+        <>
+          {activityAnnouncer}
+          <div
+            className="h-full min-h-0 overflow-y-auto ps-(--chat-lane-inset-start) pe-(--chat-lane-inset-end)"
+            style={{ paddingBottom: emptyPlaceholderInset }}
+          >
+            {emptyState}
+          </div>
         </>
       );
     }

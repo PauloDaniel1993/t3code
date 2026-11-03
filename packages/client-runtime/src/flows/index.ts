@@ -91,6 +91,22 @@ export function latestStepRunById(snapshot: FlowRunSnapshot) {
   }
   return latest;
 }
+/** Succeeded top-level steps the flow ends on: nothing continues from them unless they fail. */
+export function flowResultStepRuns(snapshot: FlowRunSnapshot) {
+  const continued = new Set(
+    snapshot.definition.edges.filter((edge) => edge.on !== "failure").map((edge) => edge.from),
+  );
+  const latest = [...latestStepAttempts(snapshot).values()];
+  return snapshot.definition.steps.flatMap((step) => {
+    if (continued.has(step.id)) return [];
+    const stepRun = latest.find(
+      (row) =>
+        row.parentStepRunId === null && row.stepPath.length === 1 && row.stepPath[0] === step.id,
+    );
+    return stepRun?.status === "succeeded" ? [{ step, stepRun }] : [];
+  });
+}
+
 export function flowStepRunList(snapshot: FlowRunSnapshot) {
   const byId = new Map(snapshot.stepRuns.map((row) => [row.id, row]));
   const children = new Map<string | null, FlowStepRunState[]>();
@@ -309,6 +325,10 @@ export function createFlowEnvironmentAtoms<R, E>(
     runsPage: createEnvironmentRpcCommand(runtime, {
       label: "flows:runs-page",
       tag: FLOW_WS_METHODS.flowRunsPage,
+    }),
+    importImage: createEnvironmentRpcCommand(runtime, {
+      label: "flows:import-image",
+      tag: FLOW_WS_METHODS.flowImportImage,
     }),
     save: createEnvironmentRpcCommand(runtime, {
       label: "flows:save",

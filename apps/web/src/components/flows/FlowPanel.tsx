@@ -968,8 +968,18 @@ function FlowEditor({
                         setSelection({ kind: "step", id });
                       }}
                       onChange={(next) => {
-                        change({ ...draft, steps: updateStep(draft.steps, step.id, () => next) });
-                        if (next.id !== step.id) setSelection({ kind: "step", id: next.id });
+                        // Concurrent image imports can resolve before this editor re-renders.
+                        const current = draftStore.getSnapshot().definition;
+                        let id = step.id;
+                        change({
+                          ...current,
+                          steps: updateStep(current.steps, step.id, (previous) => {
+                            const updated = typeof next === "function" ? next(previous) : next;
+                            id = updated.id;
+                            return updated;
+                          }),
+                        });
+                        if (id !== step.id) setSelection({ kind: "step", id });
                       }}
                     />
                     <Button

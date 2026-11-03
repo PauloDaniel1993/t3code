@@ -1,4 +1,12 @@
-import { createContext, memo, useContext, useState, useEffect, useRef } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useState,
+  useEffect,
+  useEffectEvent,
+  useRef,
+} from "react";
 import {
   applyNodeChanges,
   Background,
@@ -9,6 +17,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  type FitViewOptions,
   type NodeProps,
 } from "@xyflow/react";
 import type {
@@ -21,6 +30,8 @@ import { flowStepStatusById, flowStepCountsById } from "@t3tools/client-runtime/
 import { useTheme } from "../../hooks/useTheme";
 import { Button } from "../ui/button";
 import {
+  CONTAINER_HEADER,
+  conditionLabel,
   stepIdAtPath,
   flowGraph,
   dropTarget,
@@ -30,7 +41,7 @@ import {
   type FlowNode,
 } from "./flowGraph";
 import { FlowKindIcon, FlowStepStatus } from "./FlowStepStatus";
-import { Plus, TriangleAlert } from "lucide-react";
+import { Image, Plus, TriangleAlert } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../ui/menu";
 import { cn } from "../../lib/utils";
@@ -38,17 +49,86 @@ const FlowRunContext = createContext<ReadonlyMap<string, FlowStepRunStatus>>(new
 const FlowCountsContext = createContext<
   ReadonlyMap<string, { total: number; succeeded: number; failed: number }>
 >(new Map());
+function stepSummary(step: FlowStep) {
+  switch (step.kind) {
+    case "agent":
+      return `${step.model?.model || "Inherits model"} · ${step.prompt.split("\n")[0]}`;
+    case "command":
+      return step.command.split("\n")[0];
+    case "approval":
+      return step.prompt.split("\n")[0] || "Approve or reject + comment";
+    case "loop":
+      // A new loop starts with an empty condition; label it once it names a ref.
+      return "ref" in step.until && !step.until.ref
+        ? `Up to ${step.maxIterations} iterations`
+        : `Up to ${step.maxIterations} iterations · until ${conditionLabel(step.until)}`;
+    case "map":
+      return `For each in ${step.over} · ${step.concurrency ?? 1} at a time`;
+  }
+}
 const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProps<FlowNode>) {
   const status = useContext(FlowRunContext).get(id);
   const count = useContext(FlowCountsContext).get(id);
   const container = data.step.kind === "loop" || data.step.kind === "map";
+  const title = (
+    <div className="flex items-center gap-2">
+      <FlowKindIcon kind={data.step.kind} />
+      <span className="truncate font-medium">{data.step.id}</span>
+      {data.errors?.length ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span tabIndex={0} aria-label="Step problems" aria-describedby={`${id}-errors`} />
+            }
+          >
+            <TriangleAlert className="size-3.5 text-destructive" />
+          </TooltipTrigger>
+          <TooltipPopup>
+            <span>{data.errors.join("; ")}</span>
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {data.step.kind === "agent" && !!data.step.images?.length && (
+        <span
+          className="flex items-center gap-1 text-3xs text-muted-foreground"
+          aria-label={`${data.step.images.length} images`}
+        >
+          <Image className="size-3" />
+          {data.step.images.length}
+        </span>
+      )}
+      <span className="ml-auto text-3xs text-muted-foreground">{data.step.kind}</span>
+    </div>
+  );
+  const summary = (
+    <p
+      className={cn(
+        "mt-1 truncate text-3xs text-muted-foreground",
+        data.step.kind === "command" && "font-mono",
+      )}
+    >
+      {stepSummary(data.step)}
+    </p>
+  );
+  const runStatus = status && (
+    <div className="mt-1 flex items-center gap-2">
+      <FlowStepStatus status={status} />
+      {count && count.total > 1 && (
+        <span className="text-3xs text-muted-foreground">
+          {count.succeeded}/{count.total} succeeded
+        </span>
+      )}
+    </div>
+  );
   return (
     <div
       data-step-status={status ?? "editing"}
       data-drop-target={data.dropTarget || undefined}
       className={cn(
-        "h-full rounded-xl border px-3 py-2 text-xs text-card-foreground shadow-xs",
-        container ? "min-h-full border-dashed border-border bg-muted/40" : "h-20 w-56 bg-card",
+        "h-full rounded-xl border text-xs text-card-foreground shadow-xs",
+        container
+          ? "flex min-h-full flex-col border-foreground/15 bg-muted/30 dark:bg-muted/15"
+          : "h-20 w-56 bg-card px-3 py-2",
         data.dropTarget && "ring-2 ring-primary/40",
         selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
         (status === "skipped" || status === "cancelled") && "opacity-60",
@@ -60,50 +140,26 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
       )}
     >
       <Handle type="target" position={Position.Top} />
-      <div className="flex items-center gap-2">
-        <FlowKindIcon kind={data.step.kind} />
-        <span className="truncate font-medium">{data.step.id}</span>
-        {data.errors?.length ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <span tabIndex={0} aria-label="Step problems" aria-describedby={`${id}-errors`} />
-              }
-            >
-              <TriangleAlert className="size-3.5 text-destructive" />
-            </TooltipTrigger>
-            <TooltipPopup>
-              <span>{data.errors.join("; ")}</span>
-            </TooltipPopup>
-          </Tooltip>
-        ) : null}
-        <span className="ml-auto text-3xs text-muted-foreground">{data.step.kind}</span>
-      </div>
-      <p
-        className={cn(
-          "mt-1 truncate text-3xs text-muted-foreground",
-          data.step.kind === "command" && "font-mono",
-        )}
-      >
-        {data.step.kind === "agent"
-          ? `${data.step.model?.model || "Inherits model"} · ${data.step.prompt.split("\n")[0]}`
-          : data.step.kind === "command"
-            ? data.step.command.split("\n")[0]
-            : data.step.kind === "approval"
-              ? data.step.prompt.split("\n")[0] || "Approve or reject + comment"
-              : data.step.kind === "loop"
-                ? `Up to ${data.step.maxIterations} iterations`
-                : `Over ${data.step.over} · ×${data.step.concurrency ?? 1}`}
-      </p>
-      {status && (
-        <div className="mt-1 flex items-center gap-2">
-          <FlowStepStatus status={status} />
-          {count && count.total > 1 && (
-            <span className="text-3xs text-muted-foreground">
-              {count.succeeded}/{count.total} succeeded
-            </span>
-          )}
-        </div>
+      {container ? (
+        <>
+          <div
+            className="flex shrink-0 flex-col justify-center rounded-t-xl border-b border-foreground/10 bg-card/60 px-3"
+            style={{ height: CONTAINER_HEADER }}
+          >
+            {title}
+            {status ? runStatus : summary}
+          </div>
+          {(data.step.kind === "loop" || data.step.kind === "map") &&
+            data.step.steps.length === 0 && (
+              <p className="m-auto text-3xs text-muted-foreground">Drag steps here</p>
+            )}
+        </>
+      ) : (
+        <>
+          {title}
+          {summary}
+          {runStatus}
+        </>
       )}
       {!!data.errors?.length && (
         <span id={`${id}-errors`} className="sr-only">
@@ -197,14 +253,30 @@ function Canvas({
     selectedY += ancestor.position.y;
     ancestorId = ancestor.parentId;
   }
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- positions the external canvas viewport above the overlay inspector
-  useEffect(() => {
+  const revealSelected = () => {
     if (selectedX === undefined || selectedY === undefined || !wrapper.current) return;
-    const zoom = getViewport().zoom;
-    void setCenter(selectedX + 112, selectedY + 40 + (wrapper.current.clientHeight * 0.22) / zoom, {
-      zoom,
-    });
-  }, [selectedX, selectedY, setCenter, getViewport]);
+    const { x, y, zoom } = getViewport();
+    const left = selectedX * zoom + x;
+    const top = selectedY * zoom + y;
+    const { clientWidth, clientHeight } = wrapper.current;
+    if (
+      left >= 0 &&
+      top >= 0 &&
+      left + 224 * zoom <= clientWidth &&
+      top + 80 * zoom <= clientHeight * 0.55
+    )
+      return;
+    void setCenter(selectedX + 112, selectedY + 40 + (clientHeight * 0.22) / zoom, { zoom });
+  };
+  // Grabbing a step selects it on pointer down; panning then would fling the dragged step away.
+  const pointerSelection = useRef<string | null>(null);
+  const onSelectionChange = useEffectEvent((id: string | null) => {
+    const fromPointer = id !== null && id === pointerSelection.current;
+    pointerSelection.current = null;
+    if (id !== null && !fromPointer) revealSelected();
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- brings a step selected elsewhere into view above the overlay inspector
+  useEffect(() => onSelectionChange(selectedId), [selectedId]);
   const parent =
     selectedNode &&
     (selectedNode.data.step.kind === "loop" || selectedNode.data.step.kind === "map")
@@ -253,6 +325,11 @@ function Canvas({
     onChange(position ? { ...next, layout: { ...next.layout, [step.id]: position } } : next);
     onSelectStep(step.id);
   };
+  // Small flows otherwise zoom past 1:1; the left inset keeps the palette off the first step.
+  const fitViewOptions: FitViewOptions = {
+    maxZoom: 1,
+    padding: locked ? "24px" : { top: "24px", right: "24px", bottom: "24px", left: "144px" },
+  };
   return (
     <FlowRunContext value={currentRun.statuses}>
       <FlowCountsContext value={currentRun.counts}>
@@ -297,26 +374,26 @@ function Canvas({
             nodeTypes={nodeTypes}
             colorMode={resolvedTheme}
             fitView
-            // Small flows otherwise zoom past 1:1; the left inset keeps the palette off the first step.
-            fitViewOptions={{
-              maxZoom: 1,
-              padding: locked
-                ? "24px"
-                : { top: "24px", right: "24px", bottom: "24px", left: "144px" },
-            }}
+            fitViewOptions={fitViewOptions}
             minZoom={0.1}
             maxZoom={1.6}
             nodesDraggable={!locked}
             nodesConnectable={!locked}
             edgesReconnectable={!locked}
             deleteKeyCode={null}
-            onNodeClick={(_, node) => onSelectStep(node.id)}
+            onNodeClick={(_, node) => {
+              onSelectStep(node.id);
+              if (node.id === selectedId) revealSelected();
+            }}
             onEdgeClick={(_, edge) => onSelectEdge(edge.id)}
             onNodesChange={(changes) => {
               const selected = changes.find(
                 (change) => change.type === "select" && change.selected,
               );
-              if (selected?.type === "select") onSelectStep(selected.id);
+              if (selected?.type === "select") {
+                pointerSelection.current = selected.id;
+                onSelectStep(selected.id);
+              }
               const nextNodes = applyNodeChanges(changes, graph.nodes);
               setGraphState({ definition, graph: { ...graph, nodes: nextNodes } });
               if (locked) return;
@@ -380,7 +457,11 @@ function Canvas({
               </Panel>
             )}
             <Background gap={18} size={1} />
-            <Controls showInteractive={false} position="top-right" />
+            <Controls
+              showInteractive={false}
+              position="top-right"
+              fitViewOptions={fitViewOptions}
+            />
             {!locked && (
               <Panel position="top-left">
                 <div className="hidden min-w-32 flex-col gap-0.5 rounded-xl border border-border bg-popover p-1.5 shadow-lg @min-[24rem]:flex">

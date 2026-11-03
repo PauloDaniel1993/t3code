@@ -279,7 +279,7 @@ import { ThreadTimeline } from "./chat/ThreadTimeline";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
-import { FlowRunThreadCard } from "./flows/FlowRunThreadCard";
+import { FlowRunThreadCard, useFlowRunThreadRole } from "./flows/FlowRunThreadCard";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
@@ -1549,6 +1549,9 @@ export default function ChatView(props: ChatViewProps) {
     entry.kind === "message" ? [entry.message] : [],
   );
   const timelineEmpty = timelineEntries.length === 0 && !hasStreamedTimelineRows;
+  // A flow run thread gets no messages from its flow, so its run card fills the empty timeline.
+  const flowRunFillsTimeline =
+    useFlowRunThreadRole(activeThreadRef) === "flow_run_thread" && timelineEmpty;
   const displayedTimelineKey = activeThreadKey ?? routeThreadKey;
   const displayedThreadRef = parseScopedThreadKey(displayedTimelineKey);
   const {
@@ -2435,6 +2438,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThread,
     activeThreadId,
     activeThreadRef,
+    threadDetailRef: routeThreadDetailRef,
     activeThreadKey,
     activeThreadShell,
     activeLatestRun,
@@ -3315,7 +3319,9 @@ export default function ChatView(props: ChatViewProps) {
           />
         </header>
 
-        {activeThreadRef && activeProject && <FlowRunThreadCard threadRef={activeThreadRef} />}
+        {activeThreadRef && activeProject && !flowRunFillsTimeline && (
+          <FlowRunThreadCard threadRef={activeThreadRef} />
+        )}
         <div className="relative flex min-h-0 min-w-0 flex-1">
           <ThreadFindCanvas
             findOptions={{
@@ -3444,6 +3450,9 @@ export default function ChatView(props: ChatViewProps) {
                 onViewportAttach={attachTimelineViewport}
                 onFooterGrow={onTimelineFooterGrowStable}
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
+                {...(flowRunFillsTimeline && activeThreadRef
+                  ? { emptyState: <FlowRunThreadCard threadRef={activeThreadRef} page /> }
+                  : {})}
                 emptyPlaceholderInset={composerReservedHeight}
                 topFadeEnabled={!hasTimelineTopBanner}
                 {...(threadHistoryControls === undefined

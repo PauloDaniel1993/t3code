@@ -74,6 +74,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // A link lets every agent here reach the other environment: Settings' bar.
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
   [WS_METHODS.flowSave]: AuthFilesystemWriteScope,
+  [WS_METHODS.flowImportImage]: AuthFilesystemWriteScope,
   [WS_METHODS.flowRename]: AuthFilesystemWriteScope,
   [WS_METHODS.flowDelete]: AuthFilesystemWriteScope,
   [WS_METHODS.flowStart]: AuthOrchestrationOperateScope,

@@ -3,6 +3,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 // @effect-diagnostics nodeBuiltinImport:off - tests plant filesystem escapes in isolated fixtures.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeFSP from "node:fs/promises";
+import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -434,6 +435,66 @@ describe("signed attachment ownership", () => {
         );
         expect(error._tag).toBe("AssetAttachmentNotFoundError");
       }
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  const pageId = `${ownerId}-00000000-0000-4000-8000-000000000002-html`;
+  const htmlRender = { attachmentId: pageId, title: "Page", height: 200 };
+  it.effect.each([
+    { shape: "html_render", toolName: "t3-code.html_render", output: { htmlRender } },
+    {
+      shape: "a provider's text envelope",
+      toolName: "mcp__t3-code__html_render",
+      output: { content: JSON.stringify({ htmlRender }) },
+    },
+    {
+      shape: "an MCP App",
+      toolName: "apps.show",
+      output: {
+        [MCP_APP_OUTPUT_KEY]: {
+          attachmentId: pageId,
+          server: "apps",
+          tool: "show",
+          resourceUri: "ui://apps/show",
+        },
+      },
+    },
+  ])("serves a page published through $shape until its thread is deleted", ({ toolName, output }) =>
+    Effect.gen(function* () {
+      const thread = yield* createThread();
+      const attachmentId = pageId;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const file = path.join(config.attachmentsDir, `${attachmentId}.html`);
+      yield* fs.writeFileString(file, "<p>page</p>");
+      const sql = yield* SqlClient.SqlClient;
+      const now = DateTime.formatIso(yield* DateTime.now);
+      const itemId = TurnItemId.make("tool:page");
+      // The tool item starts without output; the page arrives on completion.
+      yield* sql`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json)
+        VALUES (${itemId}, ${ownerId}, 1, 'dynamic_tool', 'running', ${now}, ${encodeJson({ toolName, input: {} })})`;
+      const pageIssue = () =>
+        issueAssetUrl({
+          resource: {
+            _tag: "attachment",
+            attachmentId,
+            mimeType: "text/html",
+            disposition: "inline",
+          },
+        });
+      expect((yield* pageIssue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
+      yield* sql`UPDATE orchestration_v2_projection_turn_items
+        SET status = 'completed', payload_json = ${encodeJson({ toolName, input: {}, output })}
+        WHERE turn_item_id = ${itemId}`;
+      const issued = yield* pageIssue();
+      expect(yield* resolveAsset(tokenOf(issued.relativeUrl), "page.html")).toMatchObject({
+        kind: "file",
+        path: file,
+      });
+      yield* deleteThread(thread);
+      expect(yield* resolveAsset(tokenOf(issued.relativeUrl), "page.html")).toBeNull();
+      expect((yield* pageIssue().pipe(Effect.flip))._tag).toBe("AssetAttachmentNotFoundError");
     }).pipe(Effect.provide(testLayer)),
   );
 

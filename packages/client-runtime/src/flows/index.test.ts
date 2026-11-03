@@ -14,6 +14,7 @@ import {
   type FlowStepRunState,
 } from "@t3tools/contracts";
 import {
+  flowResultStepRuns,
   flowStepRunList,
   flowStepStatusById,
   latestFlowRuns,
@@ -112,6 +113,33 @@ describe("flow views", () => {
     expect(flowStepRunList(snapshot).map((step) => step.id)).toEqual([first.id, retry.id]);
     expect(flowStepStatusById(snapshot).get("review")).toBe("running");
     expect(snapshot.stepRuns).toEqual([retry, first]);
+  });
+  it("reports the latest succeeded attempt of each step the flow ends on", () => {
+    const command = (id: string) => ({ id, kind: "command" as const, command: "true" });
+    const definition = {
+      ...base.definition,
+      steps: [command("plan"), command("build"), command("recover"), command("lint")],
+      edges: [
+        { from: "plan", to: "build" },
+        { from: "build", to: "recover", on: "failure" as const },
+      ],
+    };
+    const stepRuns = [
+      step("plan-1", { stepPath: ["plan"], status: "succeeded" }),
+      step("build-1", { stepPath: ["build"], status: "failed" }),
+      step("build-2", {
+        stepPath: ["build"],
+        attempt: 2,
+        status: "succeeded",
+        createdAt: "2026-01-01T00:00:01Z",
+      }),
+      step("recover-1", { stepPath: ["recover"], status: "skipped" }),
+      step("lint-1", { stepPath: ["lint"], status: "failed" }),
+    ];
+    const result = flowResultStepRuns({ ...base, definition, summary, approvals: [], stepRuns });
+    expect(result.map(({ step, stepRun }) => [step.id, stepRun.id])).toEqual([
+      ["build", "build-2"],
+    ]);
   });
   it.each(["running", "succeeded"] as const)(
     "labels a map item with its total while %s",

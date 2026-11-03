@@ -68,32 +68,35 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
-  it.effect.each([WS_METHODS.flowSave, WS_METHODS.flowRename, WS_METHODS.flowDelete])(
-    "requires the destination filesystem grant for %s",
-    (method) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const registry = yield* setup;
-          const permission = createCommandPermissions(runtime, method);
-          registry.set(sessions(env), AsyncResult.success(grant(true)));
-          expect(registry.get(permission.permissionAtom(env))).toBe(false);
-          expect(
-            (yield* permission.authorize(registry, env).pipe(Effect.flip)).requiredPermission,
-          ).toBe(AuthFilesystemWriteScope);
-          registry.set(
-            sessions(env),
-            AsyncResult.success({
-              ...grant(false),
-              scopes: [AuthFilesystemWriteScope],
-              permissions: [AuthFilesystemWriteScope],
-            }),
-          );
-          expect(registry.get(permission.permissionAtom(env))).toBe(true);
-          yield* permission.authorize(registry, env);
-          registry.set(sessions(other), AsyncResult.success(grant(false)));
-          expect(registry.get(permission.permissionAtom(other))).toBe(false);
-        }),
-      ),
+  it.effect.each([
+    WS_METHODS.flowImportImage,
+    WS_METHODS.flowSave,
+    WS_METHODS.flowRename,
+    WS_METHODS.flowDelete,
+  ])("requires the destination filesystem grant for %s", (method) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const permission = createCommandPermissions(runtime, method);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(permission.permissionAtom(env))).toBe(false);
+        expect(
+          (yield* permission.authorize(registry, env).pipe(Effect.flip)).requiredPermission,
+        ).toBe(AuthFilesystemWriteScope);
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthFilesystemWriteScope],
+            permissions: [AuthFilesystemWriteScope],
+          }),
+        );
+        expect(registry.get(permission.permissionAtom(env))).toBe(true);
+        yield* permission.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(permission.permissionAtom(other))).toBe(false);
+      }),
+    ),
   );
   it.effect("requires the destination preview grant to close a browser tab", () =>
     Effect.scoped(

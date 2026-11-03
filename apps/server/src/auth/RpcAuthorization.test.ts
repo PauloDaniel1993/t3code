@@ -52,6 +52,7 @@ describe("RPC authorization scopes", () => {
     [WS_METHODS.flowRunForThread, AuthOrchestrationReadScope],
     [WS_METHODS.flowStepRunOutput, AuthOrchestrationReadScope],
     [WS_METHODS.flowSave, AuthFilesystemWriteScope],
+    [WS_METHODS.flowImportImage, AuthFilesystemWriteScope],
     [WS_METHODS.flowRename, AuthFilesystemWriteScope],
     [WS_METHODS.flowDelete, AuthFilesystemWriteScope],
     [WS_METHODS.flowStart, AuthOrchestrationOperateScope],

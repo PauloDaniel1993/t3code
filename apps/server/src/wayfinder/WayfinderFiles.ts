@@ -48,6 +48,17 @@ export interface WayfinderFiles {
   readonly isFile: (
     relativePath: string,
   ) => Effect.Effect<boolean, WorkspacePaths.WorkspacePathOutsideRootError>;
+  readonly readBinaryBounded: (
+    relativePath: string,
+    byteLimit: number,
+  ) => Effect.Effect<
+    {
+      readonly relativePath: string;
+      readonly bytes: Uint8Array;
+      readonly truncated: boolean;
+    } | null,
+    WorkspacePaths.WorkspacePathOutsideRootError
+  >;
   readonly readBounded: (
     relativePath: string,
     byteLimit: number,
@@ -220,64 +231,84 @@ export const makeWayfinderFiles = Effect.fn("WayfinderFiles.make")(function* (
     },
   );
 
-  const readBounded: WayfinderFiles["readBounded"] = Effect.fn("WayfinderFiles.readBounded")(
-    function* (relativePath, byteLimit) {
-      const target = yield* contain(relativePath, false);
-      if (!target) {
+  const readBinaryBounded: WayfinderFiles["readBinaryBounded"] = Effect.fn(
+    "WayfinderFiles.readBinaryBounded",
+  )(function* (relativePath, byteLimit) {
+    const target = yield* contain(relativePath, false);
+    if (!target) {
+      return null;
+    }
+    // True when the open handle is the file that was checked; see the guarantees above.
+    const heldInsideRoot = (handle: NodeFSP.FileHandle, held: NodeFS.BigIntStats) =>
+      platform === "linux"
+        ? nodeCall(() => NodeFSP.readlink(`/proc/self/fd/${handle.fd}`)).pipe(
+            Effect.map((heldPath) => heldPath === target.absolutePath),
+          )
+        : Effect.gen(function* () {
+            const again = yield* contain(relativePath, true);
+            if (again?.absolutePath !== target.absolutePath) {
+              return false;
+            }
+            const onDisk = yield* nodeCall(() =>
+              NodeFSP.stat(target.absolutePath, { bigint: true }),
+            );
+            return onDisk.dev === held.dev && onDisk.ino === held.ino;
+          });
+    const attempt = Effect.gen(function* () {
+      const handle = yield* Effect.acquireRelease(
+        nodeCall(() => NodeFSP.open(target.absolutePath, "r")),
+        (handle) => Effect.promise(() => handle.close().catch(() => undefined)),
+      );
+      const held = yield* nodeCall(() => handle.stat({ bigint: true }));
+      if (!held.isFile()) {
         return null;
       }
-      // True when the open handle is the file that was checked; see the guarantees above.
-      const heldInsideRoot = (handle: NodeFSP.FileHandle, held: NodeFS.BigIntStats) =>
-        platform === "linux"
-          ? nodeCall(() => NodeFSP.readlink(`/proc/self/fd/${handle.fd}`)).pipe(
-              Effect.map((heldPath) => heldPath === target.absolutePath),
-            )
-          : Effect.gen(function* () {
-              const again = yield* contain(relativePath, true);
-              if (again?.absolutePath !== target.absolutePath) {
-                return false;
-              }
-              const onDisk = yield* nodeCall(() =>
-                NodeFSP.stat(target.absolutePath, { bigint: true }),
-              );
-              return onDisk.dev === held.dev && onDisk.ino === held.ino;
-            });
-      const attempt = Effect.gen(function* () {
-        const handle = yield* Effect.acquireRelease(
-          nodeCall(() => NodeFSP.open(target.absolutePath, "r")),
-          (handle) => Effect.promise(() => handle.close().catch(() => undefined)),
-        );
-        const held = yield* nodeCall(() => handle.stat({ bigint: true }));
-        if (!held.isFile()) {
-          return null;
-        }
-        if (!(yield* heldInsideRoot(handle, held))) {
-          yield* Effect.logWarning("Wayfinder refused a file that changed while it was opened", {
-            relativePath: target.relativePath,
-          });
-          return null;
-        }
-        const truncated = held.size > BigInt(byteLimit);
-        const buffer = new Uint8Array(truncated ? byteLimit : Number(held.size));
-        const { bytesRead } = yield* nodeCall(() => handle.read(buffer, 0, buffer.length, 0));
-        return {
+      if (!(yield* heldInsideRoot(handle, held))) {
+        yield* Effect.logWarning("Wayfinder refused a file that changed while it was opened", {
           relativePath: target.relativePath,
-          contents: new TextDecoder("utf-8").decode(buffer.subarray(0, bytesRead)),
-          truncated,
-        } satisfies WayfinderMarkdownFile;
-      });
-      return yield* attempt.pipe(
-        Effect.scoped,
-        Effect.catchTags({
-          WayfinderNodeFileError: (cause) =>
-            (isAbsent(cause.code)
-              ? Effect.void
-              : logProbeFailure("bounded-read", target.relativePath, cause.code ?? "unknown")
-            ).pipe(Effect.as<WayfinderMarkdownFile | null>(null)),
-        }),
-      );
+        });
+        return null;
+      }
+      const truncated = held.size > BigInt(byteLimit);
+      const buffer = new Uint8Array(truncated ? byteLimit : Number(held.size));
+      const { bytesRead } = yield* nodeCall(() => handle.read(buffer, 0, buffer.length, 0));
+      return {
+        relativePath: target.relativePath,
+        bytes: buffer.subarray(0, bytesRead),
+        truncated,
+      };
+    });
+    return yield* attempt.pipe(
+      Effect.scoped,
+      Effect.catchTags({
+        WayfinderNodeFileError: (cause) =>
+          (isAbsent(cause.code)
+            ? Effect.void
+            : logProbeFailure("bounded-read", target.relativePath, cause.code ?? "unknown")
+          ).pipe(
+            Effect.as<{ relativePath: string; bytes: Uint8Array; truncated: boolean } | null>(null),
+          ),
+      }),
+    );
+  });
+
+  const readBounded: WayfinderFiles["readBounded"] = Effect.fn("WayfinderFiles.readBounded")(
+    function* (relativePath, byteLimit) {
+      const file = yield* readBinaryBounded(relativePath, byteLimit);
+      return file
+        ? {
+            relativePath: file.relativePath,
+            contents: new TextDecoder("utf-8").decode(file.bytes),
+            truncated: file.truncated,
+          }
+        : null;
     },
   );
-
-  return { resolveDirectory, listDirectory, isFile, readBounded } satisfies WayfinderFiles;
+  return {
+    resolveDirectory,
+    listDirectory,
+    isFile,
+    readBounded,
+    readBinaryBounded,
+  } satisfies WayfinderFiles;
 });

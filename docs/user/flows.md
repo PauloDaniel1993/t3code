@@ -13,3 +13,5 @@ Choose **Schedule…** in the Flow panel, or select **Flow** when creating a sch
 Loops require `maxIterations`; reaching it completes the loop successfully even when its `until` condition is not met. Joins wait for incoming edges to be resolved, then wait only for the branches actually taken; a step with no taken incoming edge is skipped. Agent steps use a new thread by default. Use `sameAs` to continue an earlier agent step's thread, or `continue` inside a loop to reuse that step's thread between iterations.
 
 Prompts can reference inputs and earlier outputs, such as `{{inputs.issue}}` or `{{steps.review.output.text}}`. Loop outputs nest final-iteration results under `steps.<loop>.output.steps.<innerStep>`. Missing values render as empty text. Command text is literal: pass dynamic values through the command step's `env` map and read those variables in your shell. Lists in environment variables are joined with newlines.
+
+Agent step prompts can include images; pasted images are saved under `.t3code/flow/images/` so they can be versioned with the flow.

@@ -1,3 +1,5 @@
+import * as ServerConfig from "../config.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as Lifecycle from "./FlowLifecycle.ts";
 import * as Outbox from "../orchestration-v2/EffectOutbox.ts";
 import * as Settings from "../serverSettings.ts";
@@ -153,6 +155,10 @@ it.effect(
           reason: "fixture",
         });
         const runtime = Runtime.layer.pipe(
+          Layer.provide(Layer.mock(Definitions.FlowDefinitions)({})),
+          Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-flow-runtime-" })),
+          Layer.provide(Layer.mock(DocumentText.DocumentText)({})),
+          Layer.provide(NodeServices.layer),
           Layer.provide(
             Layer.mergeAll(
               Layer.mock(Instances.ProviderInstanceRegistry)({

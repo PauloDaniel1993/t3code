@@ -1,3 +1,4 @@
+import { imageMimeType } from "./image.ts";
 import { sha256 } from "@noble/hashes/sha2";
 import * as SchemaParser from "effect/SchemaParser";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -407,6 +408,16 @@ const decodeDefinition = SchemaParser.decodeUnknownResult(FlowDefinition, {
   onExcessProperty: "error",
 });
 const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1();
+/** The MIME type of a project-relative flow image path, or null when the path is not one. */
+export function flowImageMimeType(path: string) {
+  return path.startsWith("/") ||
+    path.includes("\\") ||
+    path.includes(":") ||
+    path.split("/").includes("..")
+    ? null
+    : imageMimeType({ name: path, mimeType: "" });
+}
+
 export function validateFlowDefinition(
   value: unknown,
   options: { readonly knownProviderInstanceIds?: ReadonlySet<string> } = {},
@@ -559,6 +570,16 @@ export function validateFlowDefinition(
       });
       if (ancestors(step.id).has(step.id)) fail(`${p}.id`, "Cycle at this graph level");
       if (step.kind === "agent") {
+        const images = new Set<string>();
+        step.images?.forEach((image, index) => {
+          if (!flowImageMimeType(image))
+            fail(
+              `${p}.images[${index}]`,
+              "Expected a project-relative PNG, JPEG, GIF or WebP path without parent segments or backslashes",
+            );
+          if (images.has(image)) fail(`${p}.images[${index}]`, "Duplicate image path");
+          images.add(image);
+        });
         checkModel(step.model, `${p}.model`);
         if (step.thread === "continue" && !scope.canContinue)
           fail(`${p}.thread`, "Continue requires a loop");

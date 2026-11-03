@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Hash independently; junctions need Node's symlink type.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import { createPendingAttachmentId } from "../attachmentStore.ts";
+import * as ServerConfig from "../config.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { flowDefinitionRevision } from "@t3tools/shared/flow";
@@ -29,6 +34,9 @@ const registry = Layer.effect(
 );
 const dependencies = Layer.mergeAll(
   NodeServices.layer,
+  ServerConfig.layerTest(process.cwd(), { prefix: "t3-flow-images-" }).pipe(
+    Layer.provide(NodeServices.layer),
+  ),
   registry,
   WorkspacePaths.layer.pipe(Layer.provide(NodeServices.layer)),
 );
@@ -222,3 +230,67 @@ it.each([
 ] as const)("filters watch events %s %s %s", (directory, event, name, expected) => {
   expect(FlowDefinitions.isFlowFileChange(directory, event, name)).toBe(expected);
 });
+
+it.effect(
+  "imports content-addressed images, consumes pending uploads and rejects files, missing images and links out of the root",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-flow-import-" });
+      const definitions = yield* FlowDefinitions.FlowDefinitions;
+      const bytes = new Uint8Array([137, 80, 78, 71, 0, 255, 128]);
+      yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+      const expected = `.t3code/flow/images/${NodeCrypto.createHash("sha256").update(bytes).digest("hex").slice(0, 16)}.png`;
+      yield* Effect.forEach(
+        [0, 1],
+        () =>
+          Effect.gen(function* () {
+            const id = createPendingAttachmentId();
+            const pending = path.join(config.attachmentsDir, `${id}.png`);
+            yield* fs.writeFile(pending, bytes);
+            expect(yield* definitions.importImage(root, id)).toBe(expected);
+            expect(yield* fs.exists(pending)).toBe(false);
+          }),
+        { concurrency: 2 },
+      );
+      expect(yield* fs.readDirectory(path.join(root, ".t3code/flow/images"))).toEqual([
+        expected.split("/").at(-1),
+      ]);
+      expect((yield* definitions.readImage(root, expected)).bytes).toEqual(bytes);
+      expect(
+        (yield* definitions.readImage(root, "missing.png").pipe(Effect.flip)).message,
+      ).toContain('"missing.png": missing');
+      const fileId = createPendingAttachmentId("png");
+      yield* fs.writeFile(path.join(config.attachmentsDir, `${fileId}.png`), bytes);
+      expect((yield* definitions.importImage(root, fileId).pipe(Effect.flip)).reason).toBe(
+        "invalid_image",
+      );
+      expect(
+        (yield* definitions.importImage(root, createPendingAttachmentId()).pipe(Effect.flip))
+          .reason,
+      ).toBe("invalid_image");
+      yield* fs.writeFile(path.join(root, "large.png"), new Uint8Array(21 * 1024 * 1024));
+      expect((yield* definitions.readImage(root, "large.png").pipe(Effect.flip)).reason).toBe(
+        "too_large",
+      );
+      const outside = yield* fs.makeTempDirectoryScoped({ prefix: "t3-flow-outside-" });
+      yield* fs.writeFile(path.join(outside, "secret.png"), bytes);
+      yield* Effect.promise(() => NodeFSP.symlink(outside, path.join(root, "docs"), "junction"));
+      expect((yield* definitions.readImage(root, "docs/secret.png").pipe(Effect.flip)).reason).toBe(
+        "unsafe_path",
+      );
+      const linkedRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-flow-linked-" });
+      yield* fs.makeDirectory(path.join(linkedRoot, ".t3code/flow"), { recursive: true });
+      yield* Effect.promise(() =>
+        NodeFSP.symlink(outside, path.join(linkedRoot, ".t3code/flow/images"), "junction"),
+      );
+      const linkedId = createPendingAttachmentId();
+      yield* fs.writeFile(path.join(config.attachmentsDir, `${linkedId}.png`), bytes);
+      expect((yield* definitions.importImage(linkedRoot, linkedId).pipe(Effect.flip)).reason).toBe(
+        "unsafe_path",
+      );
+      expect(yield* fs.readDirectory(outside)).toEqual(["secret.png"]);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);

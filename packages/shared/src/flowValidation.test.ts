@@ -39,6 +39,41 @@ const flow = (extra = {}) => ({
 });
 const cases = [
   ...[
+    "docs/mockup.png",
+    ".t3code/flow/images/abc.jpg",
+    "a.jpeg",
+    "a.gif",
+    "a.webp",
+    "a.PNG",
+    "../a.png",
+    "a/../b.png",
+    "/a.png",
+    "C:/a.png",
+    "C:a.png",
+    "a\\b.png",
+    "a.svg",
+    "a.heic",
+    "",
+  ].map((image) => ({
+    name: `image path ${image}`,
+    value: flow({ steps: [agent("a", { images: [image] })] }),
+    path: [
+      "docs/mockup.png",
+      ".t3code/flow/images/abc.jpg",
+      "a.jpeg",
+      "a.gif",
+      "a.webp",
+      "a.PNG",
+    ].includes(image)
+      ? undefined
+      : "$.steps[0].images[0]",
+  })),
+  {
+    name: "duplicate images",
+    value: flow({ steps: [agent("a", { images: ["a.png", "a.png"] })] }),
+    path: "$.steps[0].images[1]",
+  },
+  ...[
     { ref: "steps.test.output.text", op: "gt", value: 3, valid: false },
     { ref: "steps.test.output.exitCode", op: "eq", value: "0", valid: false },
     { ref: "steps.test.output.timedOut", op: "eq", value: false, valid: true },

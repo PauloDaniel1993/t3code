@@ -89,6 +89,7 @@ const setup = Effect.fn("test.setup")(function* (
   definition: FlowDefinition,
   preparation?: Effect.Effect<void, FlowError>,
   attentionFailure?: Effect.Effect<void>,
+  stepFailure?: Effect.Effect<void, FlowError>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`PRAGMA foreign_keys = ON`;
@@ -122,6 +123,7 @@ const setup = Effect.fn("test.setup")(function* (
     root: () => Effect.succeed("/workspace"),
     launch: Effect.fn("test.launch")(function* (input) {
       if (!input.parentThreadId && preparation) yield* preparation;
+      if (input.parentThreadId && stepFailure) yield* stepFailure;
       launches.push(input);
       yield* Queue.offer(launched, input);
       yield* sql`INSERT OR IGNORE INTO orchestration_v2_projection_threads VALUES (${input.threadId}, NULL)`.pipe(
@@ -147,6 +149,8 @@ const setup = Effect.fn("test.setup")(function* (
     events: Stream.fromQueue(events),
   });
   const definitions = Definitions.FlowDefinitions.of({
+    importImage: () => Effect.die("unused"),
+    readImage: () => Effect.die("unused"),
     read: () => Effect.succeed(entry()),
     list: () => Effect.succeed([entry()]),
     validate: (value) => Effect.succeed(validateFlowDefinition(value)),
@@ -240,7 +244,12 @@ it.effect(
           { name: "items", type: "string[]", default: ["first"] },
         ],
         steps: [
-          { id: "implement", kind: "agent", prompt: "Fix {{inputs.issue}}" },
+          {
+            id: "implement",
+            kind: "agent",
+            prompt: "Fix {{inputs.issue}}",
+            images: ["docs/mockup.png"],
+          },
           {
             id: "review-loop",
             kind: "loop",
@@ -292,6 +301,7 @@ it.effect(
         branch: `flow/example/${run.id.slice(0, 8)}`,
         startFromOrigin: false,
       });
+      expect(launches[1]?.images).toEqual(["docs/mockup.png"]);
       expect(launches[1]?.parentThreadId).toBe(run.flowRunThreadId);
       expect(launches[1]?.workspace).toEqual({
         type: "existing_worktree",
@@ -664,5 +674,28 @@ it.effect("shares a transition read across run subscribers", () =>
     yield* Queue.take(events);
     yield* Queue.take(events);
     expect(reads.length - before).toBe(2);
+  }).pipe(Effect.scoped, Effect.provide(database)),
+);
+
+it.effect("keeps the image path in a failed step's error", () =>
+  Effect.gen(function* () {
+    const { service } = yield* setup(
+      {
+        version: 1,
+        title: "Images",
+        steps: [{ id: "a", kind: "agent", prompt: "Review", images: ["missing.png"] }],
+        edges: [],
+      },
+      undefined,
+      undefined,
+      Effect.fail(new FlowError({ message: 'Flow file read image "missing.png": missing.' })),
+    );
+    const run = yield* service.start({
+      projectId: ProjectId.make("p"),
+      flowId: FlowId.make("example"),
+      inputs: {},
+    });
+    yield* awaitStatus(service, run.id, "failed");
+    expect((yield* service.snapshot(run.id)).stepRuns[0]?.error?.message).toContain("missing.png");
   }).pipe(Effect.scoped, Effect.provide(database)),
 );

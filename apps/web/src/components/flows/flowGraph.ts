@@ -6,10 +6,26 @@ export type FlowNode = Node<
   { step: FlowStep; errors?: ReadonlyArray<string>; dropTarget?: boolean },
   "step"
 >;
+const CARD = { width: 224, height: 80 };
+/** Loop and map steps keep their title and summary above their steps. */
+export const CONTAINER_HEADER = 56;
+const PAD = 16;
+const GAP = 32;
+type Rect = { x: number; y: number; width: number; height: number };
+/** Closer than this, an edge between two stacked steps has no room for its arrow. */
+const MARGIN = 24;
+const crowds = (a: Rect, b: Rect) =>
+  a.x < b.x + b.width + MARGIN &&
+  b.x < a.x + a.width + MARGIN &&
+  a.y < b.y + b.height + MARGIN &&
+  b.y < a.y + a.height + MARGIN;
+
 export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<FlowNode> = []) {
   const nodes: FlowNode[] = [];
   const oldNodes = new Map(previous.map((node) => [node.id, node]));
   const edges: Edge[] = [];
+  // Saved positions are hints: steps inside a loop or map stay below its header, and a step that
+  // would crowd one placed before it moves down, so dragged or hand-edited layouts stay legible.
   const measure = (
     steps: ReadonlyArray<FlowStep>,
     nested: boolean,
@@ -21,17 +37,44 @@ export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<Fl
     }>;
     size: { width: number; height: number };
   } => {
-    let bottom = nested ? 70 : 80;
-    let right = 272;
-    const measured = steps.map((step) => {
+    const measured: Array<{
+      step: FlowStep;
+      size: { width: number; height: number };
+      position: { x: number; y: number };
+    }> = [];
+    for (const step of steps) {
       const container = step.kind === "loop" || step.kind === "map";
-      const size = container ? measure(step.steps, true).size : { width: 224, height: 80 };
-      const position = definition.layout?.[step.id] ?? { x: nested ? 24 : 200, y: bottom };
-      bottom = Math.max(bottom, position.y + size.height + 50);
-      right = Math.max(right, position.x + size.width + 24);
-      return { step, size, position };
-    });
-    return { measured, size: { width: right, height: Math.max(120, bottom - 26) } };
+      const size = container ? measure(step.steps, true).size : CARD;
+      const saved = definition.layout?.[step.id];
+      const below = measured.length
+        ? Math.max(...measured.map((placed) => placed.position.y + placed.size.height)) + GAP
+        : nested
+          ? CONTAINER_HEADER
+          : 80;
+      const rect = saved
+        ? nested
+          ? { x: Math.max(PAD, saved.x), y: Math.max(CONTAINER_HEADER, saved.y), ...size }
+          : { ...saved, ...size }
+        : { x: nested ? PAD : 200, y: below, ...size };
+      for (let moved = true; moved;) {
+        moved = false;
+        for (const placed of measured)
+          if (crowds(rect, { ...placed.position, ...placed.size })) {
+            rect.y = placed.position.y + placed.size.height + GAP;
+            moved = true;
+          }
+      }
+      measured.push({ step, size, position: { x: rect.x, y: rect.y } });
+    }
+    const right = Math.max(0, ...measured.map(({ position, size }) => position.x + size.width));
+    const bottom = Math.max(0, ...measured.map(({ position, size }) => position.y + size.height));
+    return {
+      measured,
+      size: {
+        width: Math.max(CARD.width + PAD * 2, right + PAD),
+        height: Math.max(CONTAINER_HEADER + CARD.height + PAD, bottom + PAD),
+      },
+    };
   };
   const visit = (
     steps: ReadonlyArray<FlowStep>,
@@ -46,7 +89,8 @@ export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<Fl
         type: "step",
         data: { step },
         position,
-        ...(parentId ? { parentId, extent: "parent" as const } : {}),
+        // No parent extent: a dragged step may leave the frame, and the frame regrows around it.
+        ...(parentId ? { parentId } : {}),
         ...(container ? { style: size } : {}),
         ...(old?.measured ? { measured: old.measured } : {}),
       };
@@ -320,7 +364,7 @@ export function stepIdAtPath(definition: FlowDefinition, path: string) {
   return id;
 }
 
-function conditionLabel(condition: FlowCondition): string {
+export function conditionLabel(condition: FlowCondition): string {
   if ("all" in condition) return `all(${condition.all.length})`;
   if ("any" in condition) return `any(${condition.any.length})`;
   if ("not" in condition) return `not ${conditionLabel(condition.not)}`;
