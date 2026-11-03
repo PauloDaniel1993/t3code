@@ -46,6 +46,17 @@ export type ProviderWorkspaceFolderAccess = typeof ProviderWorkspaceFolderAccess
 export const PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE =
   "This provider cannot yet access every workspace folder; choose a supported provider.";
 
+const RUNTIME_MODE_RANK: Record<RuntimeMode, number> = {
+  "approval-required": 0,
+  "auto-accept-edits": 1,
+  auto: 2,
+  "full-access": 3,
+};
+
+/** Whether `mode` grants the agent more than `ceiling`; no ceiling allows every mode. */
+export const isRuntimeModeAbove = (mode: RuntimeMode, ceiling: RuntimeMode | undefined): boolean =>
+  ceiling !== undefined && RUNTIME_MODE_RANK[mode] > RUNTIME_MODE_RANK[ceiling];
+
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";

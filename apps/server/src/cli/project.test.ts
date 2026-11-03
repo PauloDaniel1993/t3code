@@ -1,3 +1,5 @@
+import * as Context from "effect/Context";
+import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 // @effect-diagnostics nodeBuiltinImport:off - CLI integration uses temporary Node paths.
@@ -58,6 +60,7 @@ import {
   persistServerRuntimeState,
 } from "../serverRuntimeState.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectHttp from "../project/http.ts";
 import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
@@ -127,7 +130,11 @@ const readProjects = (baseDir: string) =>
       Layer.provideMerge(ProjectFaviconResolver.layer),
       Layer.provideMerge(T3ProjectFileLoader.layer),
       Layer.provideMerge(WorkspacePaths.layer),
-      Layer.provideMerge(ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+      Layer.provideMerge(
+        ServerSettings.layer.pipe(
+          Layer.provide(Layer.merge(ServerSecretStore.layer, ManagedPolicy.layerTest())),
+        ),
+      ),
       Layer.provideMerge(SqlitePersistence.layerConfig),
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(ServerConfig.layer(config)),
@@ -168,7 +175,11 @@ it.effect.each(["import", "link"] as const)(
         Layer.provideMerge(ProjectFaviconResolver.layer),
         Layer.provideMerge(T3ProjectFileLoader.layer),
         Layer.provideMerge(WorkspacePaths.layer),
-        Layer.provideMerge(ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+        Layer.provideMerge(
+          ServerSettings.layer.pipe(
+            Layer.provide(Layer.merge(ServerSecretStore.layer, ManagedPolicy.layerTest())),
+          ),
+        ),
         Layer.provideMerge(SqlitePersistence.layerConfig),
         Layer.provide(ServerConfig.layer(config)),
       );
@@ -189,6 +200,9 @@ it.effect.each(["import", "link"] as const)(
       });
       const routesLayer = HttpApiBuilder.layer(ProjectCliTestApi).pipe(
         Layer.provide(ProjectHttp.layer),
+        Layer.provide(
+          Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ discard: () => Effect.void }),
+        ),
         Layer.provide(serviceLayer),
         Layer.provide(authLayer),
         Layer.provide(startupLayer),
@@ -206,6 +220,7 @@ it.effect.each(["import", "link"] as const)(
           new Request(
             `http://project.test${EnvironmentHttpApi.groups.projects.endpoints.snapshot.path}`,
           ),
+          Context.empty(),
         ),
       );
       assert.equal(ready.status, 200);
@@ -229,9 +244,9 @@ it.effect.each(["import", "link"] as const)(
         if (request.method === "POST" && delayMutation) {
           delayMutation = false;
           Deferred.doneUnsafe(mutationStarted, Effect.void);
-          return finishMutation.promise.then(() => web.handler(request));
+          return finishMutation.promise.then(() => web.handler(request, Context.empty()));
         }
-        return web.handler(request);
+        return web.handler(request, Context.empty());
       };
       const mutation = yield* runCli(
         operation === "import"

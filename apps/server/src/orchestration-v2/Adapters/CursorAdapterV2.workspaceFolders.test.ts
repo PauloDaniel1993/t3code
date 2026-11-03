@@ -13,10 +13,10 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { createAgentPlatform, JsonlLocalAgentStore } from "@t3tools/provider-cursor/testing";
 import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   CursorProviderCapabilitiesV2,
+  loadCursorSdk,
   makeCursorAgentOptions,
 } from "@t3tools/provider-cursor/testing";
 import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
@@ -41,6 +41,7 @@ describe("Cursor workspace folders", () => {
       const cwd = path.join(directory, "primary");
       const moved = path.join(directory, "moved");
       yield* Effect.forEach([cwd, moved], (folder) => fileSystem.makeDirectory(folder));
+      const { createAgentPlatform, JsonlLocalAgentStore } = loadCursorSdk();
       const store = new JsonlLocalAgentStore(path.join(directory, "state"));
       const platform = (workspaceRef: string) =>
         Effect.promise(() =>

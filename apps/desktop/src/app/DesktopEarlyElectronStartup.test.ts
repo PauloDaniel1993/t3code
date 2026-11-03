@@ -19,9 +19,11 @@ describe("DesktopEarlyElectronStartup", () => {
       joinPath,
       readFileString: () => "{}",
     };
-    assert.equal(resolveEarlyLinuxElectronOptions(input).linuxWmClass, "t3code");
+    assert.equal(
+      resolveEarlyLinuxElectronOptions(input).linuxDesktopEntryName,
+      "com.t3tools.T3Code.desktop",
+    );
     const local = resolveEarlyLinuxElectronOptions({ ...input, isLocalIdentity: true });
-    assert.equal(local.linuxWmClass, "t3code-v2-local");
     assert.equal(local.linuxDesktopEntryName, "com.t3tools.t3code.v2.local.desktop");
   });
 

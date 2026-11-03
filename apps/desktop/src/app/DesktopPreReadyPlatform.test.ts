@@ -78,15 +78,9 @@ describe("DesktopPreReadyPlatform", () => {
     vi.stubEnv("XDG_DATA_HOME", "/xdg");
     vi.stubEnv("T3CODE_DESKTOP_LOCAL_IDENTITY", "false");
     return Effect.gen(function* () {
-      const options = yield* DesktopPreReadyPlatform.DesktopPreReadyElectronOptions;
-      assert.equal(options.linux?.linuxWmClass, "t3code-v2-local");
+      yield* DesktopPreReadyPlatform.DesktopPreReadyElectronOptions;
       assert.deepEqual(setDesktopNameMock.mock.calls, [["com.t3tools.t3code.v2.local.desktop"]]);
       assert.include(writeFileSyncMock.mock.calls[0]?.[1], "Name=T3 v2.local");
-      assert.isTrue(
-        appendSwitchMock.mock.calls.some(
-          ([name, value]) => name === "class" && value === "t3code-v2-local",
-        ),
-      );
     }).pipe(
       Effect.provide(
         DesktopPreReadyPlatform.layerWithIdentity(true).pipe(

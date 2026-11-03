@@ -97,6 +97,8 @@ const makeHarness = (handoffOnProjectRead = false) =>
       createdAt: "2026-10-11T00:00:00.000Z",
       updatedAt: "2026-10-11T00:00:00.000Z",
       deletedAt: null,
+      pinnedAt: null,
+      archivedAt: null,
     };
     const thread: {
       -readonly [Key in keyof OrchestrationV2AppThread]: OrchestrationV2AppThread[Key];

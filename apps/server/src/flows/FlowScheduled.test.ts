@@ -20,6 +20,7 @@ import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Launch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Managed from "../project/ManagedProjectFolders.ts";
 import * as Secrets from "../secrets/SecretRequests.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as FlowService from "./FlowService.ts";
 
 it.effect(
@@ -78,6 +79,7 @@ it.effect(
             Layer.mock(Secrets.SecretRequests)({}),
             NodeCrypto.layer,
             Scheduler.layer,
+            ManagedPolicy.layerTest(),
           ),
         ),
       );

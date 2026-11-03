@@ -189,15 +189,18 @@ describe("sidebar delegated task grouping", () => {
     expect(result.topLevel).toEqual(rows);
     expect(result.tasksByParent.size).toBe(0);
   });
-  it("hides tasks when disabled, including surviving orphans, but keeps ordinary forks", () => {
+  it("hides tasks when disabled, including surviving orphans, but keeps ordinary forks and never lists side chats", () => {
     const parent = thread("parent");
     const fork = child("fork", {
       lineage: { ...child("fork").lineage, relationshipToParent: "fork" },
     });
+    const sideChat = child("side-chat", {
+      lineage: { ...child("side-chat").lineage, relationshipToParent: "fork", sideChat: true },
+    });
     const orphan = child("orphan", {
       lineage: { ...child("orphan").lineage, parentThreadId: ThreadId.make("deleted") },
     });
-    const rows = [parent, child("task"), orphan, fork];
+    const rows = [parent, child("task"), orphan, fork, sideChat];
     const group = createSidebarTaskGrouper();
     const disabled = group({
       threads: rows,

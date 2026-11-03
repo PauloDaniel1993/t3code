@@ -1,3 +1,5 @@
+import * as Context from "effect/Context";
+import * as ProjectCloneTracker from "./ProjectCloneTracker.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
 import {
@@ -1217,6 +1219,9 @@ it.effect(
       let startupFailed = false;
       const routes = HttpApiBuilder.layer(WorkspaceMutationTestApi).pipe(
         Layer.provide(ProjectHttp.layer),
+        Layer.provide(
+          Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ discard: () => Effect.void }),
+        ),
         Layer.provide(Layer.succeed(ProjectService.ProjectService, service)),
         Layer.provide(
           Layer.succeed(ServerRuntimeStartup.ServerRuntimeStartup, {
@@ -1268,6 +1273,7 @@ it.effect(
                 body: JSON.stringify(payload),
               },
             ),
+            Context.empty(),
           ),
         );
       assert.equal(

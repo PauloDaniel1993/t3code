@@ -29,7 +29,6 @@ type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput & {
 
 export interface EarlyLinuxElectronOptions {
   readonly isDevelopment: boolean;
-  readonly linuxWmClass: string;
   readonly linuxDesktopEntryName: string;
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
 }
@@ -157,11 +156,6 @@ export function resolveEarlyLinuxElectronOptions(
   const localIdentity = input.isLocalIdentity ?? false;
   return {
     isDevelopment,
-    linuxWmClass: localIdentity
-      ? LOCAL_DESKTOP_IDENTITY.packageName
-      : isDevelopment
-        ? "t3code-dev"
-        : "t3code",
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, localIdentity),
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,

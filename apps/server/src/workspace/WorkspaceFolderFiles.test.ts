@@ -54,7 +54,7 @@ const WorkspaceEntriesLive = WorkspaceEntries.layer.pipe(Layer.provide(Workspace
 
 const PlatformLayer = Layer.empty.pipe(
   Layer.provideMerge(VcsProcess.layer),
-  Layer.provide(
+  Layer.provideMerge(
     ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-workspace-folder-files-" }),
   ),
   Layer.provideMerge(NodeServices.layer),
@@ -94,6 +94,8 @@ function projectRow(input: {
     createdAt: "2026-10-10T00:00:00.000Z",
     updatedAt: "2026-10-10T00:00:00.000Z",
     deletedAt: null,
+    pinnedAt: null,
+    archivedAt: null,
   };
 }
 

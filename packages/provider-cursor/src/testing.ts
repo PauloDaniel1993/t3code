@@ -6,4 +6,4 @@ export {
   makeCursorAdapterV2,
 } from "./server/adapter.ts";
 
-export { createAgentPlatform, JsonlLocalAgentStore } from "./server/sdk.ts";
+export { loadCursorSdk } from "./server/sdk.ts";

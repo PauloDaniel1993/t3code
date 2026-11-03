@@ -7,6 +7,8 @@ This is a development fork of [T3 Code](https://github.com/pingdotgg/t3code), ma
 `dev`. It combines upstream's clients and integrations with multi-folder workspaces,
 coordinated worktrees, task controls, and Wayfinder dependency maps.
 
+Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Google Antigravity, and fx. If they're set up on your computer, T3 Code can control them.
+
 T3 Code uses the agents' existing runtimes. It organizes their work; the selected provider
 still determines model capabilities, supported permission modes, usage limits, and billing. See the
 [provider guides](./docs/README.md#using-t3-code) for setup and differences.
@@ -39,6 +41,17 @@ still determines model capabilities, supported permission modes, usage limits, a
 | Inspect running software  | A shared browser, screenshot and annotation tools, desktop SnapShots, and supported simulator or device access. Platform prerequisites apply.                                   |
 | Automate and collaborate  | Recurring and webhook-triggered tasks, external-agent access through MCP, and guest links with approval of guest messages before they run.                                      |
 | Personalize and monitor   | Themes, fonts, keyboard shortcuts, project overrides, usage and limit visibility, estimated API-equivalent costs, and storage cleanup.                                          |
+
+> [!WARNING]
+> Install and authenticate at least one provider before use:
+>
+> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
+> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
+> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
+> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
+> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
+> - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
+> - fx: install [fx](https://fx.sh) and run `fx login` on the machine running the T3 Code server ([setup guide](./docs/user/providers-fx.md))
 
 Capabilities vary by provider and client. Wayfinder maps are available on web and desktop.
 Guest links and mobile push notifications require T3 Connect. Provider handoffs transfer selected

@@ -176,6 +176,8 @@ export function createSendHarness(
     needsLoadBalancing: false,
     activeEnvironmentUnavailable: false,
     activePendingProgress: null,
+    sideChatDisabledReason: null,
+    onSideChat: undefined,
     editingQueuedRun: null,
     showPlanFollowUpPrompt: false,
     activeMessageCount: 1,

@@ -152,6 +152,8 @@ export interface CheckpointServiceV2Shape {
   readonly materializeBaselineCheckpoint: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
     readonly ordinalWithinScope: number;
+    /** Records a missing checkpoint without touching git, for side chats sharing a parent's worktree. */
+    readonly forceMissing?: boolean;
   }) => Effect.Effect<OrchestrationV2Checkpoint, CheckpointServiceV2Error>;
   readonly capture: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
@@ -160,6 +162,7 @@ export interface CheckpointServiceV2Shape {
     readonly ordinalWithinScope: number;
     readonly appRunOrdinal: number | null;
     readonly capturedAt: DateTime.Utc;
+    readonly forceMissing?: boolean;
   }) => Effect.Effect<OrchestrationV2Checkpoint, CheckpointServiceV2Error>;
   /**
    * Whether every git part of `checkpoint` can be restored: ready, its
@@ -398,8 +401,9 @@ export const layer: Layer.Layer<
       scope: OrchestrationV2CheckpointScope,
       part: OrchestrationV2CheckpointScopePart,
       ordinalWithinScope: number,
+      forceMissing = false,
     ): Effect.Effect<OrchestrationV2CheckpointPart> => {
-      if (part.vcs === null) {
+      if (part.vcs === null || forceMissing) {
         return Effect.succeed({ ...part, ref: null, status: "missing" });
       }
       return withCheckoutLock(
@@ -437,7 +441,13 @@ export const layer: Layer.Layer<
           });
           const parts = yield* Effect.forEach(
             scopeParts(input.scope),
-            (part) => materializeBaselinePart(input.scope, part, input.ordinalWithinScope),
+            (part) =>
+              materializeBaselinePart(
+                input.scope,
+                part,
+                input.ordinalWithinScope,
+                input.forceMissing,
+              ),
             { concurrency: PART_CONCURRENCY },
           );
           return makeCheckpoint({
@@ -475,11 +485,12 @@ export const layer: Layer.Layer<
       scope: OrchestrationV2CheckpointScope,
       part: OrchestrationV2CheckpointScopePart,
       ordinalWithinScope: number,
+      forceMissing = false,
     ): Effect.Effect<{
       readonly part: OrchestrationV2CheckpointPart;
       readonly files: OrchestrationV2Checkpoint["files"];
     }> => {
-      if (part.vcs === null) {
+      if (part.vcs === null || forceMissing) {
         return Effect.succeed({ part: { ...part, ref: null, status: "missing" }, files: [] });
       }
       return withCheckoutLock(
@@ -604,7 +615,7 @@ export const layer: Layer.Layer<
             : null;
         const captured = yield* Effect.forEach(
           scopeParts(input.scope),
-          (part) => capturePart(input.scope, part, input.ordinalWithinScope),
+          (part) => capturePart(input.scope, part, input.ordinalWithinScope, input.forceMissing),
           { concurrency: PART_CONCURRENCY },
         );
 

@@ -66,6 +66,7 @@ it.effect.each([
               providerThread: undefined,
               readyCheckpointOrdinals: [],
               partTurnCheckpointOrdinals: [],
+              sideChat: false,
             }),
           getThread: () =>
             Effect.succeed({
@@ -198,6 +199,7 @@ it.effect(
                 providerThread: undefined,
                 readyCheckpointOrdinals: [],
                 partTurnCheckpointOrdinals: [],
+                sideChat: false,
               }),
             getThreadShell: () => Effect.succeed(shell as OrchestrationV2ThreadShell),
           }),
@@ -276,6 +278,7 @@ it.effect("completes finalization when the post-checkpoint workspace refresh fai
               scope: { ...finalizedScope(undefined), id: scopeId, runId },
               readyCheckpointOrdinals: [],
               partTurnCheckpointOrdinals: [],
+              sideChat: false,
             }),
           getThreadShell: () => Effect.succeed(null),
         }),

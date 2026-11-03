@@ -1,4 +1,4 @@
-import { Toast } from "@base-ui/react/toast";
+import { Toast, type ToastObject, type ToastManagerUpdateOptions } from "@base-ui/react/toast";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -88,51 +88,72 @@ describe("toast lifecycle observability", () => {
     );
   });
 
-  it("instruments manager callbacks without changing caller callback behavior", () => {
-    let now = 0;
-    const records: ToastLifecycleRecord[] = [];
-    const observer = createToastLifecycleObserver({
-      now: () => now,
-      record: (record) => records.push(record),
-    });
-    const manager = createObservedToastManager<ObservableToastData>(
-      Toast.createToastManager<ObservableToastData>(),
-      "viewport",
-      observer,
-    );
-    const onClose = vi.fn();
-    const onRemove = vi.fn();
-    const managerEvents: Array<{ action: string; options: unknown }> = [];
-    manager[" subscribe"]((event) => managerEvents.push(event));
+  it.each(["object", "function"])(
+    "instruments %s updates without changing caller callbacks",
+    (kind) => {
+      let now = 0;
+      const records: ToastLifecycleRecord[] = [];
+      const observer = createToastLifecycleObserver({
+        now: () => now,
+        record: (record) => records.push(record),
+      });
+      const manager = createObservedToastManager<ObservableToastData>(
+        Toast.createToastManager<ObservableToastData>(),
+        "viewport",
+        observer,
+      );
+      const onClose = vi.fn();
+      const onRemove = vi.fn();
+      const managerEvents: Array<{ action: string; options: unknown }> = [];
+      manager[" subscribe"]((event) => managerEvents.push(event));
 
-    const toastId = manager.add({
-      id: "toast-observed",
-      title: "Observed",
-      onClose,
-      onRemove,
-    });
-    now = 10;
-    manager.update(toastId, { type: "success" });
-    now = 25;
-    manager.close(toastId);
+      const toastId = manager.add({
+        id: "toast-observed",
+        title: "Observed",
+        onClose,
+        onRemove,
+      });
+      const toast = managerEvents.find((event) => event.action === "add")!
+        .options as ToastObject<ObservableToastData>;
+      now = 10;
+      const updater = vi.fn((previous: ToastObject<ObservableToastData>) => ({
+        ...previous,
+        title: `${previous.title} updated`,
+        type: "success",
+      }));
+      manager.update(toastId, kind === "function" ? updater : { type: "success" });
+      const updateEvent = managerEvents.find((event) => event.action === "update");
+      const { updates } = updateEvent!.options as {
+        updates:
+          | ToastManagerUpdateOptions<ObservableToastData>
+          | ((
+              previous: ToastObject<ObservableToastData>,
+            ) => ToastManagerUpdateOptions<ObservableToastData>);
+      };
+      const updateOptions = typeof updates === "function" ? updates(toast) : updates;
+      if (kind === "function") {
+        expect(updater).toHaveBeenCalledExactlyOnceWith({ ...toast, onClose, onRemove });
+        expect(updateOptions.title).toBe("Observed updated");
+      }
+      expect(updateOptions.type).toBe("success");
+      now = 25;
+      manager.close(toastId);
 
-    const updateEvent = managerEvents.find((event) => event.action === "update");
-    const updateOptions = updateEvent?.options as
-      | { readonly onClose?: () => void; readonly onRemove?: () => void }
-      | undefined;
-    updateOptions?.onClose?.();
-    now = 30;
-    updateOptions?.onRemove?.();
+      updateOptions.onClose?.();
+      now = 30;
+      updateOptions.onRemove?.();
 
-    expect(onClose).toHaveBeenCalledOnce();
-    expect(onRemove).toHaveBeenCalledOnce();
-    expect(records.map((record) => record.event)).toEqual([
-      "added",
-      "updated",
-      "close-requested",
-      "closed",
-      "removed",
-    ]);
-    expect(records.at(-1)?.closeReason).toBe("programmatic-close");
-  });
+      expect(onClose).toHaveBeenCalledOnce();
+      expect(onRemove).toHaveBeenCalledOnce();
+      expect(records.map((record) => record.event)).toEqual([
+        "added",
+        "updated",
+        "close-requested",
+        "closed",
+        "removed",
+      ]);
+      expect(records.at(-1)?.closeReason).toBe("programmatic-close");
+      expect(records.find((record) => record.event === "updated")?.type).toBe("success");
+    },
+  );
 });

@@ -1,10 +1,12 @@
 import { FlowId } from "@t3tools/contracts";
 import * as Flows from "../flows/FlowService.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  GitCommandError,
   ProjectId,
   ProviderInstanceId,
   ScheduledTaskId,
@@ -142,15 +144,32 @@ const external = Layer.mergeAll(
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
   Layer.mock(ProjectService.ProjectService)({
-    getById: (id) => Effect.succeedSome({ id, defaultModelSelection: modelSelection } as never),
+    getById: (id) =>
+      Effect.succeedSome({
+        id,
+        workspaceRoot: "/repo/project",
+        defaultModelSelection: modelSelection,
+      } as never),
   }),
   Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
     namedProjectsRoot: "/unused-projects",
     isScratchProject: () => Effect.succeed(false),
   }),
-  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+  Layer.mock(GitVcsDriver.GitVcsDriver)({
+    resolvePrimaryRemoteName: (cwd) =>
+      Effect.fail(
+        new GitCommandError({
+          operation: "GitVcsDriver.test",
+          command: "git",
+          cwd,
+          detail: "No git remote is configured.",
+        }),
+      ),
+    resolveCommit: () => Effect.succeed({ commitSha: "abc123" }),
+  }),
   ServerSettings.layerTest(),
+  ManagedPolicy.layerTest(),
   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
   Layer.mock(WorkspaceFolderFiles.WorkspaceFolderFiles)({}),
 );

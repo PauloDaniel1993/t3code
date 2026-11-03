@@ -29,6 +29,7 @@ export function useDirectoryEntries(
     () => new Set([""]),
   );
   const requests = useRef(new Map<string, Promise<void>>());
+  const followUpRefreshes = useRef(new Map<string, Promise<void>>());
   const loaded = useRef(new Set<string>());
   const requested = useRef(new Set<string>());
   const active = useRef(true);
@@ -118,13 +119,19 @@ export function useDirectoryEntries(
   const load = function loadDirectory(directoryPath: string, refresh = false): Promise<void> {
     const requestGeneration = generation.current;
     const existing = requests.current.get(directoryPath);
-    if (existing)
-      return refresh
-        ? existing.then(() => {
-            if (active.current && generation.current === requestGeneration)
-              return loadDirectory(directoryPath, true);
-          })
-        : existing;
+    if (existing) {
+      if (!refresh) return existing;
+      let followUp = followUpRefreshes.current.get(directoryPath);
+      if (!followUp) {
+        followUp = existing.then(() => {
+          if (!active.current || generation.current !== requestGeneration) return;
+          followUpRefreshes.current.delete(directoryPath);
+          return loadDirectory(directoryPath, true);
+        });
+        followUpRefreshes.current.set(directoryPath, followUp);
+      }
+      return followUp;
+    }
     if (!refresh && loaded.current.has(directoryPath)) return Promise.resolve();
     setPending((count) => count + 1);
     if (!refresh) setLoadingDirectories((previous) => new Set(previous).add(directoryPath));
@@ -147,6 +154,7 @@ export function useDirectoryEntries(
     generation.current++;
     active.current = true;
     requests.current.clear();
+    followUpRefreshes.current.clear();
     loaded.current.clear();
     requested.current.clear();
     void startRequest("", false);
@@ -181,17 +189,11 @@ export function useDirectoryEntries(
   ]);
 
   const refresh = () => {
-    const refreshGeneration = generation.current;
     const paths = [...requested.current].filter((path) => reachableDirectories.has(path));
-    const workerCount = Math.min(4, paths.length);
-    const worker = async () => {
-      while (active.current && generation.current === refreshGeneration) {
-        const path = paths.shift();
-        if (path === undefined) return;
-        await load(path, true);
-      }
-    };
-    for (let index = 0; index < workerCount; index++) void worker();
+    for (const path of paths) {
+      if (!active.current) break;
+      void load(path, true);
+    }
   };
 
   return {

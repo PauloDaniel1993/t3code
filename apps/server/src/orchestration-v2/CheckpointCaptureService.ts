@@ -73,6 +73,7 @@ export const layer: Layer.Layer<
         providerThread,
         readyCheckpointOrdinals,
         partTurnCheckpointOrdinals,
+        sideChat,
       } = yield* projections.getCheckpointCaptureContext(input.threadId, input);
       // A stopped run is already terminal. Its checkpoint is the rollback point
       // for the message after it, so capture leaves its status alone.
@@ -127,12 +128,14 @@ export const layer: Layer.Layer<
           : yield* checkpoints.materializeBaselineCheckpoint({
               scope: runScope,
               ordinalWithinScope: 0,
+              forceMissing: sideChat,
             });
       const baselineCheckpoint = keepsCheckpoint(baselineOrdinalWithinScope)
         ? null
         : yield* checkpoints.materializeBaselineCheckpoint({
             scope: runScope,
             ordinalWithinScope: baselineOrdinalWithinScope,
+            forceMissing: sideChat,
           });
       const checkpoint = yield* checkpoints.capture({
         scope: runScope,
@@ -141,6 +144,7 @@ export const layer: Layer.Layer<
         ordinalWithinScope: run.ordinal,
         appRunOrdinal: run.ordinal,
         capturedAt,
+        forceMissing: sideChat,
       });
       // Omit delegatedCompletion to preserve cohort writes made after capture loaded the run.
       const { delegatedCompletion: _delegatedCompletion, ...runWithoutDelegatedCompletion } = run;

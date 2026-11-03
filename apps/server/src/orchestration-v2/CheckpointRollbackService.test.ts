@@ -777,6 +777,24 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
   },
 );
 
+function providerControlContext(
+  projection: OrchestrationV2ThreadProjection,
+  target: ProjectionStore.ProjectionProviderControlTarget,
+) {
+  const attempt = projection.attempts.find((candidate) => candidate.id === target.attemptId);
+  return {
+    providerThread: projection.providerThreads.find(
+      (candidate) => candidate.id === target.providerThreadId,
+    ),
+    providerTurn: projection.providerTurns.find(
+      (candidate) => candidate.id === target.providerTurnId,
+    ),
+    attempt,
+    message: undefined,
+    run: projection.runs.find((candidate) => candidate.id === attempt?.runId),
+  };
+}
+
 function rollbackContext(
   projection: OrchestrationV2ThreadProjection,
   target: {
@@ -1259,6 +1277,9 @@ it.effect.each([
           getCheckpointRollbackContext: (_, target) =>
             Effect.succeed(rollbackContext(projection, target)),
           getThreadProviderContext: () => Effect.succeed({ providerSessions: [] } as never),
+          getProviderControlContext: (_, target) =>
+            Effect.succeed(providerControlContext(projection, target)),
+          getRunMessage: () => Effect.undefined,
           getCheckpointContext: () =>
             Effect.succeed({
               checkpointScopes: [{ cwd: process.cwd() }],
@@ -1457,6 +1478,9 @@ const makeRewindHarness = (options: {
           getThread: () => Effect.succeed(state.projection.thread),
           getCheckpointRollbackContext: (_, target) =>
             Effect.sync(() => rollbackContext(state.projection, target)),
+          getProviderControlContext: (_, target) =>
+            Effect.sync(() => providerControlContext(state.projection, target)),
+          getRunMessage: () => Effect.undefined,
           getShellSnapshot: () =>
             Effect.succeed({
               schemaVersion: 1,
@@ -1549,7 +1573,7 @@ it.effect("refuses a file restore before the provider rewinds, naming the folder
     assert.equal(error.reason, "file-restore-refused");
     assert.equal(
       error.message,
-      "Files in lib weren't checkpointed at that point. Rewind the conversation without restoring files instead.",
+      "Files in lib weren't checkpointed at that point. Rewind the conversation without restoring files instead, or delete side chats you no longer need.",
     );
     assert.equal(
       CheckpointRollbackService.rollbackFailureMessage(Cause.fail(error)),

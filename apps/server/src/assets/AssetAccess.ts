@@ -54,6 +54,7 @@ import {
   timingSafeEqualBase64Url,
 } from "../auth/utils.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
 import {
   parseAttachmentFileExtension,
   parseThreadSegmentFromAttachmentId,
@@ -294,7 +295,9 @@ const resolveCanonicalFile = Effect.fn("AssetAccess.resolveCanonicalFile")(funct
   if (Option.isNone(canonicalFile)) return null;
 
   const info = yield* ProjectFaviconResolver.optionOnNotFound(fileSystem.stat(canonicalFile.value));
-  return Option.isSome(info) && info.value.type === "File" ? canonicalFile.value : null;
+  if (Option.isNone(info) || info.value.type !== "File") return null;
+  const isServerInternalPath = yield* makeIsServerInternalPath;
+  return (yield* isServerInternalPath(canonicalFile.value)) ? null : canonicalFile.value;
 });
 
 const resolveCanonicalWorkspaceFile = Effect.fn("AssetAccess.resolveCanonicalWorkspaceFile")(
@@ -322,7 +325,9 @@ const resolveCanonicalWorkspaceFile = Effect.fn("AssetAccess.resolveCanonicalWor
     const info = yield* ProjectFaviconResolver.optionOnNotFound(
       fileSystem.stat(canonicalFile.value),
     );
-    return Option.isSome(info) && info.value.type === "File" ? canonicalFile.value : null;
+    if (Option.isNone(info) || info.value.type !== "File") return null;
+    const isServerInternalPath = yield* makeIsServerInternalPath;
+    return (yield* isServerInternalPath(canonicalFile.value)) ? null : canonicalFile.value;
   },
 );
 
@@ -534,6 +539,23 @@ const finalizeWorkspaceFileAsset = Effect.fn("AssetAccess.finalizeWorkspaceFileA
           }),
       ),
     );
+    const fileRevision = /\.pdf$/i.test(resolved.relativePath)
+      ? yield* openMediaFile(canonicalFile).pipe(
+          Effect.flatMap((file) =>
+            file === null
+              ? Effect.fail(new AssetWorkspaceAssetNotFoundError({ resource: input.resource }))
+              : Effect.succeed(
+                  `${file.info.dev}:${file.info.ino}:${file.info.size}:${file.info.mtimeNs}:${file.info.ctimeNs}`,
+                ),
+          ),
+          Effect.scoped,
+          Effect.mapError((cause) =>
+            cause._tag === "AssetWorkspaceAssetNotFoundError"
+              ? cause
+              : new AssetWorkspaceAssetInspectionError({ resource: input.resource, cause }),
+          ),
+        )
+      : undefined;
     const imageDimensions = HEADER_IMAGE_EXTENSIONS.has(
       path.extname(resolved.relativePath).toLowerCase(),
     )
@@ -557,7 +579,7 @@ const finalizeWorkspaceFileAsset = Effect.fn("AssetAccess.finalizeWorkspaceFileA
           },
       fileName: path.basename(resolved.relativePath),
       imageDimensions,
-      fileRevision: undefined,
+      fileRevision,
     };
   },
 );
@@ -637,6 +659,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       claims = finalized.claims;
       fileName = finalized.fileName;
       imageDimensions = finalized.imageDimensions;
+      fileRevision = finalized.fileRevision;
       break;
     }
     case "draft-workspace-file": {
