@@ -1,5 +1,8 @@
+import * as PortScanner from "../../preview/PortScanner.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -51,10 +54,11 @@ const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.
 
 const liveLayer = Layer.mergeAll(
   McpProviderSessions.layer,
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   IdAllocator.layer,
   CodexAdapterV2.layerAppServerClientFactory.pipe(
-    Layer.provide(NodeServices.layer),
+    Layer.provide(PortScanner.layerTest),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     Layer.provide(
       Layer.succeed(
         ProviderEventLoggers.ProviderEventLoggers,
@@ -99,7 +103,7 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
             approvalPolicy: "never",
           });
           const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
-            crypto: yield* Crypto.Crypto,
+            digest: yield* Digest.Digest,
             instanceId: modelSelection.instanceId,
             settings: decodeCodexSettings({
               homePath: home,
@@ -141,7 +145,7 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
             expectedWritable = true,
           ) {
             const file = path.join(extra, `${phase}.txt`);
-            const marker = yield* (yield* Crypto.Crypto).randomUUIDv4();
+            const marker = yield* (yield* SecureRandom.SecureRandom).uuidV4();
             yield* fs.writeFileString(file, `marker=${marker}\n`);
             const now = yield* DateTime.now;
             const messages: Array<string> = [];

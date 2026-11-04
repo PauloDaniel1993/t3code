@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import { acpPermissionDisposition } from "@t3tools/provider-acp/server/clientPolicy";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -74,8 +75,10 @@ function makeThread(input: {
 }
 
 const grokInstanceId = ProviderInstanceId.make("grok");
+const antigravityInstanceId = ProviderInstanceId.make("antigravity");
 const supportedRuntimeModesByInstance = new Map<ProviderInstanceId, ReadonlyArray<RuntimeMode>>([
   [grokInstanceId, ["approval-required", "auto", "full-access"]],
+  [antigravityInstanceId, ["approval-required", "auto-accept-edits", "full-access"]],
 ]);
 // Codex says nothing of folder access, which counts as unverified.
 const supportedInstanceId = ProviderInstanceId.make("multi-root");
@@ -334,6 +337,28 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
         // Every provider runs a one-folder scope.
         assert.isTrue(Exit.isSuccess(yield* check(instanceId, [])));
       }
+    }),
+  );
+
+  it.effect("asks for Antigravity command approval when a stored Auto thread falls back", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const resolve = (runtimeMode: RuntimeMode) =>
+        policy.resolve({
+          thread: makeThread({ now, worktreePath: null, runtimeMode }),
+          modelSelection: { instanceId: antigravityInstanceId, model: "test-model" },
+        });
+      const request = {
+        sessionId: "session-1",
+        toolCall: { toolCallId: "command-1", title: "Run command", kind: "execute" as const },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" as const }],
+      };
+      const auto = yield* resolve("auto");
+      assert.equal(auto.runtimeMode, "approval-required");
+      assert.equal(acpPermissionDisposition(auto, request), "ask");
+      assert.equal(acpPermissionDisposition(yield* resolve("auto-accept-edits"), request), "ask");
+      assert.equal(acpPermissionDisposition(yield* resolve("full-access"), request), "allow");
     }),
   );
 

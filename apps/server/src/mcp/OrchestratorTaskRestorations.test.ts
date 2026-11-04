@@ -49,7 +49,7 @@ import { McpInvocationContext, type McpInvocationScope } from "./McpInvocationCo
 import * as OrchestratorMcp from "./OrchestratorMcpService.ts";
 import { ThreadMetadataMcpService } from "./ThreadMetadataMcpService.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
-import { toolkitRegistration } from "./McpHttpServer.ts";
+import { toolkitRegistration, layerInProcessMcpServer } from "./McpHttpServer.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import {
   TASK_LIST_RESPONSE_MAX_BYTES,
@@ -225,7 +225,14 @@ function makeLayer(
       Layer.mergeAll(
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
-        ServerSettings.layerTest(),
+        ServerSettings.layerTest({
+          providerInstances: Object.fromEntries(
+            (options.providers ?? [provider]).map((provider) => [
+              provider.instanceId,
+              { driver: provider.driver, enabled: provider.enabled, config: {} },
+            ]),
+          ),
+        }),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(PeerForwarding.PeerForwarding)({}),
         Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
@@ -246,6 +253,14 @@ function makeLayer(
               ...record.thread,
             });
           },
+          listAppOwnedChildThreadIds: (id) =>
+            Effect.succeed(
+              (records.get(id)?.subagents ?? []).flatMap((task) =>
+                task.origin === "app_owned" && task.childThreadId !== null
+                  ? [task.childThreadId]
+                  : [],
+              ),
+            ),
           delegatedTaskResultPending: () => Effect.succeed(false),
           hasReceipt: () => Effect.succeed(false),
           assertProviderInstanceEnabled: () => Effect.void,
@@ -724,7 +739,7 @@ function makeMcpLayer(
     records.set(parentId, { ...parent, runs: [run(parentId, "running")] });
   }
   return toolkitRegistration(OrchestratorToolkit, OrchestratorHandlers.layer).pipe(
-    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(layerInProcessMcpServer),
     Layer.provide(makeLayer(records, options)),
     Layer.provide(Layer.mock(ThreadMetadataMcpService)({})),
   );
@@ -1530,7 +1545,7 @@ it.effect(
       ThreadManagement.ThreadManagementService["Service"]["dispatch"]
     >[0][] = [];
     const layer = toolkitRegistration(OrchestratorToolkit, OrchestratorHandlers.layer).pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(layerInProcessMcpServer),
       Layer.provide(
         makeLayer(records, {
           dispatch: (command) => {

@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Hash independently; junctions need Node's symlink type.
 import * as NodeCrypto from "node:crypto";
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeFSP from "node:fs/promises";
 import { createPendingAttachmentId } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -34,6 +35,7 @@ const registry = Layer.effect(
 );
 const dependencies = Layer.mergeAll(
   NodeServices.layer,
+  PlatformNodeCrypto.layer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-flow-images-" }).pipe(
     Layer.provide(NodeServices.layer),
   ),
@@ -134,7 +136,10 @@ it.effect("cleans a sibling temp file if replacement fails", () =>
         ),
       ),
     );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
+  ),
 );
 
 it.effect("shares a project scan across subscribers and releases it when both leave", () =>

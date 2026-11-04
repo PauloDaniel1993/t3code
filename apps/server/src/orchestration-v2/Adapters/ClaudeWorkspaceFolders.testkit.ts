@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import {
   ClaudeSettings,
   MessageId,
@@ -46,7 +46,7 @@ export const makeClaudeWorkspaceFolderHarness = Effect.fnUntraced(function* (inp
   });
   const modelSelection = input.modelSelection ?? workspaceFolderModelSelection;
   const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
-    crypto: yield* Crypto.Crypto,
+    random: yield* SecureRandom.SecureRandom,
     instanceId: modelSelection.instanceId,
     settings: input.settings ?? decodeClaudeSettings({ binaryPath: process.execPath }),
     environment: input.environment ?? {},

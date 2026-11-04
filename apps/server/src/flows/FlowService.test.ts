@@ -45,7 +45,7 @@ const reportMcp = Effect.fn("test.reportMcp")(function* (
 ) {
   const context = yield* Layer.build(
     McpHttpServer.toolkitRegistration(FlowMcp.FlowToolkit, FlowMcp.layer).pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provide(Layer.succeed(Service.FlowService, service)),
       Layer.provide(
         Layer.mock(Threads.ThreadManagementService)({
@@ -57,6 +57,7 @@ const reportMcp = Effect.fn("test.reportMcp")(function* (
   const result = yield* Context.get(context, McpServer.McpServer)
     .callTool({ name: "t3_flow_report", arguments: { fields } })
     .pipe(
+      Effect.provide(context),
       Effect.provideService(Invocation.McpInvocationContext, {
         environmentId: EnvironmentId.make("env"),
         requestNamespace: "test",

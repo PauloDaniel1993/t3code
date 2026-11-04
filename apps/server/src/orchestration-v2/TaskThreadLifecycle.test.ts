@@ -1,6 +1,7 @@
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ServerSettings from "../serverSettings.ts";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -50,8 +51,9 @@ import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAd
 import * as RuntimeLayer from "./runtimeLayer.ts";
 import * as ProviderTurnStartTestkit from "./ProviderTurnStartService.testkit.ts";
 
-const PlatformTestLayer = Layer.merge(
+const PlatformTestLayer = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   Layer.mock(SourceControlProviderRegistry)({ resolveLink: () => Effect.die("unused title link") }),
 );
 

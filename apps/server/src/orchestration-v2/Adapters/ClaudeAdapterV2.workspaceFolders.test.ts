@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -111,7 +112,12 @@ const makeHarness = Effect.fnUntraced(function* () {
   return { ...harness, queries, finish };
 });
 
-const testLayer = Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer);
+const testLayer = Layer.mergeAll(
+  NodeServices.layer,
+  NodeCrypto.layer,
+  IdAllocator.layer,
+  McpProviderSessions.layer,
+);
 
 describe("Claude workspace folders", () => {
   it.effect("applies live model changes only when the workspace scope is unchanged", () =>

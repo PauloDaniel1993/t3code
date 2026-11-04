@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -35,7 +36,7 @@ const runtime = layerWithRegistry(
 );
 
 it.effect(
-  "imports native task records, preserves real rename/archive commands and replays without duplication",
+  "imports native task records, preserves rename/archive commands and task records through pruning",
   () =>
     Effect.gen(function* () {
       yield* seedThreads([["root", null], ...statuses.map((status) => [status, "root"] as const)]);
@@ -99,8 +100,9 @@ it.effect(
       });
       yield* repairForkTaskLinks();
       const maintenance = yield* ProjectionMaintenanceV2;
-      yield* maintenance.compactEventStore();
-      assert.isTrue((yield* maintenance.rebuild).valid);
+      yield* maintenance.pruneEventStore();
+      yield* TestClock.adjust("1 day");
+      assert.isAbove((yield* maintenance.pruneEventStore()).deletedEventCount, 0);
       assert.deepEqual(
         (yield* projections.getThreadProjection(ThreadId.make("root"))).subagents,
         parent.subagents,

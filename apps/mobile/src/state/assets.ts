@@ -6,6 +6,7 @@ import {
   createAssetEnvironmentAtoms,
   createProjectFaviconUrlAtomFamily,
   EMPTY_ASSET_URL_ATOM,
+  makeRevisionedAssetUrlFamily,
 } from "@t3tools/client-runtime/state/assets";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import { WS_METHODS, type AssetResource, type EnvironmentId } from "@t3tools/contracts";
@@ -49,9 +50,16 @@ export const projectFaviconUrlAtom = createProjectFaviconUrlAtomFamily({
   projectClones: environmentProjectCloneListAtom,
 });
 
+const revisionedAssetUrl = makeRevisionedAssetUrlFamily(assetEnvironment.createUrl);
+
+/**
+ * Pass `revision` for a host file whose bytes can change under the same path; each new
+ * revision re-mints the URL so the image reloads.
+ */
 export function useAssetUrlState(
   environmentId: EnvironmentId | null,
   resource: AssetResource | null,
+  revision?: string | null,
 ): AssetUrlState {
   const fileAccessSession = useEnvironmentQuery(
     environmentId === null ? null : environmentSession.sessionStateAtom(environmentId),
@@ -69,7 +77,9 @@ export function useAssetUrlState(
   const result = useAtomValue(
     blocked !== null || environmentId === null || resource === null
       ? EMPTY_ASSET_URL_ATOM
-      : assetEnvironment.createUrl({ environmentId, input: { resource } }),
+      : revision === undefined
+        ? assetEnvironment.createUrl({ environmentId, input: { resource } })
+        : revisionedAssetUrl({ environmentId, input: { resource }, revision }),
   );
   const shared =
     blocked ??

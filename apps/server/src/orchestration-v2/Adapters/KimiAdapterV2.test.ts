@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderHostTestLayer from "../../provider/testUtils/providerHostTestLayer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -35,9 +36,10 @@ import { makeKimiAdapterV2 } from "./KimiAdapterV2.ts";
 
 const baseLayer = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   idAllocatorLayer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-kimi-v2-" }).pipe(
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   ),
 );
 

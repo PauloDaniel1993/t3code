@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { KimiSettings } from "@t3tools/contracts";
@@ -10,7 +12,7 @@ const config = Schema.decodeSync(KimiSettings)({ enabled: true });
 const disabledConfig = Schema.decodeSync(KimiSettings)({});
 const version = () => Effect.succeed({ stdout: "Kimi Code CLI 0.29.0", stderr: "", code: 0 });
 
-it.layer(NodeServices.layer)("Kimi status", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kimi status", (it) => {
   it.effect("keeps the disabled default and early-access model presentation", () =>
     Effect.gen(function* () {
       const snapshot = yield* buildInitialKimiProviderSnapshot(disabledConfig);

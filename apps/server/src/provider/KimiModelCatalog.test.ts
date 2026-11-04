@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -20,7 +22,7 @@ const options = [
   { id: "thinking", name: "Thinking", type: "boolean" as const, currentValue: true },
 ];
 
-it.layer(NodeServices.layer)("Kimi catalog persistence", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kimi catalog persistence", (it) => {
   it.effect("retains models when a resume or update omits them and restores them on restart", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

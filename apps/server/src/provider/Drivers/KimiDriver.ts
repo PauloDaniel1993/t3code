@@ -1,6 +1,7 @@
 import { KimiSettings, ProviderDriverKind } from "@t3tools/contracts";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -145,7 +146,8 @@ export type KimiDriverEnv =
   | McpProviderSessions.McpProviderSessions
   | ProviderLatestVersions.ProviderLatestVersions
   | ChildProcessSpawner.ChildProcessSpawner
-  | Crypto.Crypto
+  | SecureRandom.SecureRandom
+  | Digest.Digest
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | IdAllocatorV2
@@ -166,7 +168,7 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
     enabled,
     config,
   }) {
-    const crypto = yield* Crypto.Crypto;
+    const random = yield* SecureRandom.SecureRandom;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -204,7 +206,7 @@ export const KimiDriver: ProviderDriver<KimiSettings, KimiDriverEnv> = {
     });
     const provideRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
-        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(SecureRandom.SecureRandom, random),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),

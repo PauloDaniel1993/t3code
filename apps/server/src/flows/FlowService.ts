@@ -25,7 +25,7 @@ import {
 import { coerceFlowInputs, resolveFlowInputs, FlowValueError } from "@t3tools/shared/flow";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
@@ -216,7 +216,7 @@ const make = Effect.gen(function* () {
   const lock = yield* Lock.FlowRunLock;
   const commands = yield* Commands.FlowCommandRunner;
   const runtime = yield* Runtime.FlowRuntime;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const sql = yield* SqlClient.SqlClient;
   const scope = yield* Scope.Scope;
   const changes = yield* PubSub.sliding<{
@@ -624,8 +624,8 @@ const make = Effect.gen(function* () {
                 fail(cause instanceof FlowValueError ? cause.message : "Invalid flow inputs."),
             });
             const id = FlowRunId.make(
-              yield* crypto
-                .randomUUIDv4()
+              yield* random
+                .uuidV4()
                 .pipe(Effect.mapError(() => fail("Could not allocate flow run id."))),
             );
             const threadId = ThreadId.make(`flow:${id}`);

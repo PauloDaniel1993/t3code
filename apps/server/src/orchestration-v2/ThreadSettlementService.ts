@@ -15,11 +15,12 @@ import {
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
@@ -296,8 +297,9 @@ export const make = Effect.gen(function* () {
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const git = yield* GitManager.GitManager;
   const pullRequests = yield* PullRequestService.PullRequestService;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   // A shell merge or close sends no event, and the branch lookup caches an open pull request for
   // a minute, so these threads' next lookup reads the host fresh.
   const shellClosedThreads = new Set<ThreadId>();
@@ -340,7 +342,7 @@ export const make = Effect.gen(function* () {
           autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
         });
         if (settledAt === null) return thread;
-        const uuid = yield* crypto.randomUUIDv4();
+        const uuid = yield* random.uuidV4();
         yield* orchestrator.dispatch({
           type: "thread.auto-settle",
           commandId: CommandId.make(`server:auto-settle:${thread.id}:${uuid}`),
@@ -395,11 +397,14 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const project = projects.get(thread.projectId);
           if (project === undefined || thread.branch === null) return;
-          // A removed worktree falls back to the project's checkout.
           const primaryPath = threadPrimaryPath(thread, project);
+          const worktreeRoot = thread.worktrees?.[0]?.path ?? primaryPath;
+          // An unreadable .git keeps the worktree, so git fails there and the thread is skipped.
           const worktreeExists =
             thread.worktreePath === null ||
-            (yield* fileSystem.exists(primaryPath).pipe(Effect.orElseSucceed(() => false)));
+            (yield* fileSystem
+              .exists(path.join(worktreeRoot, ".git"))
+              .pipe(Effect.orElseSucceed(() => true)));
           lookupCwdByThreadId.set(thread.id, worktreeExists ? primaryPath : project.workspaceRoot);
         }),
       { concurrency: 8, discard: true },

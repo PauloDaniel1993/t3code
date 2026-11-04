@@ -15,6 +15,7 @@ import type {
   WorktreeCleanupRules,
   StorageCleanupReport,
   StorageCleanupReportEntry,
+  ThreadId,
 } from "@t3tools/contracts";
 import { projectFolders, type WorkspaceProject } from "@t3tools/shared/workspaceFolders";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
@@ -128,8 +129,15 @@ export function storageCleanupThreadIdle(
   now: number,
   settings: LimitRecoverySettings,
 ): boolean {
+  return thread.worktreePath !== null && threadIdle(thread, now, settings);
+}
+
+function threadIdle(
+  thread: OrchestrationV2ThreadShell,
+  now: number,
+  settings: LimitRecoverySettings,
+): boolean {
   return (
-    thread.worktreePath !== null &&
     thread.activeRunId === null &&
     (thread.status === "idle" ||
       thread.status === "completed" ||
@@ -214,6 +222,36 @@ function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineag
     }
   }
   return owner;
+}
+
+function worktreeSettlementChain(
+  thread: OrchestrationV2ThreadShell,
+  byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>,
+  now: number,
+  settings: LimitRecoverySettings,
+) {
+  const chain = [thread];
+  let current = thread;
+  while (current.settledAt === null) {
+    if (
+      current.lineage.relationshipToParent !== "subagent" ||
+      current.settledOverride === "active" ||
+      current.pinnedAt != null
+    )
+      return [];
+    const parent = byId.get(current.lineage.parentThreadId!);
+    if (
+      parent === undefined ||
+      chain.some((member) => member.id === parent.id) ||
+      parent.projectId !== thread.projectId ||
+      parent.lineage.rootThreadId !== thread.lineage.rootThreadId ||
+      !threadIdle(parent, now, settings)
+    )
+      return [];
+    chain.push(parent);
+    current = parent;
+  }
+  return chain;
 }
 
 /** Squash/rebase merges require the merged PR to name this exact head commit. */
@@ -797,6 +835,7 @@ const make = Effect.gen(function* () {
       ),
     )).filter((thread) => thread.worktreePath !== null && thread.branch !== null);
     const snapshot = yield* readThreads();
+    const threadsById = new Map(snapshot.threads.map((thread) => [thread.id, thread]));
     const refreshedDefaultRefs = new Map<string, Set<string>>();
     const defaultBranches = new Map<string, string | null>();
     const groups = Map.groupBy(
@@ -826,6 +865,10 @@ const make = Effect.gen(function* () {
       if (!worktreeCleanupEnabled(settings)) continue;
       const group = groups.get(boundPaths(thread)[0]!) ?? [];
       const deleted = "workspaceRoot" in thread;
+      const settlementChain = deleted
+        ? []
+        : worktreeSettlementChain(thread, threadsById, now, serverSettings);
+      const settledThread = settlementChain.at(-1);
       const members = deleted ? [thread, ...group] : group;
       const activityAt = deleted ? 0 : Math.max(...group.map(storageCleanupActivityAt));
       const project = deleted
@@ -929,7 +972,7 @@ const make = Effect.gen(function* () {
           heads.push((yield* git.resolveCommit({ cwd: member.path, revision: "HEAD" })).commitSha);
         }
         if (
-          group.some(
+          [...group, ...settlementChain.slice(1)].some(
             (member) =>
               member.settledAt !== null &&
               now - Math.max(DateTime.toEpochMillis(member.updatedAt), activityAt) <
@@ -942,9 +985,9 @@ const make = Effect.gen(function* () {
           settings.worktreeAfterDays !== null &&
           activityAt < now - settings.worktreeAfterDays * DAY_MS;
         const settledFor =
-          deleted || thread.settledAt === null
+          settledThread?.settledAt == null
             ? null
-            : now - Math.max(activityAt, DateTime.toEpochMillis(thread.settledAt));
+            : now - Math.max(DateTime.toEpochMillis(settledThread.settledAt), activityAt);
         const settledDays = settledFor === null ? null : Math.floor(settledFor / DAY_MS);
         const settled =
           settledFor !== null &&
@@ -1146,6 +1189,27 @@ const make = Effect.gen(function* () {
             })
           )
             return waitForStop("thread activity or shared worktree changed since check");
+          if (settlementChain.length > 1) {
+            const ancestors = yield* Effect.forEach(settlementChain.slice(1), (ancestor) =>
+              projections.getThreadShell(ancestor.id),
+            );
+            const latestSettlement = worktreeSettlementChain(
+              latestGroup.find((shell) => shell.id === thread.id)!,
+              new Map(
+                [...latestGroup, ...ancestors.filter((ancestor) => ancestor !== null)].map(
+                  (ancestor) => [ancestor.id, ancestor],
+                ),
+              ),
+              now,
+              serverSettings,
+            ).at(-1);
+            if (
+              latestSettlement?.id !== settledThread?.id ||
+              !Equal.equals(latestSettlement?.settledAt, settledThread?.settledAt) ||
+              !Equal.equals(latestSettlement?.updatedAt, settledThread?.updatedAt)
+            )
+              return "parent settlement changed since check";
+          }
           // Sessions can outlive their run and can be shared across app threads.
           const sessionRows = yield* sql<{ payload_json: string }>`
             SELECT payload_json FROM orchestration_v2_projection_provider_sessions

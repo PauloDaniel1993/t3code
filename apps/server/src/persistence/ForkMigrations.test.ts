@@ -40,8 +40,15 @@ it.effect("keeps upstream and fork histories separate on fresh startup and resta
     const sql = yield* SqlClient.SqlClient;
     const base = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     const fork = yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`;
-    assert.lengthOf(base, 77);
+    assert.lengthOf(base, 79);
     assert.lengthOf(fork, 14);
+    assert.deepEqual(
+      yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 78 ORDER BY migration_id`,
+      [
+        { migration_id: 78, name: "DropOrchestrationEventCorrelationIndex" },
+        { migration_id: 79, name: "DelegatedRecoveryIndexes" },
+      ],
+    );
     assert.deepEqual(
       yield* sql`SELECT name FROM pragma_table_info('flow_runs') WHERE name = 'version'`,
       [{ name: "version" }],

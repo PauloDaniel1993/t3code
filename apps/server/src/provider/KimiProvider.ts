@@ -20,7 +20,7 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { buildKimiModels } from "./KimiModels.ts";
 import type * as AcpSchema from "effect-acp/compat";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
@@ -145,7 +145,10 @@ export const checkKimiProviderStatus = Effect.fn("checkKimiProviderStatus")(func
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | SecureRandom.SecureRandom
+  | FileSystem.FileSystem
+  | Path.Path
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const currentModelState = yield* configOptions;

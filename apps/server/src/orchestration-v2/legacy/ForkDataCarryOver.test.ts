@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -19,162 +20,155 @@ import { TestLayer, stamp, seedThreads } from "./ForkDataCarryOver.testkit.ts";
 
 const encodeLegacyAttachments = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-it.effect(
-  "carries source tags and reasoning through previews, lazy hydration, replay and compaction",
-  () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const importer = yield* LegacyV1ThreadImporter;
-      const projections = yield* ProjectionStoreV2;
-      const maintenance = yield* ProjectionMaintenanceV2;
-      yield* seedThreads([
-        ["root", null],
-        ["child", "root"],
-        ["grandchild", "child"],
-      ]);
-      yield* sql`UPDATE projection_threads SET archived_at = ${stamp}, deleted_at = ${stamp} WHERE thread_id = 'root'`;
-      const sources = [null, "user", "provider", "system", "task-result"] as const;
-      for (let index = 0; index < 123; index++) {
-        const role = index % 3 === 2 ? "reasoning" : index % 3 === 1 ? "assistant" : "user";
-        yield* sql`INSERT INTO projection_thread_messages
+it.effect("carries source tags and reasoning through previews, lazy hydration and pruning", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const importer = yield* LegacyV1ThreadImporter;
+    const projections = yield* ProjectionStoreV2;
+    const maintenance = yield* ProjectionMaintenanceV2;
+    yield* seedThreads([
+      ["root", null],
+      ["child", "root"],
+      ["grandchild", "child"],
+    ]);
+    yield* sql`UPDATE projection_threads SET archived_at = ${stamp}, deleted_at = ${stamp} WHERE thread_id = 'root'`;
+    const sources = [null, "user", "provider", "system", "task-result"] as const;
+    for (let index = 0; index < 123; index++) {
+      const role = index % 3 === 2 ? "reasoning" : index % 3 === 1 ? "assistant" : "user";
+      yield* sql`INSERT INTO projection_thread_messages
         (message_id, thread_id, role, text, source, is_streaming, created_at, updated_at)
         VALUES (${`m${String(index).padStart(3, "0")}`}, 'child', ${role}, ${`text ${index}`},
           ${sources[index % sources.length] ?? null}, ${index === 122 ? 1 : 0}, ${stamp}, ${stamp})`;
-      }
-      yield* importer.reconcileShells;
-      assert.equal((yield* Effect.exit(maintenance.compactEventStore()))._tag, "Failure");
-      assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 2 });
-      const preview = yield* projections.getThreadProjection(ThreadId.make("child"));
-      assert.equal(preview.turnItems.find((item) => item.type === "reasoning")?.ordinal, 123);
-      const actualSink = yield* EventSinkV2;
-      let batches = 0;
-      const interruptedHydration = Effect.gen(function* () {
-        return yield* (yield* LegacyV1ThreadImporter).ensureTranscript(ThreadId.make("child"));
-      }).pipe(
-        Effect.provide(Layer.fresh(importerLayer)),
-        Effect.provideService(EventSinkV2, {
-          ...actualSink,
-          write: (input) =>
-            ++batches === 2
-              ? Effect.fail(
-                  new EventSinkWriteError({
-                    eventCount: input.events.length,
-                    cause: "injected batch failure",
-                  }),
-                )
-              : actualSink.write(input),
-        }),
-      );
-      assert.equal((yield* Effect.exit(interruptedHydration))._tag, "Failure");
-      assert.equal(
-        (yield* sql<{ transcript_imported_at: string | null }>`SELECT transcript_imported_at
+    }
+    yield* importer.reconcileShells;
+    assert.equal((yield* Effect.exit(maintenance.pruneEventStore()))._tag, "Failure");
+    assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 2 });
+    const preview = yield* projections.getThreadProjection(ThreadId.make("child"));
+    assert.equal(preview.turnItems.find((item) => item.type === "reasoning")?.ordinal, 123);
+    const actualSink = yield* EventSinkV2;
+    let batches = 0;
+    const interruptedHydration = Effect.gen(function* () {
+      return yield* (yield* LegacyV1ThreadImporter).ensureTranscript(ThreadId.make("child"));
+    }).pipe(
+      Effect.provide(Layer.fresh(importerLayer)),
+      Effect.provideService(EventSinkV2, {
+        ...actualSink,
+        write: (input) =>
+          ++batches === 2
+            ? Effect.fail(
+                new EventSinkWriteError({
+                  eventCount: input.events.length,
+                  cause: "injected batch failure",
+                }),
+              )
+            : actualSink.write(input),
+      }),
+    );
+    assert.equal((yield* Effect.exit(interruptedHydration))._tag, "Failure");
+    assert.equal(
+      (yield* sql<{ transcript_imported_at: string | null }>`SELECT transcript_imported_at
       FROM orchestration_v2_legacy_imports WHERE thread_id = 'child'`)[0]?.transcript_imported_at,
-        null,
+      null,
+    );
+    yield* importer.ensureTranscript(ThreadId.make("child"));
+    const projection = yield* projections.getThreadProjection(ThreadId.make("child"));
+    assert.lengthOf(projection.messages, 82);
+    assert.lengthOf(projection.turnItems, 124); // Transcript plus the grandchild's native task item.
+    for (let index = 0; index < 123; index++) {
+      const item = projection.turnItems.find((entry) => entry.ordinal === index + 1)!;
+      assert.equal(item.legacyMessageSource, sources[index % sources.length] ?? undefined);
+      assert.equal("text" in item ? item.text : null, `text ${index}`);
+      assert.equal(
+        "messageId" in item ? item.messageId : item.id.replace("migration:v1:turn-item:", ""),
+        `m${String(index).padStart(3, "0")}`,
       );
-      yield* importer.ensureTranscript(ThreadId.make("child"));
-      const projection = yield* projections.getThreadProjection(ThreadId.make("child"));
-      assert.lengthOf(projection.messages, 82);
-      assert.lengthOf(projection.turnItems, 124); // Transcript plus the grandchild's native task item.
-      for (let index = 0; index < 123; index++) {
-        const item = projection.turnItems.find((entry) => entry.ordinal === index + 1)!;
-        assert.equal(item.legacyMessageSource, sources[index % sources.length] ?? undefined);
-        assert.equal("text" in item ? item.text : null, `text ${index}`);
+      if (item.type === "user_message") {
+        const source = sources[index % sources.length];
         assert.equal(
-          "messageId" in item ? item.messageId : item.id.replace("migration:v1:turn-item:", ""),
-          `m${String(index).padStart(3, "0")}`,
+          item.createdBy,
+          source === "task-result" || source === "system"
+            ? "system"
+            : source === "provider"
+              ? "agent"
+              : "user",
         );
-        if (item.type === "user_message") {
-          const source = sources[index % sources.length];
-          assert.equal(
-            item.createdBy,
-            source === "task-result" || source === "system"
-              ? "system"
-              : source === "provider"
-                ? "agent"
-                : "user",
-          );
-        }
       }
-      assert.equal(
-        projection.turnItems.find((item) => item.ordinal === 123)?.status,
-        "interrupted",
-      );
-      assert.deepEqual(projection.thread.lineage, {
-        parentThreadId: ThreadId.make("root"),
-        rootThreadId: ThreadId.make("root"),
-        relationshipToParent: "subagent",
-      });
-      assert.equal(projection.thread.creationSource, "mcp");
-      assert.deepEqual((yield* projections.getThread(ThreadId.make("grandchild"))).lineage, {
-        parentThreadId: ThreadId.make("child"),
-        rootThreadId: ThreadId.make("root"),
-        relationshipToParent: "subagent",
-      });
-      const eventCount = (yield* sql<{
-        count: number;
-      }>`SELECT COUNT(*) AS count FROM orchestration_events`)[0]?.count;
-      yield* importer.reconcileShells;
-      yield* importer.ensureTranscript(ThreadId.make("child"));
-      assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 0 });
-      assert.equal(
-        (yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM orchestration_events`)[0]
-          ?.count,
-        eventCount,
-      );
-      yield* repairForkTaskLinks();
-      yield* maintenance.compactEventStore();
-      assert.isTrue((yield* maintenance.rebuild).valid);
-      yield* importer.reconcileShells;
-      const replayed = yield* projections.getThreadProjection(ThreadId.make("child"));
-      assert.deepEqual(replayed.messages, projection.messages);
-      assert.deepEqual(replayed.turnItems, projection.turnItems);
-      assert.deepEqual(replayed.thread.lineage, projection.thread.lineage);
-      assert.equal(replayed.thread.title, projection.thread.title);
-      assert.deepEqual(replayed.subagents, projection.subagents);
-      assert.equal(
-        (yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM projection_thread_messages`)[0]
-          ?.count,
-        123,
-      );
-    }).pipe(Effect.provide(TestLayer)),
+    }
+    assert.equal(projection.turnItems.find((item) => item.ordinal === 123)?.status, "interrupted");
+    assert.deepEqual(projection.thread.lineage, {
+      parentThreadId: ThreadId.make("root"),
+      rootThreadId: ThreadId.make("root"),
+      relationshipToParent: "subagent",
+    });
+    assert.equal(projection.thread.creationSource, "mcp");
+    assert.deepEqual((yield* projections.getThread(ThreadId.make("grandchild"))).lineage, {
+      parentThreadId: ThreadId.make("child"),
+      rootThreadId: ThreadId.make("root"),
+      relationshipToParent: "subagent",
+    });
+    const eventCount = (yield* sql<{
+      count: number;
+    }>`SELECT COUNT(*) AS count FROM orchestration_events`)[0]?.count;
+    yield* importer.reconcileShells;
+    yield* importer.ensureTranscript(ThreadId.make("child"));
+    assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 0 });
+    assert.equal(
+      (yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM orchestration_events`)[0]?.count,
+      eventCount,
+    );
+    yield* repairForkTaskLinks();
+    yield* maintenance.pruneEventStore();
+    yield* TestClock.adjust("1 day");
+    assert.isAbove((yield* maintenance.pruneEventStore()).deletedEventCount, 0);
+    yield* importer.reconcileShells;
+    const persisted = yield* projections.getThreadProjection(ThreadId.make("child"));
+    assert.deepEqual(persisted.messages, projection.messages);
+    assert.deepEqual(persisted.turnItems, projection.turnItems);
+    assert.deepEqual(persisted.thread.lineage, projection.thread.lineage);
+    assert.equal(persisted.thread.title, projection.thread.title);
+    assert.deepEqual(persisted.subagents, projection.subagents);
+    assert.equal(
+      (yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM projection_thread_messages`)[0]
+        ?.count,
+      123,
+    );
+  }).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect(
-  "resumes an interrupted link repair without duplicate events or premature compaction",
-  () =>
-    Effect.gen(function* () {
-      yield* seedThreads([
-        ["root", null],
-        ["child", "root"],
-        ["second", "root"],
-      ]);
-      yield* (yield* LegacyV1ThreadImporter).reconcileShells;
-      const actual = yield* EventSinkV2;
-      let attempts = 0;
-      const interrupted = repairForkTaskLinks().pipe(
-        Effect.provideService(EventSinkV2, {
-          ...actual,
-          commitCommand: (input) =>
-            ++attempts === 2
-              ? Effect.fail(
-                  new EventSinkWriteError({ eventCount: 1, cause: "injected interruption" }),
-                )
-              : actual.commitCommand(input),
-        }),
-      );
-      assert.equal((yield* Effect.exit(interrupted))._tag, "Failure");
-      const maintenance = yield* ProjectionMaintenanceV2;
-      assert.equal((yield* Effect.exit(maintenance.compactEventStore()))._tag, "Failure");
-      assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 1 });
-      assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 0 });
-      const sql = yield* SqlClient.SqlClient;
-      assert.equal(
-        (yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM orchestration_command_receipts
+it.effect("resumes an interrupted link repair without duplicate events or premature pruning", () =>
+  Effect.gen(function* () {
+    yield* seedThreads([
+      ["root", null],
+      ["child", "root"],
+      ["second", "root"],
+    ]);
+    yield* (yield* LegacyV1ThreadImporter).reconcileShells;
+    const actual = yield* EventSinkV2;
+    let attempts = 0;
+    const interrupted = repairForkTaskLinks().pipe(
+      Effect.provideService(EventSinkV2, {
+        ...actual,
+        commitCommand: (input) =>
+          ++attempts === 2
+            ? Effect.fail(
+                new EventSinkWriteError({ eventCount: 1, cause: "injected interruption" }),
+              )
+            : actual.commitCommand(input),
+      }),
+    );
+    assert.equal((yield* Effect.exit(interrupted))._tag, "Failure");
+    const maintenance = yield* ProjectionMaintenanceV2;
+    assert.equal((yield* Effect.exit(maintenance.pruneEventStore()))._tag, "Failure");
+    assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 1 });
+    assert.deepEqual(yield* repairForkTaskLinks(), { repairedThreadCount: 0 });
+    const sql = yield* SqlClient.SqlClient;
+    assert.equal(
+      (yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM orchestration_command_receipts
       WHERE command_type = 'fork.legacy-task-links.repair-v2'`)[0]?.count,
-        2,
-      );
-      yield* maintenance.compactEventStore();
-    }).pipe(Effect.provide(TestLayer)),
+      2,
+    );
+    yield* maintenance.pruneEventStore();
+  }).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect.each([
@@ -211,7 +205,7 @@ it.effect.each([
     assert.equal(warnings[0]?.entity_id, "child");
     assert.include(warnings[0]?.reason ?? "", name);
     yield* repairForkTaskLinks();
-    yield* (yield* ProjectionMaintenanceV2).compactEventStore();
+    yield* (yield* ProjectionMaintenanceV2).pruneEventStore();
   }).pipe(Effect.provide(TestLayer)),
 );
 

@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // Opt in with T3_KIMI_ACP_PROBE=1; T3_KIMI_CODE_HOME selects an isolated authenticated test home.
 // T3_KIMI_ACP_INTERACTION_PROBE=1 also requests questions/permissions; cancel them and keep only redacted shapes.
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -267,6 +269,6 @@ describe.runIf(process.env.T3_KIMI_ACP_PROBE === "1")("Kimi ACP CLI probe", () =
       ]);
       expect(redactedText.join("\n")).not.toMatch(/bearer|access[_-]?token|refresh[_-]?token/i);
       yield* Effect.logInfo("Kimi ACP compatibility observations", { observations });
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });

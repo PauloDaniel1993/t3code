@@ -556,7 +556,7 @@ const GitServiceLayer = CheckpointService.layer.pipe(
     ),
   ),
   Layer.provideMerge(VcsProcessTestLayer),
-  Layer.provide(NodeCrypto.layer),
+  Layer.provideMerge(NodeCrypto.layer),
   Layer.provideMerge(
     ServerConfig.layerTest(process.cwd(), { prefix: "t3-checkpoint-parts-test-" }),
   ),

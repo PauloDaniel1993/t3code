@@ -1,6 +1,7 @@
 import * as Orchestrator from "../Orchestrator.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ExecutionEnvironmentDescriptor, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -75,7 +76,7 @@ const hostLayer = Layer.mergeAll(
 const databaseLayer = Layer.mergeAll(
   TestLayer,
   configLayer(process.cwd(), { prefix: "t3-fork-startup-" }),
-).pipe(Layer.provideMerge(NodeServices.layer));
+).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 /** The real startup service; `hydration` resolves when background import completes. */
 const startupLayer = (

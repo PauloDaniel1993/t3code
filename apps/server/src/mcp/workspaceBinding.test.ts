@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "@effect/vitest";
@@ -292,12 +293,15 @@ it.effect(
           code: "folder_unavailable",
         });
         yield* h.fs.remove(h.secondaryWorktree, { recursive: true });
-        expect(yield* Effect.flip(h.list(h.secondary))).toMatchObject({
-          code: "folder_unavailable",
+        expect(yield* h.list(h.secondary)).toMatchObject({
+          folderPath: h.secondary,
+          cwd: h.secondary,
+          repositoryRoot: h.secondary,
         });
-        expect(h.listRefs).toHaveBeenCalledTimes(2);
+        expect(h.listRefs).toHaveBeenLastCalledWith({ cwd: h.secondary });
+        expect(h.listRefs).toHaveBeenCalledTimes(3);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -322,7 +326,7 @@ it.effect(
         expect(after.folders[0]?.effectivePath).toBe(after.cwd);
         expect(after.worktrees).toEqual(h.thread.worktrees);
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("thread reads report the whole mapped binding after relinking and unlinking", () =>
@@ -357,7 +361,7 @@ it.effect("thread reads report the whole mapped binding after relinking and unli
       expect(unlinked.workspaceFile).toBeNull();
       expect(unlinked.folders).toEqual(result.folders);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("inspection checks mapped availability now and never promotes a secondary", () =>
@@ -381,7 +385,7 @@ it.effect("inspection checks mapped availability now and never promotes a second
       expect(recovered.folders[1]?.effectivePath).toBe(h.secondaryWorktree);
       expect(recovered.worktrees).toEqual(missing.worktrees);
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("root and legacy one-folder reads preserve their primary scalars", () =>
@@ -405,5 +409,5 @@ it.effect("root and legacy one-folder reads preserve their primary scalars", () 
       expect(legacy.folders[0]?.effectivePath).toBe(h.primaryWorktree);
       expect(legacy.worktrees).toBeUndefined();
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

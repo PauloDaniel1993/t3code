@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -30,7 +31,7 @@ import * as WorktreeSet from "./WorktreeSetService.ts";
 
 const GitLayer = Layer.mergeAll(GitVcsDriver.layer, WorkspaceFolderResolver.layer).pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-set-test-" })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
 const threadId = ThreadId.make("thread:worktree-set");

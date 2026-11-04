@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -10,7 +12,9 @@ import { applyKimiAcpModelSelection, isKimiAcpCompatible } from "./KimiAcpSuppor
 import { buildKimiModels } from "../KimiModels.ts";
 import { extractKimiPermissionQuestion } from "./KimiProtocol.ts";
 
-it.layer(NodeServices.layer, { excludeTestServices: true })("Kimi ACP runtime", (it) => {
+const testLayer = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
+
+it.layer(testLayer, { excludeTestServices: true })("Kimi ACP runtime", (it) => {
   it.effect.each([1, 2, 3])("negotiates ACP %s through the real transport", (version) =>
     Effect.gen(function* () {
       const h = yield* makeKimiTestHarness({ T3_KIMI_PROTOCOL_VERSION: String(version) });

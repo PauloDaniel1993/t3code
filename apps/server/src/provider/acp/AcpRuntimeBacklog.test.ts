@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -33,5 +35,5 @@ it.effect("keeps a healthy runtime alive while text and lifecycle events remain 
     assert.lengthOf(events, 800);
     assert.equal(events.filter((event) => event._tag === "ContentDelta").length, 200);
     assert.isFalse(events.some((event) => event._tag === "ConnectionTerminated"));
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Schema from "effect/Schema";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -41,7 +43,9 @@ const makeHelper = Effect.fn("KimiTextTest.makeHelper")(function* (
   return { ...h, textGeneration, common: { cwd: h.root, modelSelection: selection } };
 });
 
-it.layer(NodeServices.layer, { excludeTestServices: true })("Kimi auxiliary generation", (it) => {
+const testLayer = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
+
+it.layer(testLayer, { excludeTestServices: true })("Kimi auxiliary generation", (it) => {
   it.effect("generates all helper types in fresh read-only workspaces", () =>
     Effect.gen(function* () {
       const h = yield* makeHelper();

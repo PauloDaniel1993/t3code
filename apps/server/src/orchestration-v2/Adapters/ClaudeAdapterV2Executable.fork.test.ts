@@ -1,5 +1,6 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -72,7 +73,7 @@ const makeFixture = Effect.fnUntraced(function* (input: {
       : defaultSettings.binaryPath;
   const opened: Array<ClaudeAgentSdkQueryOptions> = [];
   const adapter = yield* makeClaudeAdapterV2({
-    crypto: yield* Crypto.Crypto,
+    random: yield* SecureRandom.SecureRandom,
     instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
     settings: { ...defaultSettings, binaryPath },
     environment,
@@ -206,7 +207,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+        Layer.mergeAll(
+          idAllocatorLayer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+          McpProviderSessions.layer,
+        ),
       ),
     ),
   );
@@ -220,7 +225,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+        Layer.mergeAll(
+          idAllocatorLayer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+          McpProviderSessions.layer,
+        ),
       ),
     ),
   );
@@ -237,7 +246,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+        Layer.mergeAll(
+          idAllocatorLayer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+          McpProviderSessions.layer,
+        ),
       ),
     ),
   );
@@ -257,7 +270,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+        Layer.mergeAll(
+          idAllocatorLayer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+          McpProviderSessions.layer,
+        ),
       ),
     ),
   );
@@ -275,7 +292,11 @@ describe("fork(claude-executable) V2 turn startup", () => {
       }),
     ).pipe(
       Effect.provide(
-        Layer.mergeAll(idAllocatorLayer, NodeServices.layer, McpProviderSessions.layer),
+        Layer.mergeAll(
+          idAllocatorLayer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+          McpProviderSessions.layer,
+        ),
       ),
     ),
   );

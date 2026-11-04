@@ -1,6 +1,7 @@
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 // @effect-diagnostics nodeBuiltinImport:off - tests plant filesystem escapes in isolated fixtures.
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeFSP from "node:fs/promises";
 import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
@@ -108,7 +109,7 @@ const testLayer = Layer.mergeAll(
     Layer.provide(Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void })),
     Layer.provide(Layer.mock(ScheduledTaskService)({ deleteForThread: () => Effect.void })),
   ),
-).pipe(Layer.provideMerge(NodeServices.layer));
+).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 const attachment = {
   type: "image",

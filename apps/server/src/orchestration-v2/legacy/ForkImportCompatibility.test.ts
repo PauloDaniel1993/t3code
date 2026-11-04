@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ProjectionMaintenanceV2 } from "../ProjectionMaintenance.ts";
@@ -349,16 +350,19 @@ it.effect("upstream still provides what the fork's import check reads", () =>
       reserved,
       "Upstream no longer reserves legacy timeline positions in orchestration_v2_turn_item_positions.",
     );
-    yield* (yield* ProjectionMaintenanceV2).compactEventStore();
-    assert.deepEqual(
-      yield* timeline,
-      expected,
-      "Upstream compaction now removes legacy turn-item.updated events; ForkImportCompatibility would warn on every healthy compacted install.",
-    );
+    const persistedItems = sql`SELECT turn_item_id, payload_json
+      FROM orchestration_v2_projection_turn_items ORDER BY turn_item_id`;
+    const beforePruning = yield* persistedItems;
+    assert.equal((yield* inspectForkImport())._tag, "verified");
+    const maintenance = yield* ProjectionMaintenanceV2;
+    yield* maintenance.pruneEventStore();
+    yield* TestClock.adjust("1 day");
+    assert.isAbove((yield* maintenance.pruneEventStore()).deletedEventCount, 0);
+    assert.deepEqual(yield* persistedItems, beforePruning);
     assert.deepEqual(
       yield* positions,
       reserved,
-      "Upstream compaction now removes reserved legacy positions; ForkImportCompatibility would warn on every healthy compacted install.",
+      "Upstream pruning now removes reserved legacy positions; ForkImportCompatibility would warn on every healthy compacted install.",
     );
     assert.deepEqual(
       yield* sql`SELECT
@@ -374,8 +378,8 @@ it.effect("upstream still provides what the fork's import check reads", () =>
     const inspection = yield* inspectForkImport();
     assert.equal(
       inspection._tag,
-      "verified",
-      `The fork's import check no longer recognises a healthy import: ${"mismatch" in inspection ? inspection.mismatch.detail : inspection._tag}`,
+      "skipped",
+      `The fork's import check no longer recognises a verified import after pruning: ${"mismatch" in inspection ? inspection.mismatch.detail : inspection._tag}`,
     );
   }).pipe(Effect.provide(TestLayer)),
 );

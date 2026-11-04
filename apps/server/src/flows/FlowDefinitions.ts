@@ -8,7 +8,7 @@ import {
   parseAttachmentFileExtension,
   resolveAttachmentPathById,
 } from "../attachmentStore.ts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 // @effect-diagnostics preferSchemaOverJson:off -- Stable pretty-printing and snapshot comparison preserve file formatting.
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -124,7 +124,7 @@ const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const path = yield* Path.Path;
   const paths = yield* WorkspacePaths.WorkspacePaths;
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -414,10 +414,7 @@ const make = Effect.gen(function* () {
           // Names are content hashes, so an existing file, or one a concurrent import just
           // renamed into place (Windows then refuses our rename), already holds these bytes.
           if (!exists) {
-            const temp = path.join(
-              path.dirname(target),
-              `.image-${yield* crypto.randomUUIDv4()}.tmp`,
-            );
+            const temp = path.join(path.dirname(target), `.image-${yield* random.uuidV4()}.tmp`);
             yield* fs
               .writeFile(temp, bytes, { flag: "wx" })
               .pipe(
@@ -465,7 +462,7 @@ const make = Effect.gen(function* () {
           const text = serializeFlowDefinition(definition);
           if (new TextEncoder().encode(text).length > 256 * 1024)
             return yield* new FlowDefinitionError({ operation: "write", reason: "too_large" });
-          const temp = path.join(path.dirname(target), `.flow-${yield* crypto.randomUUIDv4()}.tmp`);
+          const temp = path.join(path.dirname(target), `.flow-${yield* random.uuidV4()}.tmp`);
           yield* fs
             .writeFileString(temp, text, { flag: "wx" })
             .pipe(

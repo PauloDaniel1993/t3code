@@ -2,6 +2,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as NetAddress from "effect/net/NetAddress";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -113,7 +114,7 @@ const McpRegistryLayer = Layer.effect(
       }),
     ),
   ),
-  Layer.provide(NodeServices.layer),
+  Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
 const unused = (name: string) => () => Effect.die(`${name} is unused in this test`);
@@ -287,7 +288,7 @@ function scenario<E>(input: {
       ),
     );
     const layer = Layer.mergeAll(StoresLayer, sinkLayer, idAllocatorLayer, managerLayer).pipe(
-      Layer.provide(NodeServices.layer),
+      Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       Layer.provide(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
           getInstance: () => Effect.undefined,

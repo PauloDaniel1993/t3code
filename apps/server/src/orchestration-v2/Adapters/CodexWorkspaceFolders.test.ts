@@ -1,5 +1,6 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -49,7 +50,7 @@ describe("Codex workspace folders", () => {
   it.effect("records the session scope so a model change reuses it and reopening clears it", () =>
     Effect.gen(function* () {
       const adapter = yield* makeCodexAdapterV2({
-        crypto: yield* Crypto.Crypto,
+        digest: yield* Digest.Digest,
         instanceId: modelSelection.instanceId,
         settings,
         environment: {},
@@ -112,7 +113,11 @@ describe("Codex workspace folders", () => {
       assert.deepEqual(cleared.providerSession.additionalDirectories, []);
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        Layer.mergeAll(
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+        ),
       ),
     ),
   );
@@ -208,11 +213,20 @@ describe("Codex workspace folders", () => {
           kind: "application",
           value: buildWorkspaceFolderInventory(scope),
         });
-        assert.equal(params.additionalContext?.t3_code_orchestration !== undefined, hasT3Mcp);
+        assert.equal(
+          Object.keys(params.additionalContext ?? {}).some((key) =>
+            key.startsWith("t3_code_orchestration_"),
+          ),
+          hasT3Mcp,
+        );
       }
       const plain = yield* build({ ...policy, additionalDirectories: [] }, true);
       assert.notProperty(plain.additionalContext, "workspace_folders");
-      assert.isDefined(plain.additionalContext?.t3_code_orchestration);
+      assert.isTrue(
+        Object.keys(plain.additionalContext ?? {}).some((key) =>
+          key.startsWith("t3_code_orchestration_"),
+        ),
+      );
     }),
   );
 });

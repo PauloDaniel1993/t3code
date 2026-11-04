@@ -1,5 +1,5 @@
 import { KIMI_DEFAULT_MODEL, type KimiSettings } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -157,7 +157,7 @@ export const makeKimiAcpRuntime = Effect.fn("makeKimiAcpRuntime")(function* (
 ): Effect.fn.Return<
   AcpSessionRuntime.AcpSessionRuntime["Service"],
   AcpErrors.AcpError,
-  Crypto.Crypto | Scope.Scope | FileSystem.FileSystem | Path.Path
+  SecureRandom.SecureRandom | Scope.Scope | FileSystem.FileSystem | Path.Path
 > {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

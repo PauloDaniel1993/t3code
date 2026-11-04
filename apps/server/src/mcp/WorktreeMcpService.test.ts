@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -24,6 +25,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
@@ -109,6 +111,7 @@ interface HarnessOptions {
   readonly currentBranch?: string | null;
   readonly notARepo?: boolean;
   readonly newWorktreesStartFromOrigin?: boolean;
+  readonly projectNewWorktreesStartFromOrigin?: boolean;
   readonly setupScript?: "started" | "no-script" | "fails" | "dies";
   readonly dispatchFails?: boolean;
   readonly providerDisabledAtBind?: boolean;
@@ -134,6 +137,7 @@ interface HarnessOptions {
   readonly folderReadFails?: boolean;
   readonly handoffOnFolderRead?: boolean;
   readonly listRefsError?: "spawn" | "timeout";
+  readonly existsFails?: boolean;
 }
 
 const makeHarness = (options: HarnessOptions = {}) => {
@@ -298,7 +302,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
             ),
           ),
   );
-  const listRefs = vi.fn((input: { readonly query?: string | undefined }) =>
+  const listRefs = vi.fn((input: { readonly cwd: string; readonly query?: string | undefined }) =>
     options.listRefsError
       ? Effect.fail(
           new GitCommandError({
@@ -444,6 +448,15 @@ const makeHarness = (options: HarnessOptions = {}) => {
     } satisfies Partial<ProjectService.ProjectService["Service"]>),
     ServerSettings.layerTest({
       newWorktreesStartFromOrigin: options.newWorktreesStartFromOrigin ?? false,
+      ...(options.projectNewWorktreesStartFromOrigin === undefined
+        ? {}
+        : {
+            projectSettingsOverrides: {
+              [projectId]: {
+                newWorktreesStartFromOrigin: options.projectNewWorktreesStartFromOrigin,
+              },
+            },
+          }),
     }),
     Layer.mock(GitWorkflowService.GitWorkflowService)({
       listRefs,
@@ -465,6 +478,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
       refreshStatus,
     } satisfies Partial<VcsStatusBroadcaster.VcsStatusBroadcaster["Service"]>),
     NodeServices.layer,
+    NodeCrypto.layer,
   );
   // The real coordinator over the same git and thread mocks; every folder is
   // its own checkout's root.
@@ -491,7 +505,28 @@ const makeHarness = (options: HarnessOptions = {}) => {
       ),
     ),
   );
-  const layer = WorktreeMcpService.layer.pipe(Layer.provide(Layer.merge(services, worktreeSets)));
+  const fileSystem = Layer.effect(
+    FileSystem.FileSystem,
+    Effect.map(FileSystem.FileSystem, (fs) => ({
+      ...fs,
+      exists: (path: string) =>
+        options.existsFails
+          ? Effect.fail(
+              PlatformError.systemError({
+                _tag: "PermissionDenied",
+                module: "FileSystem",
+                method: "exists",
+                pathOrDescriptor: path,
+              }),
+            )
+          : path.startsWith("/worktrees/")
+            ? Effect.succeed(true)
+            : fs.exists(path),
+    })),
+  ).pipe(Layer.provide(NodeServices.layer));
+  const layer = WorktreeMcpService.layer.pipe(
+    Layer.provide(Layer.mergeAll(services, worktreeSets, fileSystem)),
+  );
 
   return {
     layer,
@@ -994,7 +1029,7 @@ describe("t3_worktree_handoff", () => {
       Effect.provide(
         GitVcsDriver.layer.pipe(
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "handoff-remote-git-" })),
-          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
       ),
     ),
@@ -1171,6 +1206,15 @@ describe("t3_worktree_handoff", () => {
         expect.anything(),
       );
       expect(result.startedFromOrigin).toBe(false);
+    });
+  });
+
+  it.effect("defaults startFromOrigin to the project's override", () => {
+    const harness = makeHarness({ projectNewWorktreesStartFromOrigin: true });
+    return Effect.gen(function* () {
+      const result = yield* runHandoff(harness, { branch: "feature/project-origin" });
+      expect(harness.fetchWorktreeBaseCommit).toHaveBeenCalled();
+      expect(result.startedFromOrigin).toBe(true);
     });
   });
 
@@ -1430,6 +1474,7 @@ describe("t3_worktree_status", () => {
         worktreePath: "/worktrees/project/existing",
         branch: "feature/existing",
       },
+      projectNewWorktreesStartFromOrigin: true,
     });
     return Effect.gen(function* () {
       const result = yield* runStatus(harness);
@@ -1437,7 +1482,7 @@ describe("t3_worktree_status", () => {
         attached: true,
         worktreePath: "/worktrees/project/existing",
         branch: "feature/existing",
-        defaultStartFromOrigin: false,
+        defaultStartFromOrigin: true,
       });
     });
   });
@@ -1484,5 +1529,71 @@ it.effect("rolls back a handoff when the provider is disabled before the binding
       force: true,
     });
     expect(harness.sendToThread).not.toHaveBeenCalled();
+  });
+});
+
+describe("t3_worktree_list", () => {
+  const listRefs = (harness: ReturnType<typeof makeHarness>, worktreePath: string | null) =>
+    Effect.gen(function* () {
+      const service = yield* WorktreeMcpService.WorktreeMcpService;
+      return yield* service.listRefs({ worktreePath, workspaceRoot });
+    }).pipe(Effect.provide(harness.layer));
+
+  it.effect("lists refs from the thread's worktree, or the project root once it was removed", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* fs.makeTempDirectoryScoped({ prefix: "worktree-list-" });
+      const harness = makeHarness();
+      const removed = `${worktreePath}/removed`;
+      const boundHarness = makeHarness({
+        thread: { worktreePath: removed, branch: "feature/removed" },
+      });
+      expect(yield* runList(boundHarness)).toMatchObject({
+        folderPath: workspaceRoot,
+        cwd: workspaceRoot,
+      });
+      const secondaryHarness = makeHarness({
+        thread: {
+          workspaceFolders: [
+            { path: workspaceRoot, name: "Primary", label: "primary" },
+            {
+              path: "/repo/secondary",
+              name: "Secondary",
+              label: "secondary",
+              checkoutRoot: "/repo/secondary",
+            },
+          ],
+          worktrees: [
+            { repositoryRoot: "/repo/secondary", path: removed, branch: "feature/removed" },
+          ],
+        },
+      });
+      expect(yield* runList(secondaryHarness, { folderPath: "/repo/secondary" })).toMatchObject({
+        folderPath: "/repo/secondary",
+        cwd: "/repo/secondary",
+      });
+      yield* listRefs(harness, worktreePath);
+      yield* listRefs(harness, `${worktreePath}/removed`);
+      expect(harness.listRefs.mock.calls.map(([input]) => input.cwd)).toEqual([
+        worktreePath,
+        workspaceRoot,
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("fails instead of falling back when the worktree cannot be checked", () => {
+    const harness = makeHarness({
+      existsFails: true,
+      thread: { worktreePath: "/worktrees/project/unreadable" },
+    });
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(listRefs(harness, "/worktrees/project/unreadable"));
+      expectTypedFailure(exit, { _tag: "PlatformError" });
+      expectTypedFailure(yield* Effect.exit(runList(harness)), {
+        _tag: "OrchestratorMcpFailure",
+        code: "orchestration_error",
+      });
+      expect(harness.listRefs).not.toHaveBeenCalled();
+    });
   });
 });

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { FlowId } from "@t3tools/contracts";
 import * as Flows from "../flows/FlowService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -111,6 +112,7 @@ const caller = {
 } as OrchestrationV2ThreadShell;
 const external = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   Scheduler.layer,
   Layer.mock(Flows.FlowService)({
     read: (_projectId, flowId) =>

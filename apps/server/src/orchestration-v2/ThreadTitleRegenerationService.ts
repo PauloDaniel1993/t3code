@@ -14,6 +14,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
@@ -51,6 +52,7 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const textGeneration = yield* TextGeneration.TextGeneration;
+  const fileSystem = yield* FileSystem.FileSystem;
 
   const complete = (input: {
     readonly threadId: ThreadId;
@@ -161,8 +163,13 @@ const make = Effect.gen(function* () {
         yield* serverSettings.getSettings,
         projection.thread.projectId,
       ).settings;
+      // Storage cleanup removes worktrees but keeps the path; CLIs cannot spawn in a missing cwd.
+      const primaryPath = threadPrimaryPath(projection.thread, project.value);
+      const primaryExists = yield* fileSystem
+        .exists(primaryPath)
+        .pipe(Effect.orElseSucceed(() => false));
       const result = yield* textGeneration.generateThreadTitle({
-        cwd: threadPrimaryPath(projection.thread, project.value),
+        cwd: primaryExists ? primaryPath : project.value.workspaceRoot,
         message: context.message,
         attachments: context.attachments,
         ...(input.kind.type === "regenerate" ? { previousTitle: projection.thread.title } : {}),

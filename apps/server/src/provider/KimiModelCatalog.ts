@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import type { ProviderInstanceEnvironment, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -55,8 +55,8 @@ export const makeKimiModelCatalog = Effect.fn("makeKimiModelCatalog")(function* 
     userHome: input.processEnvironment.USERPROFILE ?? input.processEnvironment.HOME ?? null,
     environment: [...input.environment].toSorted((a, b) => a.name.localeCompare(b.name)),
   }).pipe(Effect.orDie);
-  const key = yield* (yield* Crypto.Crypto)
-    .digest("SHA-256", new TextEncoder().encode(binding))
+  const key = yield* (yield* Digest.Digest)
+    .digest(Digest.sha256, new TextEncoder().encode(binding))
     .pipe(Effect.map(Hex.encode), Effect.orDie);
   const filePath = path.join(input.cacheDir, `kimi-models-${key}.json`);
   const saved = yield* fs.stat(filePath).pipe(

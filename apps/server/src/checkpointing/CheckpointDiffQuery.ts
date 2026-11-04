@@ -9,7 +9,7 @@ import {
   type OrchestrationV2CheckpointFolder,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -87,7 +87,7 @@ function buildTurnDiffResult(
 export const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
-  const crypto = yield* Crypto.Crypto;
+  const digest = yield* Digest.Digest;
 
   // Path attribution is per checkpoint pair. Read repository-relative numstat paths before
   // rendering folder-relative patches so imported changes cannot consume the output budget.
@@ -289,7 +289,7 @@ export const make = Effect.gen(function* () {
               scopeId: first.scopeId,
               ordinalWithinScope: Math.max(0, first.appRunOrdinal! - 1),
               partKey: part.key,
-            }).pipe(Effect.provideService(Crypto.Crypto, crypto)));
+            }).pipe(Effect.provideService(Digest.Digest, digest)));
           if (fromCheckpointRef === part.ref) continue;
           const folderDiff = folderPlans.get(part.key)!.get(folder.relativePath)!;
           diffInputs.push({
@@ -363,7 +363,7 @@ export const make = Effect.gen(function* () {
             : yield* checkpointRefForScopeOrdinal({
                 scopeId: firstScope.id,
                 ordinalWithinScope: 0,
-              }).pipe(Effect.provideService(Crypto.Crypto, crypto))
+              }).pipe(Effect.provideService(Digest.Digest, digest))
           : (
               parentCheckpoint ??
               readyCheckpoints.find(

@@ -1,5 +1,6 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as PortScanner from "../../preview/PortScanner.ts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -24,7 +25,7 @@ import {
 const platformLayer = Layer.mergeAll(
   PortScanner.layerTest,
   McpProviderSessions.layer,
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   IdAllocator.layer,
   Layer.succeed(
     ProviderEventLoggers.ProviderEventLoggers,
@@ -88,7 +89,7 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
               runtimePolicy = scope,
             ) {
               const file = path.join(runtimePolicy.additionalDirectories[0]!, "proof.txt");
-              const fixtureValue = yield* (yield* Crypto.Crypto).randomUUIDv4();
+              const fixtureValue = yield* (yield* SecureRandom.SecureRandom).uuidV4();
               const marker = `CLAUDE_WORKSPACE_${stage.toUpperCase()}_OK`;
               yield* fileSystem.writeFileString(
                 file,

@@ -10,7 +10,7 @@ import {
   ThreadId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -237,6 +237,6 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {
-  const crypto = yield* Crypto.Crypto;
-  return CommandId.make(`mcp:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`);
+  const random = yield* SecureRandom.SecureRandom;
+  return CommandId.make(`mcp:${yield* random.uuidV4()}`);
 });

@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -20,7 +20,7 @@ export const makeKimiTestHarness = Effect.fn("makeKimiTestHarness")(function* (
   fixtureEnvironment: NodeJS.ProcessEnv = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const path = yield* Path.Path;
   const nativeSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-kimi-fixture-" });
@@ -56,7 +56,7 @@ export const makeKimiTestHarness = Effect.fn("makeKimiTestHarness")(function* (
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
-      Effect.provideService(Crypto.Crypto, crypto),
+      Effect.provideService(SecureRandom.SecureRandom, random),
     );
   return {
     root,

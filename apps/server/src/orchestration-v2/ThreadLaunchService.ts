@@ -453,7 +453,8 @@ const make = Effect.gen(function* () {
 
       const boundSet = set;
       // A preparation retry keeps the recorded set and its in-flight branch rename.
-      if (reused === undefined) {
+      // Root launches are bound at creation; late preparation must not undo a handoff.
+      if (reused === undefined && input.workspaceStrategy.type !== "root") {
         bindStarted = true;
         if (boundSet === null) {
           yield* threads

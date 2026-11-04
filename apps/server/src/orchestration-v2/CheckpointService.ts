@@ -14,7 +14,7 @@ import {
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Base64Url from "effect/encoding/Base64Url";
@@ -197,9 +197,9 @@ export const checkpointRefForScopeOrdinal = Effect.fn("checkpointRefForScopeOrdi
     readonly ordinalWithinScope: number;
     readonly partKey?: string;
   }) {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* Digest.Digest;
     const digest = yield* crypto
-      .digest("SHA-256", new TextEncoder().encode(input.scopeId))
+      .digest(Digest.sha256, new TextEncoder().encode(input.scopeId))
       .pipe(Effect.orDie);
     const scopeKey = Hex.encode(digest).slice(0, 32);
     const part =
@@ -314,16 +314,16 @@ export const layer: Layer.Layer<
   CheckpointServiceV2,
   never,
   | CheckpointStore.CheckpointStore
-  | Crypto.Crypto
+  | Digest.Digest
   | IdAllocator.IdAllocatorV2
   | FileSystem.FileSystem
 > = Layer.effect(
   CheckpointServiceV2,
   Effect.gen(function* () {
     const checkpointStore = yield* CheckpointStore.CheckpointStore;
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* Digest.Digest;
     const checkpointRefFor = (input: Parameters<typeof checkpointRefForScopeOrdinal>[0]) =>
-      checkpointRefForScopeOrdinal(input).pipe(Effect.provideService(Crypto.Crypto, crypto));
+      checkpointRefForScopeOrdinal(input).pipe(Effect.provideService(Digest.Digest, crypto));
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
     const checkoutLocks = yield* KeyedLock.make<string>();

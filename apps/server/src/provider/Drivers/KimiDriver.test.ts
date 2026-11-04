@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
@@ -68,7 +69,7 @@ const encodeModelChoices = Schema.encodeSync(
 );
 
 const driverBaseLayer = ServerConfig.layerTest(process.cwd(), { prefix: "t3-kimi-driver-" }).pipe(
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   Layer.provideMerge(idAllocatorLayer),
   Layer.provideMerge(ServerSettingsService.layerTest({ enableProviderUpdateChecks: false })),
   Layer.provideMerge(
@@ -496,7 +497,7 @@ describe("KimiDriver", () => {
     expect(BUILT_IN_DRIVERS.map((driver) => driver.driverKind)).toContain("kimi");
   });
 
-  it.layer(NodeServices.layer)("maintenance ownership", (it) => {
+  it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("maintenance ownership", (it) => {
     it.effect("keeps missing and custom installations manual", () =>
       Effect.gen(function* () {
         const missing = yield* KIMI_MAINTENANCE_RESOLVER.resolve(null);

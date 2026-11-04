@@ -1,4 +1,5 @@
-import * as Crypto from "effect/Crypto";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -31,7 +32,7 @@ import {
 
 const liveLayer = Layer.mergeAll(
   McpProviderSessions.layer,
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   IdAllocator.layer,
   CursorAgentSdk.layer.pipe(
     Layer.provideMerge(CursorSdk.layer),
@@ -68,8 +69,8 @@ describe.runIf(process.env.T3_CURSOR_LIVE_WORKSPACE_FOLDERS === "1")(
           const files = fixture.additionalDirectories.map((directory) =>
             path.join(directory, "probe.txt"),
           );
-          const original = yield* (yield* Crypto.Crypto).randomUUIDv4();
-          const inheritedMarker = yield* (yield* Crypto.Crypto).randomUUIDv4();
+          const original = yield* (yield* SecureRandom.SecureRandom).uuidV4();
+          const inheritedMarker = yield* (yield* SecureRandom.SecureRandom).uuidV4();
           yield* Effect.forEach(files, (file) => fileSystem.writeFileString(file, original));
           const threadId = ThreadId.make("cursor-live-workspace-source");
           const exercise = Effect.fnUntraced(function* (
