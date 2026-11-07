@@ -1,6 +1,14 @@
 import { expect, it } from "vite-plus/test";
 import type { FlowDefinition } from "@t3tools/contracts";
-import { flowGraph, renameStep, removeStep, dropTarget, findStep, updateStep } from "./flowGraph";
+import {
+  fitFrames,
+  flowGraph,
+  renameStep,
+  removeStep,
+  dropTarget,
+  findStep,
+  updateStep,
+} from "./flowGraph";
 const definition: FlowDefinition = {
   version: 1,
   title: "Test",
@@ -31,6 +39,31 @@ const definition: FlowDefinition = {
   ],
   edges: [{ from: "source", to: "loop", when: { ref: "steps.source.output.text", op: "isEmpty" } }],
   layout: { source: { x: 0, y: 0 }, loop: { x: 300, y: 100 }, child: { x: 30, y: 70 } },
+};
+const looped: FlowDefinition = {
+  version: 1,
+  title: "Layout",
+  steps: [
+    {
+      id: "fix",
+      kind: "loop",
+      maxIterations: 3,
+      until: { ref: "steps.test.output.exitCode", op: "eq", value: 0 },
+      steps: [
+        { id: "implement", kind: "agent", prompt: "" },
+        { id: "test", kind: "command", command: "" },
+      ],
+      edges: [{ from: "implement", to: "test" }],
+    },
+    { id: "review", kind: "agent", prompt: "" },
+  ],
+  edges: [{ from: "fix", to: "review" }],
+  layout: {
+    fix: { x: 0, y: 0 },
+    implement: { x: -8, y: 40 },
+    test: { x: -8, y: 99 },
+    review: { x: 0, y: 250 },
+  },
 };
 it.each(["source", "child", "loop"])("renames %s without dangling layout or edges", (id) => {
   const renamed = renameStep(definition, id, "new-id");
@@ -83,37 +116,51 @@ it("chooses the deepest container and converts to its local position", () => {
     position: { x: 20, y: 20 },
   });
 });
-it("keeps loop steps below the header and apart, and grows the frame around them", () => {
-  const { nodes } = flowGraph({
-    version: 1,
-    title: "Layout",
-    steps: [
-      {
-        id: "fix",
-        kind: "loop",
-        maxIterations: 3,
-        until: { ref: "steps.test.output.exitCode", op: "eq", value: 0 },
-        steps: [
-          { id: "implement", kind: "agent", prompt: "" },
-          { id: "test", kind: "command", command: "" },
-        ],
-        edges: [{ from: "implement", to: "test" }],
-      },
-      { id: "review", kind: "agent", prompt: "" },
-    ],
-    edges: [{ from: "fix", to: "review" }],
-    layout: {
-      fix: { x: 0, y: 0 },
-      implement: { x: -8, y: 40 },
-      test: { x: -8, y: 99 },
-      review: { x: 0, y: 250 },
-    },
-  });
+it.each([
+  {
+    rem: 16,
+    implement: { x: 16, y: 72 },
+    test: { x: 16, y: 184 },
+    fix: { width: 256, height: 280 },
+    review: { x: 0, y: 312 },
+  },
+  {
+    rem: 20,
+    implement: { x: 20, y: 90 },
+    test: { x: 20, y: 230 },
+    fix: { width: 320, height: 350 },
+    review: { x: 0, y: 390 },
+  },
+])(
+  "keeps loop steps below the header and apart, and grows the frame around them at $rem px",
+  ({ rem, ...expected }) => {
+    const { nodes } = flowGraph(looped, [], rem);
+    const at = (id: string) => nodes.find((node) => node.id === id);
+    expect(at("implement")?.position).toEqual(expected.implement);
+    expect(at("test")?.position).toEqual(expected.test);
+    expect(at("fix")?.style).toEqual(expected.fix);
+    expect(at("review")?.position).toEqual(expected.review);
+  },
+);
+it.each([
+  { to: { x: 100, y: 400 }, test: { x: 100, y: 400 }, fix: { width: 340, height: 496 } },
+  { to: { x: -50, y: 10 }, test: { x: 16, y: 72 }, fix: { width: 256, height: 168 } },
+  { to: { x: -50, y: 200 }, test: { x: 16, y: 200 }, fix: { width: 256, height: 296 } },
+])("fits the loop frame to a step dragged to $to", ({ to, ...expected }) => {
+  const nodes = fitFrames(
+    flowGraph(looped).nodes.map((node) => (node.id === "test" ? { ...node, position: to } : node)),
+  );
   const at = (id: string) => nodes.find((node) => node.id === id);
-  expect(at("implement")?.position).toEqual({ x: 16, y: 56 });
-  expect(at("test")?.position).toEqual({ x: 16, y: 168 });
-  expect(at("fix")?.style).toEqual({ width: 256, height: 264 });
-  expect(at("review")?.position).toEqual({ x: 0, y: 296 });
+  expect(at("test")?.position).toEqual(expected.test);
+  expect(at("fix")?.style).toEqual(expected.fix);
+});
+it("grows every frame around a nested frame being dragged", () => {
+  const nodes = fitFrames(
+    flowGraph(definition).nodes.map((node) =>
+      node.id === "map" ? { ...node, position: { x: 400, y: 300 } } : node,
+    ),
+  );
+  expect(nodes.find((node) => node.id === "loop")?.style).toEqual({ width: 672, height: 484 });
 });
 it("rewrites previous outputs and inner loop output paths without changing similar ids", () => {
   const input: FlowDefinition = {

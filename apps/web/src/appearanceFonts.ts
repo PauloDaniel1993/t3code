@@ -119,7 +119,8 @@ function clampFontSize(value: number, minimum: number, maximum: number, fallback
   return Math.min(maximum, Math.max(minimum, Math.round(value)));
 }
 
-function clampInterfaceFontSize(value: number): number {
+/** The root font size in px, so one rem, for an interface font size setting. */
+export function clampInterfaceFontSize(value: number): number {
   return clampFontSize(
     value,
     MIN_INTERFACE_FONT_SIZE,
