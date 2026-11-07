@@ -49,6 +49,8 @@ interface NotificationState extends ThreadNotificationObservation {
 
 type ToastId = ReturnType<typeof toastManager.add>;
 
+const STICKY_NOTIFICATION_MS = 10_000;
+
 interface WatchedEnvironment {
   unsubscribe: () => void;
   previous: Map<ThreadId, NotificationState>;
@@ -207,14 +209,20 @@ export function startThreadNotifications(
     )
       return;
     try {
+      // Windows drops clicks after a toast moves into Notification Center, so a completion
+      // stays on screen and closes itself instead.
+      const sticky = kind === "completion" && isWindowsPlatform(navigator.platform);
       const notification = new Notification(title, {
         body: thread.title,
         tag: threadNotificationTag(environmentId, thread.id),
         silent: true,
-        // Windows drops clicks after a toast moves into Notification Center.
-        requireInteraction: kind === "completion" && isWindowsPlatform(navigator.platform),
+        requireInteraction: sticky,
       });
       trackNotification(environmentId, thread.id, notification);
+      if (sticky) {
+        const timer = setTimeout(() => notification.close(), STICKY_NOTIFICATION_MS);
+        notification.addEventListener("close", () => clearTimeout(timer));
+      }
       notification.addEventListener("click", () => {
         notification.close();
         window.focus();
