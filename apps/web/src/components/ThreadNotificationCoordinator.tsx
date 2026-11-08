@@ -66,19 +66,22 @@ export function startThreadNotifications(
   registry: AtomRegistry.AtomRegistry,
   router: AnyRouter,
 ): () => void {
+  // Keyed by thread tag, so a thread's newer notification closes its older one.
   const pending = new Map<
     string,
     { environmentId: EnvironmentId; threadId: ThreadId; notification: Notification }
   >();
+  let notificationCount = 0;
   const watched = new Map<EnvironmentId, WatchedEnvironment>();
 
   const trackNotification = (
+    tag: string,
     environmentId: EnvironmentId,
     threadId: ThreadId,
     notification: Notification,
   ) => {
-    pending.get(notification.tag)?.notification.close();
-    pending.set(notification.tag, { environmentId, threadId, notification });
+    pending.get(tag)?.notification.close();
+    pending.set(tag, { environmentId, threadId, notification });
     setNotificationBadge(pending.size);
   };
   // Toast ids by thread key, so hiding or opening a thread can close its open toasts.
@@ -212,13 +215,16 @@ export function startThreadNotifications(
       // Windows drops clicks after a toast moves into Notification Center, so a completion
       // stays on screen and closes itself instead.
       const sticky = kind === "completion" && isWindowsPlatform(navigator.platform);
+      const tag = threadNotificationTag(environmentId, thread.id);
       const notification = new Notification(title, {
         body: thread.title,
-        tag: threadNotificationTag(environmentId, thread.id),
+        // Electron sends a replaced notification's close event to its replacement, which then
+        // can never be closed or clicked, so desktop notifications never share a tag.
+        tag: window.desktopBridge ? `${tag}-${(++notificationCount).toString(36)}` : tag,
         silent: true,
         requireInteraction: sticky,
       });
-      trackNotification(environmentId, thread.id, notification);
+      trackNotification(tag, environmentId, thread.id, notification);
       if (sticky) {
         const timer = setTimeout(() => notification.close(), STICKY_NOTIFICATION_MS);
         notification.addEventListener("close", () => clearTimeout(timer));

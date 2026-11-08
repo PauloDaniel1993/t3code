@@ -376,6 +376,27 @@ it("closes a Windows completion toast on its own and keeps the badge", async () 
   expect(state.badge).toHaveBeenLastCalledWith(1);
 });
 
+it("gives each desktop notification its own tag and closes the thread's older one", async () => {
+  await using app = setup();
+  using _bridge = stubGlobal("desktopBridge", {
+    onNotificationBadgeClear: () => () => undefined,
+    revealWindow: async () => undefined,
+  });
+  app.start();
+  state.shells.set("one", shell({ hasPendingApprovals: true }));
+  state.shells.set(
+    "one",
+    shell({
+      latestTurn: { turnId: "turn", state: "completed", completedAt: "2026-09-13T07:00:01.000Z" },
+    }),
+  );
+  const [asking, completed] = TestNotification.sent;
+  expect(completed?.title).toBe("Thread completed");
+  expect(completed?.tag).not.toBe(asking?.tag);
+  expect(asking?.close).toHaveBeenCalledOnce();
+  expect(state.badge).toHaveBeenLastCalledWith(1);
+});
+
 it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
   "notifies for offline completion and %s once across reconnects",
   async (flag) => {
