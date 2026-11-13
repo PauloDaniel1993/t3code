@@ -83,6 +83,7 @@ const makeHarness = (handoffOnProjectRead = false) =>
     } = {
       projectId,
       title: "Binding",
+      hasCustomTitle: false,
       workspaceRoot: primary,
       workspaceFile: location("team.code-workspace"),
       folders: [
@@ -173,7 +174,8 @@ const makeHarness = (handoffOnProjectRead = false) =>
       getThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
       getProjectThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
       getThreadShell: () => Effect.succeed({ ...thread, activeRunId: null } as never),
-      getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+      getTimelinePage: () =>
+        Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
     });
     const projectReads = Layer.mock(ProjectService.ProjectService)({
       getById: () =>

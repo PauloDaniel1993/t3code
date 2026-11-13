@@ -1,5 +1,5 @@
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import * as Dialog from "../../components/ui/Dialog";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
@@ -16,6 +16,7 @@ import {
   getAddProjectInitialQuery,
   getCloneDestinationBrowsePath,
   getCloneDestinationPath,
+  getCloneDirectoryPath,
   getCloneDirectoryName,
   getDefaultCloneUrl,
   getNewProjectPathPreview,
@@ -29,6 +30,7 @@ import {
   resolveAddProjectPath,
   resolveAddProjectKind,
   sortAddProjectProviderSources,
+  type OfferedSourceControlProviders,
   type AddProjectRemoteSource,
 } from "@t3tools/client-runtime/operations/projects";
 import {
@@ -38,6 +40,9 @@ import {
 import {
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
+  filterFilesystemBrowseEntries,
+  getFilesystemBrowsePath,
+  resolveFilesystemReadAccess,
 } from "@t3tools/client-runtime/state/filesystem";
 import {
   appendBrowsePathSegment,
@@ -77,7 +82,7 @@ import { AsyncResult } from "effect/reactivity";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { ListRow, ListSection, SectionTitle } from "./AddProjectList";
-import { ServerPathBrowser as FolderBrowser } from "./ServerPathBrowser";
+import { ServerPathBrowser } from "./ServerPathBrowser";
 import { WorkspaceProjectFolders } from "./WorkspaceProjectFolders";
 import {
   resolveMobileAddProjectTarget,
@@ -88,7 +93,8 @@ import { useProjects, useServerConfigs, waitForProject } from "../../state/entit
 import { filesystemEnvironment } from "../../state/filesystem";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
-import { useEnvironmentScope, readEnvironmentScope } from "../../state/session";
+import { environmentSession, useEnvironmentScope, readEnvironmentScope } from "../../state/session";
+import { useEnvironmentPresentation } from "../../state/presentation";
 import { sourceControlEnvironment } from "../../state/sourceControl";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
@@ -105,7 +111,10 @@ import {
   useRemoteEnvironmentRuntime,
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
-import { resolveAddProjectEnvironment } from "./AddProjectScreen.logic";
+import {
+  isMissingCloneParentBrowseFailure,
+  resolveAddProjectEnvironment,
+} from "./AddProjectScreen.logic";
 import {
   createNewTaskDraft,
   setComposerDraftText,
@@ -123,6 +132,8 @@ interface EnvironmentOption {
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
   readonly workspaceFileProjects: boolean;
+  readonly ghqCloneLayout: boolean;
+  readonly offeredSourceControlProviders: OfferedSourceControlProviders | undefined;
 }
 
 const isFilesystemBrowseError = Schema.is(FilesystemBrowseError);
@@ -212,6 +223,7 @@ function ProjectPathInput(props: {
 function useBrowsePathInput(
   environment: EnvironmentOption | null,
   pinnedDirectoryName = "",
+  cloneDirectoryPath = pinnedDirectoryName,
   includeWorkspaceFiles = false,
 ) {
   const environmentId = environment?.environmentId ?? null;
@@ -219,7 +231,7 @@ function useBrowsePathInput(
   const clonePathCaseSensitive = !isWindowsPlatform(environment?.platform ?? "");
   const seedPath = getCloneDestinationPath(
     getAddProjectInitialQuery(environmentBaseDirectory),
-    pinnedDirectoryName,
+    cloneDirectoryPath,
   );
   // Each host keeps the path last typed or browsed for it, and shows its own default until then,
   // so switching hosts and back loses nothing. With no host selected (one dropping out briefly),
@@ -330,6 +342,8 @@ function useEnvironmentOptions(
         connectionError: runtime?.connectionError ?? null,
         connectionErrorTraceId: runtime?.connectionErrorTraceId ?? null,
         workspaceFileProjects: config?.workspaceFileProjects === true,
+        ghqCloneLayout: config?.settings.ghqCloneLayout === true,
+        offeredSourceControlProviders: config?.settings.offeredSourceControlProviders,
       };
     });
     return Arr.sort(
@@ -572,24 +586,30 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
                 )
               }
             />
-            {(["url", ...sortAddProjectProviderSources(readiness)] as AddProjectRemoteSource[]).map(
-              (candidate) => (
-                <SourceControlRow
-                  key={candidate}
-                  source={candidate}
-                  selectedEnvironmentId={selectedEnvironment.environmentId}
-                  ready={canCloneProject && readiness(candidate).ready}
-                  hint={
-                    !canCloneProject
-                      ? "This connection cannot clone projects."
-                      : readiness(candidate).ready
-                        ? addProjectRemoteSourcePathHint(candidate)
-                        : (readiness(candidate).hint ?? "")
-                  }
-                  isFirst={false}
-                />
-              ),
-            )}
+            {(
+              [
+                "url",
+                ...sortAddProjectProviderSources(
+                  readiness,
+                  selectedEnvironment.offeredSourceControlProviders,
+                ),
+              ] as AddProjectRemoteSource[]
+            ).map((candidate) => (
+              <SourceControlRow
+                key={candidate}
+                source={candidate}
+                selectedEnvironmentId={selectedEnvironment.environmentId}
+                ready={canCloneProject && readiness(candidate).ready}
+                hint={
+                  !canCloneProject
+                    ? "This connection cannot clone projects."
+                    : readiness(candidate).ready
+                      ? addProjectRemoteSourcePathHint(candidate)
+                      : (readiness(candidate).hint ?? "")
+                }
+                isFirst={false}
+              />
+            ))}
           </ListSection>
           {discoveryState.isPending ? (
             <AppActivityIndicator colorClassName="accent-icon-muted" />
@@ -838,6 +858,120 @@ export function AddProjectRepositoryScreen(props: {
   );
 }
 
+function FolderBrowser(props: {
+  readonly environment: EnvironmentOption;
+  readonly pathInput: string;
+  readonly setPathInput: (path: string) => void;
+  readonly navigateToBrowsePath: (input: {
+    readonly browseDirectoryPath: string;
+    readonly selectedDirectoryName?: string;
+  }) => Promise<boolean>;
+  readonly pinnedDirectoryName?: string;
+  readonly cloning?: boolean;
+}) {
+  const browsePath = getFilesystemBrowsePath(props.pathInput, props.environment.platform);
+  const browseInput =
+    browsePath.directoryPath.length > 0 ? { partialPath: browsePath.directoryPath } : null;
+  const fileAccessSession = useEnvironmentQuery(
+    environmentSession.sessionStateAtom(props.environment.environmentId),
+  );
+  const fileEnvironment = useEnvironmentPresentation(props.environment.environmentId);
+  const fileAccess = resolveFilesystemReadAccess({
+    isCatalogReady: fileEnvironment.isReady,
+    connection: fileEnvironment.presentation?.connection ?? null,
+    session: fileAccessSession.data,
+    sessionError: fileAccessSession.error,
+  });
+  const { canReadFiles } = fileAccess;
+  const browseState = useEnvironmentQuery(
+    !canReadFiles || browseInput === null
+      ? null
+      : filesystemEnvironment.browse({
+          environmentId: props.environment.environmentId,
+          input: browseInput,
+        }),
+  );
+  const pinnedDirectoryName = props.pinnedDirectoryName ?? "";
+  const pinnedDirectoryMatches = isWindowsPlatform(props.environment.platform)
+    ? browsePath.filterQuery.toLowerCase() === pinnedDirectoryName.toLowerCase()
+    : browsePath.filterQuery === pinnedDirectoryName;
+  const browseFilterQuery = pinnedDirectoryMatches ? "" : browsePath.filterQuery;
+  const { visibleEntries: visibleBrowseEntries } = filterFilesystemBrowseEntries(
+    browseState.data?.entries ?? [],
+    browseFilterQuery,
+  );
+
+  return (
+    <>
+      <SectionTitle>Browse folders</SectionTitle>
+      {!canReadFiles && !fileAccess.isPending ? (
+        <ErrorBanner message={fileAccess.error ?? "This connection cannot browse host folders."} />
+      ) : null}
+      {browseState.error === null ? null : isMissingCloneParentBrowseFailure({
+          cloning: props.cloning === true,
+          failure: browseState.failure,
+        }) ? (
+        <Text className="text-sm text-foreground-muted">
+          This folder does not exist yet. Cloning creates it.
+        </Text>
+      ) : (
+        <ErrorBanner message={browseState.error} />
+      )}
+      <ListSection>
+        {fileAccess.isPending || (browseState.isPending && browseState.data === null) ? (
+          <View className="items-center py-5">
+            <AppActivityIndicator colorClassName="accent-icon-muted" />
+          </View>
+        ) : null}
+        {browsePath.canBrowseUp ? (
+          <ListRow
+            title=".."
+            icon={
+              <SymbolView
+                name="arrow.turn.left.up"
+                size={Platform.OS === "android" ? 24 : 17}
+                tintColorClassName="accent-icon-muted"
+                type="monochrome"
+              />
+            }
+            isFirst
+            right={null}
+            onPress={() => {
+              if (browsePath.parentPath) {
+                void props.navigateToBrowsePath({
+                  browseDirectoryPath: browsePath.parentPath,
+                });
+              }
+            }}
+          />
+        ) : null}
+        {visibleBrowseEntries.map((entry, index) => (
+          <ListRow
+            key={entry.fullPath}
+            title={entry.name}
+            icon={
+              <SymbolView
+                name="folder"
+                size={Platform.OS === "android" ? 24 : 17}
+                tintColorClassName="accent-icon-muted"
+                type="monochrome"
+              />
+            }
+            isFirst={index === 0 && !browsePath.canBrowseUp}
+            right={null}
+            onPress={() => {
+              void props.navigateToBrowsePath({
+                browseDirectoryPath: browsePath.directoryPath,
+                selectedDirectoryName: entry.name,
+              });
+            }}
+          />
+        ))}
+      </ListSection>
+    </>
+  );
+}
+
 export function AddProjectNewScreen(props: { readonly environmentId?: string | string[] }) {
   const openNewTaskDraft = useOpenNewTaskDraft();
   const navigation = useNavigation();
@@ -864,7 +998,10 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
           input: {},
         }),
   );
-  const publishTargets = getNewProjectPublishTargets(discoveryState.data);
+  const publishTargets = getNewProjectPublishTargets(
+    discoveryState.data,
+    environment?.offeredSourceControlProviders,
+  );
   const [name, setName] = useState("");
   const [publishes, setPublishes] = useState(false);
   const [publishKind, setPublishKind] = useState<SourceControlProviderKind | null>(null);
@@ -1125,6 +1262,7 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
   const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } = useBrowsePathInput(
     environment,
     "",
+    "",
     environment?.workspaceFileProjects === true,
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1324,7 +1462,7 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
               onPress={() => void submitPath()}
               loading={isSubmitting}
             />
-            <FolderBrowser
+            <ServerPathBrowser
               environment={environment}
               navigateToBrowsePath={navigateToBrowsePath}
               pathInput={pathInput}
@@ -1370,9 +1508,15 @@ export function AddProjectDestinationScreen(props: {
   const repositoryTitle = stringParam(props.repositoryTitle);
   const prompt = stringParam(props.prompt);
   const repositoryName = stringParam(props.repositoryName)?.trim() ?? "";
+  const ghqDirectoryPath =
+    remoteUrl && environment?.ghqCloneLayout
+      ? getCloneDirectoryPath(remoteUrl, true, repositoryName)
+      : null;
+  const cloneDirectoryName = ghqDirectoryPath?.split("/").at(-1) ?? repositoryName;
   const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } = useBrowsePathInput(
     environment,
-    repositoryName,
+    cloneDirectoryName,
+    ghqDirectoryPath ?? repositoryName,
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1401,12 +1545,11 @@ export function AddProjectDestinationScreen(props: {
 
     const originRoute = getActiveRoute(navigation);
     setIsSubmitting(true);
-    const projectId = ProjectId.make(uuidv4());
     const title = inferProjectTitleFromPath(resolved.path);
     const startResult = await startProjectClone({
       environmentId: environment.environmentId,
       input: {
-        projectId,
+        projectId: ProjectId.make(uuidv4()),
         title,
         createdAt: new Date().toISOString(),
         remoteUrl,
@@ -1417,6 +1560,7 @@ export function AddProjectDestinationScreen(props: {
       setError(errorMessage(Cause.squash(startResult.cause)));
     } else {
       void suggestAppAccessForRemote(checkAppAccess, environment.environmentId, remoteUrl);
+      const { projectId } = startResult.value;
       // Wait for the create event; the client store otherwise falls back to the project picker and loses clone controls.
       const project = await waitForProject(
         { environmentId: environment.environmentId, projectId },
@@ -1477,7 +1621,8 @@ export function AddProjectDestinationScreen(props: {
             navigateToBrowsePath={navigateToBrowsePath}
             pathInput={pathInput}
             setPathInput={setPathInput}
-            pinnedDirectoryName={repositoryName}
+            pinnedDirectoryName={cloneDirectoryName}
+            cloning={Boolean(remoteUrl)}
           />
         </>
       ) : (

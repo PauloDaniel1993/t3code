@@ -17,6 +17,8 @@ import {
   ReceivedProjectIcon,
   StoredProjectIcon,
   ProjectReadFileError,
+  ProjectReadFileInput,
+  ProjectReadFileResult,
   ProjectCreatePayload,
   ProjectUpdatePayload,
   ProjectMutation,
@@ -26,10 +28,10 @@ import {
   ProjectSearchEntriesInput,
   ProjectSearchContentsInput,
   ProjectListEntriesInput,
-  ProjectReadFileInput,
   ProjectWriteFileError,
   ProjectWriteFileInput,
   WorkspaceScopeError,
+  ProjectWriteFileResult,
 } from "./project.ts";
 
 const decodeProjectScript = Schema.decodeUnknownSync(ProjectScript);
@@ -159,6 +161,55 @@ describe("scoped file inputs", () => {
 });
 
 describe("project RPC errors", () => {
+  it("keeps whitespace in file paths across the wire", () => {
+    const roundTrip = <S extends Schema.Codec<unknown, unknown>>(schema: S, value: S["Type"]) =>
+      Schema.decodeUnknownSync(schema)(Schema.encodeSync(schema)(value));
+
+    for (const relativePath of [" ", " report.txt", "report.txt\t"]) {
+      const cwd = "/workspace";
+      const resolvedPath = `${cwd}/${relativePath}`;
+      expect(roundTrip(ProjectReadFileInput, { cwd, relativePath })).toHaveProperty(
+        "relativePath",
+        relativePath,
+      );
+      expect(roundTrip(ProjectWriteFileInput, { cwd, relativePath, contents: "" })).toHaveProperty(
+        "relativePath",
+        relativePath,
+      );
+      expect(
+        roundTrip(ProjectReadFileResult, {
+          relativePath,
+          contents: "",
+          byteLength: 0,
+          truncated: false,
+        }).relativePath,
+      ).toBe(relativePath);
+      expect(roundTrip(ProjectWriteFileResult, { relativePath }).relativePath).toBe(relativePath);
+      const scope = { projectId: ProjectId.make("project-1") };
+      for (const path of [relativePath, `api/${relativePath}`]) {
+        expect(roundTrip(ProjectReadFileInput, { scope, path })).toHaveProperty("path", path);
+        expect(roundTrip(ProjectWriteFileInput, { scope, path, contents: "" })).toHaveProperty(
+          "path",
+          path,
+        );
+      }
+      for (const FileError of [ProjectReadFileError, ProjectWriteFileError]) {
+        const error = new FileError({
+          cwd,
+          relativePath,
+          failure: "operation_failed",
+          resolvedPath,
+          operationPath: resolvedPath,
+        });
+        expect(roundTrip(FileError, error)).toMatchObject({
+          relativePath,
+          resolvedPath,
+          operationPath: resolvedPath,
+        });
+      }
+    }
+  });
+
   it("derives stable messages from structured request context while retaining causes", () => {
     const cause = new Error("sensitive platform detail");
     const searchError = new ProjectSearchEntriesError({

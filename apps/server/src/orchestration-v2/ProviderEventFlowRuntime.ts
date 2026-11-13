@@ -1,4 +1,6 @@
 import type {
+  ProviderAdapterV2Error,
+  ProviderAdapterV2Event,
   ProviderAdapterV2EventSubscription,
   ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -21,9 +23,21 @@ import {
 
 const subscriptions = new WeakMap<ProviderAdapterV2EventSubscription, ProviderEventFlowStage>();
 const closures = new WeakMap<ProviderAdapterV2SessionRuntime, Effect.Effect<void>>();
+const publications = new WeakMap<
+  ProviderAdapterV2SessionRuntime,
+  (event: ProviderAdapterV2Event) => Effect.Effect<void>
+>();
+const endings = new WeakMap<
+  ProviderAdapterV2SessionRuntime,
+  (afterDrain: Effect.Effect<void>) => Effect.Effect<void>
+>();
 const failures = new WeakMap<
   ProviderAdapterV2SessionRuntime,
-  (detail: string) => Effect.Effect<void>
+  (
+    detail: string,
+    afterDrain: Effect.Effect<void>,
+    cause?: Cause.Cause<ProviderAdapterV2Error>,
+  ) => Effect.Effect<void>
 >();
 
 /** One attachment at session creation; raw events never enter an upstream subscriber queue. */
@@ -35,10 +49,10 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
   const stages = new Set<ProviderEventFlowStage>();
   const pressure = { items: 0, bytes: 0, warned: false };
   let ended = false;
-  let stoppedByProvider = false;
-  let failure: Cause.Cause<ProviderAdapterEventStreamError> | undefined;
+  let failure: Cause.Cause<ProviderAdapterV2Error> | undefined;
+  let releaseCleanup: Effect.Effect<void> | undefined;
   const seal = Effect.fn("ProviderEventFlowRuntime.seal")(function* (
-    cause?: Cause.Cause<ProviderAdapterEventStreamError>,
+    cause?: Cause.Cause<ProviderAdapterV2Error>,
   ) {
     ended = true;
     failure = cause;
@@ -58,13 +72,17 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
     const stage = yield* makeProviderEventFlowStage({ ...runtime, pressure });
     stages.add(stage);
     if (ended) yield* failure === undefined ? stage.end : stage.fail(failure);
-    const unregister = stage.close.pipe(
-      Effect.andThen(
-        Effect.sync(() => {
-          stages.delete(stage);
-        }),
-      ),
-    );
+    let closed = false;
+    const unregister = Effect.suspend(() => {
+      if (closed) return Effect.void;
+      closed = true;
+      stages.delete(stage);
+      return stage.close.pipe(
+        Effect.andThen(
+          releaseCleanup === undefined ? Effect.void : Effect.forkDetach(releaseCleanup),
+        ),
+      );
+    });
     const subscription = {
       events: stage.events.pipe(Stream.ensuring(unregister)),
       close: unregister,
@@ -77,49 +95,7 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
     get providerSession() {
       return runtime.providerSession;
     },
-    events: runtime.events.pipe(
-      Stream.map((event) => {
-        if (event.type === "provider_session.updated" && event.providerSession.status === "stopped")
-          stoppedByProvider = true;
-        return sanitizeProviderEvent(event);
-      }),
-      Stream.tap((event) =>
-        Effect.suspend(() => {
-          let warning = Effect.void;
-          // All lanes share pressure, so at most one session warning is returned.
-          for (const stage of stages) warning = stage.offerUnsafe(event) ?? warning;
-          return warning;
-        }),
-      ),
-      Stream.onError((cause) =>
-        seal(
-          Cause.fail(
-            new ProviderAdapterEventStreamError({
-              driver: runtime.driver,
-              providerSessionId: runtime.providerSessionId,
-              cause,
-            }),
-          ),
-        ),
-      ),
-      Stream.ensuring(
-        Effect.suspend(() =>
-          ended
-            ? Effect.void
-            : stoppedByProvider
-              ? seal()
-              : seal(
-                  Cause.fail(
-                    new ProviderAdapterEventStreamError({
-                      driver: runtime.driver,
-                      providerSessionId: runtime.providerSessionId,
-                      cause: "Provider stream ended unexpectedly.",
-                    }),
-                  ),
-                ),
-        ),
-      ),
-    ),
+    events: runtime.events.pipe(Stream.map(sanitizeProviderEvent)),
   };
   const decoratedRuntime = decorate(stagedRuntime);
   const exposedRuntime = {
@@ -131,20 +107,35 @@ export const attachProviderEventFlow = Effect.fnUntraced(function* (
     events: Stream.unwrap(subscribeEvents.pipe(Effect.map((subscription) => subscription.events))),
   };
   closures.set(exposedRuntime, close);
-  failures.set(exposedRuntime, (detail) =>
-    Effect.suspend(() =>
-      ended
+  publications.set(exposedRuntime, (event) =>
+    Effect.suspend(() => {
+      let warning = Effect.void;
+      for (const stage of stages) warning = stage.offerUnsafe(event) ?? warning;
+      return warning;
+    }),
+  );
+  endings.set(exposedRuntime, (afterDrain) =>
+    Effect.suspend(() => {
+      releaseCleanup = afterDrain;
+      return seal();
+    }),
+  );
+  failures.set(exposedRuntime, (detail, afterDrain, cause) =>
+    Effect.suspend(() => {
+      releaseCleanup = afterDrain;
+      return ended
         ? Effect.void
         : seal(
-            Cause.fail(
-              new ProviderAdapterEventStreamError({
-                driver: runtime.driver,
-                providerSessionId: runtime.providerSessionId,
-                cause: detail,
-              }),
-            ),
-          ),
-    ),
+            cause ??
+              Cause.fail(
+                new ProviderAdapterEventStreamError({
+                  driver: runtime.driver,
+                  providerSessionId: runtime.providerSessionId,
+                  cause: detail,
+                }),
+              ),
+          );
+    }),
   );
   // Non-graceful release is a fence too. Shutdown explicitly closes below.
   yield* Scope.addFinalizer(
@@ -177,8 +168,25 @@ export function closeProviderEventFlow(
 export function failProviderEventFlow(
   runtime: ProviderAdapterV2SessionRuntime,
   detail: string,
+  afterDrain: Effect.Effect<void>,
+  cause?: Cause.Cause<ProviderAdapterV2Error>,
 ): Effect.Effect<void> {
-  return failures.get(runtime)?.(detail) ?? Effect.void;
+  return failures.get(runtime)?.(detail, afterDrain, cause) ?? Effect.void;
+}
+
+/** Publish only after the session manager has normalized retry terminals. */
+export function publishProviderEventFlow(
+  runtime: ProviderAdapterV2SessionRuntime,
+  event: ProviderAdapterV2Event,
+): Effect.Effect<void> {
+  return publications.get(runtime)?.(event) ?? Effect.void;
+}
+
+export function endProviderEventFlow(
+  runtime: ProviderAdapterV2SessionRuntime,
+  afterDrain: Effect.Effect<void>,
+): Effect.Effect<void> {
+  return endings.get(runtime)?.(afterDrain) ?? Effect.void;
 }
 
 /** Admission and consumption use independent copies of the authoritative V2 router. */

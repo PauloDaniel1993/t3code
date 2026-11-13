@@ -1,6 +1,12 @@
 import * as NodeModule from "node:module";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import * as Runtime from "@t3tools/client-runtime/state/runtime";
+import * as ComposerTrigger from "@t3tools/shared/composerTrigger";
+import * as FreshSession from "./freshSessionArms";
+import * as ComposerSendLogic from "./composerSend.logic";
+import { parseCodexFeedbackCommand } from "@t3tools/client-runtime/state/threads";
+import { ProviderInteractionMode } from "@t3tools/contracts";
+import { DEFAULT_INTERACTION_MODE } from "../../types";
 import * as Model from "@t3tools/shared/model";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { truncate } from "@t3tools/shared/String";
@@ -45,7 +51,7 @@ import {
 // Only the surrounding view's hook bindings are supplied by this headless harness;
 // it avoids mounting unrelated timelines, terminals and browser panels.
 const handlerStart = composerSendSource.indexOf("  const onSend = async (");
-const handlerEnd = composerSendSource.indexOf("\n  return { onSend };", handlerStart);
+const handlerEnd = composerSendSource.indexOf("\n  const onSendLatest =", handlerStart);
 if (handlerStart < 0 || handlerEnd < 0) throw new Error("Composer send handler was not found");
 const handler = NodeModule.stripTypeScriptTypes(composerSendSource.slice(handlerStart, handlerEnd));
 
@@ -101,6 +107,12 @@ export function createSendHarness(
     ...ChatLogic,
     ...Runtime,
     ...Model,
+    ...ComposerTrigger,
+    ...FreshSession,
+    ...ComposerSendLogic,
+    parseCodexFeedbackCommand,
+    ProviderInteractionMode,
+    DEFAULT_INTERACTION_MODE,
     ...Recovery,
     ...Uploads,
     ...refs,
@@ -180,6 +192,7 @@ export function createSendHarness(
     onSideChat: undefined,
     editingQueuedRun: null,
     showPlanFollowUpPrompt: false,
+    freshSessionAvailable: false,
     activeMessageCount: 1,
     sendEnvMode: "local",
     startFromOrigin: false,
@@ -244,6 +257,8 @@ export function createSendHarness(
             previewAnnotations: draft?.previewAnnotations ?? [],
             reviewComments: draft?.reviewComments ?? [],
             threadContexts: draft?.threadContexts ?? [],
+            environmentContexts: draft?.environmentContexts ?? [],
+            shownPendingApprovalIds: [],
             providerAvailable: true,
             multipleModelSelections: null,
             selectedProvider: "claudeAgent",

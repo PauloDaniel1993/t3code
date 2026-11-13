@@ -18,6 +18,7 @@ const FLOW_TEXT_MAX_BYTES = 16_000;
 const FLOW_FIELD_MAX_BYTES = 4_096;
 const FLOW_LIST_MAX_ITEMS = 200;
 const FLOW_COMMAND_MAX_BYTES = 16_384;
+// @effect-diagnostics-next-line extendsNativeError:off - pure flow helpers throw this as a synchronous sentinel.
 export class FlowValueError extends Error {
   readonly path: string;
   constructor(path: string, message: string) {

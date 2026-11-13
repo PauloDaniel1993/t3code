@@ -5,6 +5,7 @@ import { expect, it, vi } from "vite-plus/test";
 import { render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({ writeFile: vi.fn(), toast: vi.fn() }));
+vi.mock("~/lib/utils", async () => ({ cn: (await import("class-variance-authority")).cx }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => state.writeFile }));
 vi.mock("~/state/session", () => ({
   readEnvironmentScope: () => true,

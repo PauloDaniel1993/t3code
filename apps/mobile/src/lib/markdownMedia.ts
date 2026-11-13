@@ -27,7 +27,7 @@ import {
   workspaceRelativeMarkdownPath,
 } from "./workspaceMarkdownResource";
 
-import type { FilePreviewSource } from "../components/FilePreviewModal";
+import type { FilePreviewSource } from "../components/ui/FilePreviewModal";
 import type { MediaVideoPreviewSource } from "./videoPreviewSource";
 import type { MediaActionsSource } from "./mediaActionsSource";
 

@@ -1,3 +1,4 @@
+import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -284,6 +285,7 @@ function scenario<E>(input: {
           McpProviderSessions.layer.pipe(Layer.provide(McpRegistryLayer)),
           McpRegistryLayer,
           StoresLayer,
+          ProviderInstallationGate.layer,
         ),
       ),
     );

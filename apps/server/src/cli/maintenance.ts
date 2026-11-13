@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { Command, Flag } from "effect/cli";
 
 import {
@@ -12,6 +13,14 @@ import {
 } from "../persistence/DatabasePhysicalMaintenance.ts";
 import type { MaintenanceProgress } from "../persistence/DatabaseMaintenanceProgress.ts";
 
+class CliMaintenanceError extends Schema.TaggedError<CliMaintenanceError>()("CliMaintenanceError", {
+  cause: Schema.Defect(),
+}) {
+  override get message(): string {
+    return "Database maintenance failed.";
+  }
+}
+
 const databaseFlags = {
   database: Flag.String("database").pipe(
     Flag.withDescription(
@@ -20,10 +29,18 @@ const databaseFlags = {
   ),
 };
 
-const report = (operation: () => unknown) =>
-  Effect.try(operation).pipe(
-    Effect.flatMap((result) => Console.log(JSON.stringify(result ?? { phase: "none" }, null, 2))),
+const encodeReport = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }));
+
+const report = Effect.fn("CliMaintenance.report")(function* (operation: () => unknown) {
+  const result = yield* Effect.try({
+    try: operation,
+    catch: (cause) => new CliMaintenanceError({ cause }),
+  });
+  const output = yield* encodeReport(result ?? { phase: "none" }).pipe(
+    Effect.mapError((cause) => new CliMaintenanceError({ cause })),
   );
+  yield* Console.log(output);
+});
 
 function printProgress(progress: MaintenanceProgress): void {
   const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(1)}s`;

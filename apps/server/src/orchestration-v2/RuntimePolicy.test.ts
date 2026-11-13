@@ -131,6 +131,7 @@ const layerWithPolicy = (policy?: ManagedPolicySummary) =>
                     folders: null,
                     defaultModelSelection: null,
                     defaultThreadEnvMode: null,
+                    hasCustomTitle: false,
                     autoPull: false,
                     pinnedAt: null,
                     archivedAt: null,

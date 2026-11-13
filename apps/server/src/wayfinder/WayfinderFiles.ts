@@ -2,26 +2,40 @@
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 
-import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import type { PlatformError } from "effect/PlatformError";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import type { WayfinderMarkdownFile } from "./WayfinderMarkdown.ts";
 
-class WayfinderNodeFileError extends Data.TaggedError("WayfinderNodeFileError")<{
-  readonly code: string | undefined;
-}> {}
+class WayfinderNodeFileError extends Schema.TaggedError<WayfinderNodeFileError>()(
+  "WayfinderNodeFileError",
+  {
+    code: Schema.UndefinedOr(Schema.String),
+    cause: Schema.Defect(),
+  },
+) {}
+
+const nodeFileError = (cause: unknown) =>
+  new WayfinderNodeFileError({
+    code:
+      Predicate.hasProperty(cause, "code") && typeof cause.code === "string"
+        ? cause.code
+        : undefined,
+    cause,
+  });
 
 const nodeCall = <A>(run: () => Promise<A>) =>
   Effect.tryPromise({
     try: run,
-    catch: (cause) => new WayfinderNodeFileError({ code: (cause as NodeJS.ErrnoException).code }),
+    catch: nodeFileError,
   });
 
 const isAbsent = (code: string | undefined) => code === "ENOENT" || code === "ENOTDIR";
@@ -103,7 +117,7 @@ export const watchDirectory = (
         watcher.on("close", markClosed);
         return { watcher, closed };
       },
-      catch: (cause) => new WayfinderNodeFileError({ code: (cause as NodeJS.ErrnoException).code }),
+      catch: nodeFileError,
     }),
     ({ watcher }) => Effect.sync(() => watcher.close()),
   ).pipe(Effect.map(({ closed }) => closed));

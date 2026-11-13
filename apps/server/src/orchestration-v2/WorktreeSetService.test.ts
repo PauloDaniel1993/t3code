@@ -159,6 +159,7 @@ const withCoordinator = <A, E, R>(
                         allowNonZeroExit: true,
                       })
                       .pipe(Effect.map((result) => result.exitCode === 0)),
+                  resolvePrimaryRemoteName: driver.resolvePrimaryRemoteName,
                   resolveWorktreeBaseRemote: driver.resolveWorktreeBaseRemote,
                   fetchWorktreeBaseCommit: driver.fetchWorktreeBaseCommit,
                   remoteExists: driver.remoteExists,
@@ -255,13 +256,18 @@ it.effect("recovers missing members from pushed refs before detached default ref
     );
     const expected: string[] = [];
     for (const [index, member] of set.members.entries()) {
-      yield* git(member.repositoryRoot, ["remote", "add", "origin", member.repositoryRoot]);
+      const remoteName = index === 0 ? "upstream" : "fork";
+      yield* git(member.repositoryRoot, ["remote", "add", remoteName, member.repositoryRoot]);
       const defaultTip = yield* git(member.repositoryRoot, ["rev-parse", "HEAD"]);
-      yield* git(member.repositoryRoot, ["update-ref", "refs/remotes/origin/main", defaultTip]);
+      yield* git(member.repositoryRoot, [
+        "update-ref",
+        `refs/remotes/${remoteName}/main`,
+        defaultTip,
+      ]);
       yield* git(member.repositoryRoot, [
         "symbolic-ref",
-        "refs/remotes/origin/HEAD",
-        "refs/remotes/origin/main",
+        `refs/remotes/${remoteName}/HEAD`,
+        `refs/remotes/${remoteName}/main`,
       ]);
       yield* fileSystem.writeFileString(path.join(member.path, "pushed.txt"), "pushed tip");
       yield* git(member.path, ["add", "."]);
@@ -270,7 +276,7 @@ it.effect("recovers missing members from pushed refs before detached default ref
       if (index === 0)
         yield* git(member.repositoryRoot, [
           "update-ref",
-          `refs/remotes/origin/${member.branch}`,
+          `refs/remotes/${remoteName}/${member.branch}`,
           pushedTip,
         ]);
       expected.push(index === 0 ? pushedTip : defaultTip);
@@ -290,6 +296,7 @@ it.effect("recovers missing members from pushed refs before detached default ref
       ),
     );
     for (const [index, member] of set.members.entries()) {
+      const remoteName = index === 0 ? "upstream" : "fork";
       assert.equal(yield* git(member.path, ["rev-parse", "HEAD"]), expected[index]);
       assert.equal(yield* git(member.path, ["branch", "--show-current"]), member.branch);
       assert.equal(
@@ -298,7 +305,7 @@ it.effect("recovers missing members from pushed refs before detached default ref
           "--format=%(upstream)",
           `refs/heads/${member.branch}`,
         ]),
-        index === 0 ? `refs/remotes/origin/${member.branch}` : "",
+        index === 0 ? `refs/remotes/${remoteName}/${member.branch}` : "",
       );
     }
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
@@ -340,6 +347,62 @@ it.effect("resolves each member's base remote once and passes it to the fetch", 
     );
     assert.equal(resolved.length, 2);
     assert.deepEqual(fetched, resolved);
+  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+);
+
+it.effect("keeps a member's submodule warning after the remaining members finish", () =>
+  Effect.gen(function* () {
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const { api, workspaceFolders } = yield* makeSiblingWorkspace;
+    const stages: Array<readonly [string, string, string | undefined]> = [];
+    const details: Array<string> = [];
+    yield* withCoordinator(
+      createSet({
+        workspaceFolders: workspaceFolders.slice(0, 2),
+        baseRef: api.branch,
+        branch: "submodule-progress",
+        progress: {
+          stage: (stage, status, detail) =>
+            Effect.sync(() => {
+              stages.push([stage, status, detail]);
+            }),
+          checkout: () => Effect.void,
+          submodules: ({ detail }) =>
+            Effect.sync(() => {
+              details.push(detail);
+            }),
+        },
+      }),
+      {
+        git: {
+          createWorktree: (input, options) =>
+            Effect.gen(function* () {
+              const result = yield* driver.createWorktree(input, options);
+              const progress = options?.progress;
+              yield* progress?.onSubmodulesStarted?.() ?? Effect.void;
+              yield* progress?.onSubmoduleLine?.("Receiving objects:  20% (2/10)") ?? Effect.void;
+              yield* progress?.onSubmoduleLine?.("Receiving objects:  30% (3/10)") ?? Effect.void;
+              yield* (
+                progress?.onSubmoduleLine?.("Submodule path 'vendor/o'hare': checked out 'abc'") ??
+                  Effect.void
+              );
+              yield* (
+                progress?.onSubmodulesFinished?.({
+                  ok: input.cwd !== api.root,
+                  detail: input.cwd === api.root ? "download failed" : null,
+                }) ?? Effect.void
+              );
+              return result;
+            }),
+        },
+      },
+    );
+    assert.deepEqual(stages.at(-1), ["submodules", "warning", "download failed"]);
+    assert.deepEqual(details, ["Receiving objects: 20% (2/10)", "vendor/o'hare", "vendor/o'hare"]);
+    assert.equal(
+      stages.filter(([stage, status]) => stage === "submodules" && status === "running").length,
+      2,
+    );
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
@@ -396,6 +459,7 @@ const createSet = (input: {
   readonly projectRoot?: string;
   readonly baseRef: string;
   readonly branch: string;
+  readonly generatedTemporaryBranch?: boolean;
   readonly startFromOrigin?: boolean;
   readonly progress?: WorktreeSet.WorktreeSetProgress;
 }) =>
@@ -411,6 +475,7 @@ const createSet = (input: {
         projectRoot: input.projectRoot ?? input.workspaceFolders?.[0]?.path ?? "/unused",
         baseRef: input.baseRef,
         branch: input.branch,
+        generatedTemporaryBranch: input.generatedTemporaryBranch ?? false,
         startFromOrigin: input.startFromOrigin ?? false,
       })
       .pipe(Effect.flatMap((plan) => worktreeSets.create(plan, input.progress ?? noProgress))),
@@ -418,9 +483,17 @@ const createSet = (input: {
 
 it.effect("creates a one-member set exactly where a lone worktree lives", () =>
   Effect.gen(function* () {
-    const path = yield* Path.Path;
-    const config = yield* ServerConfig.ServerConfig;
     const repo = yield* makeRepo("app");
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const lone = yield* driver.createWorktree({
+      cwd: repo.root,
+      refName: repo.branch,
+      newRefName: "feature/one",
+      path: null,
+    });
+    const worktreePath = lone.worktree.path;
+    yield* driver.removeWorktree({ cwd: repo.root, path: worktreePath, force: true });
+    yield* driver.deleteLocalBranch({ cwd: repo.root, refName: "feature/one" });
     const stages: Array<string> = [];
 
     const set = yield* withCoordinator(
@@ -436,7 +509,6 @@ it.effect("creates a one-member set exactly where a lone worktree lives", () =>
       }),
     );
 
-    const worktreePath = path.join(config.worktreesDir, "app", "feature-one");
     assert.deepEqual(set.members, [
       { repositoryRoot: repo.root, path: worktreePath, branch: "feature/one" },
     ]);
@@ -446,7 +518,12 @@ it.effect("creates a one-member set exactly where a lone worktree lives", () =>
     });
     assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "feature/one");
     // No origin remote: the fetch is skipped rather than failing the launch.
-    assert.deepEqual(stages, ["fetch:skipped", "checkout:running", "checkout:done"]);
+    assert.deepEqual(stages, [
+      "fetch:skipped",
+      "checkout:running",
+      "checkout:done",
+      "submodules:skipped",
+    ]);
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
@@ -454,16 +531,24 @@ it.effect("keeps a subfolder project's worktree at the worktree root", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const config = yield* ServerConfig.ServerConfig;
     const repo = yield* makeRepo("monorepo", ["packages/app/index.ts"]);
     const projectRoot = path.join(repo.root, "packages", "app");
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const lone = yield* driver.createWorktree({
+      cwd: projectRoot,
+      refName: repo.branch,
+      newRefName: "sub",
+      path: null,
+    });
+    const worktreePath = lone.worktree.path;
+    yield* driver.removeWorktree({ cwd: projectRoot, path: worktreePath, force: true });
+    yield* driver.deleteLocalBranch({ cwd: projectRoot, refName: "sub" });
 
     const set = yield* withCoordinator(
       createSet({ projectRoot, baseRef: repo.branch, branch: "sub" }),
     );
 
     // Today's binding: the member is the worktree root, not the mapped subfolder.
-    const worktreePath = path.join(config.worktreesDir, "app", "sub");
     assert.equal(set.members[0]?.path, worktreePath);
     assert.equal(WorktreeSet.worktreeSetBinding(set).worktreePath, worktreePath);
     assert.equal((yield* fileSystem.stat(path.join(worktreePath, ".git"))).type, "File");
@@ -680,25 +765,27 @@ it.effect("mirrors sibling repositories and names a second checkout of one repos
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
-it.effect("fails before creating anything when a name is taken in any member", () =>
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const config = yield* ServerConfig.ServerConfig;
-    const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
-    yield* git(web.root, ["branch", "feature/taken"]);
+it.effect.each(["feature/taken", "feature", "feature/taken/nested"])(
+  "fails before creating anything when a branch conflicts with %s in a member",
+  (existing) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
+      yield* git(web.root, ["branch", existing]);
 
-    const error = yield* withCoordinator(
-      createSet({ workspaceFolders, baseRef: api.branch, branch: "feature/taken" }),
-    ).pipe(Effect.flip);
+      const error = yield* withCoordinator(
+        createSet({ workspaceFolders, baseRef: api.branch, branch: "feature/taken" }),
+      ).pipe(Effect.flip);
 
-    assert.equal(error._tag, "VcsThreadWorktreesError");
-    assert.include(error.message, web.root);
-    assert.isFalse(
-      yield* fileSystem.exists(path.join(config.worktreesDir, "api", "feature-taken")),
-    );
-    assert.isFalse(yield* branchExists(api.root, "feature/taken"));
-  }).pipe(Effect.scoped, Effect.provide(GitLayer)),
+      assert.equal(error._tag, "VcsThreadWorktreesError");
+      assert.include(error.message, web.root);
+      assert.isFalse(
+        yield* fileSystem.exists(path.join(config.worktreesDir, "api", "feature-taken")),
+      );
+      assert.isFalse(yield* branchExists(api.root, "feature/taken"));
+    }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
 it.effect("removes the members it created and their branches when a later one fails", () =>
@@ -849,6 +936,7 @@ it.effect("deletes the branch a failed add made before it could claim the worktr
             projectRoot: repo.root,
             baseRef: repo.branch,
             branch: "late",
+            path: place,
             startFromOrigin: false,
           })
           .pipe(
@@ -1965,27 +2053,32 @@ it.effect("removes a set's editor workspace file and its emptied session directo
   }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );
 
-it.effect(
-  "temporary names flatten independently in each checkout whose t3 branch blocks the namespace",
-  () =>
+it.effect.each([
+  { prefix: "t3", generatedTemporaryBranch: false, flattened: "t3-abcdef12" },
+  { prefix: "t3code", generatedTemporaryBranch: false, flattened: "t3-abcdef12" },
+  { prefix: "agent/work", generatedTemporaryBranch: true, flattened: "agent-work-abcdef12" },
+])(
+  "temporary names flatten independently when a member's $prefix branch blocks the namespace",
+  ({ prefix, generatedTemporaryBranch, flattened }) =>
     Effect.gen(function* () {
       const { api, web, workspaceFolders } = yield* makeSiblingWorkspace;
-      yield* git(web.root, ["branch", "t3"]);
+      yield* git(web.root, ["branch", prefix]);
       const set = yield* withCoordinator(
         createSet({
           workspaceFolders: workspaceFolders.slice(0, 2),
           baseRef: api.branch,
-          branch: "t3/abcdef12",
+          branch: `${prefix}/abcdef12`,
+          generatedTemporaryBranch,
         }),
       );
       assert.deepEqual(
         set.members.map((member) => [member.repositoryRoot, member.branch]),
         [
-          [api.root, "t3/abcdef12"],
-          [web.root, "t3-abcdef12"],
+          [api.root, `${prefix}/abcdef12`],
+          [web.root, flattened],
         ],
       );
-      assert.isTrue(yield* branchExists(api.root, "t3/abcdef12"));
-      assert.isTrue(yield* branchExists(web.root, "t3-abcdef12"));
+      assert.isTrue(yield* branchExists(api.root, `${prefix}/abcdef12`));
+      assert.isTrue(yield* branchExists(web.root, flattened));
     }).pipe(Effect.scoped, Effect.provide(GitLayer)),
 );

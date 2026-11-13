@@ -43,6 +43,8 @@ const forkMigrationEntries = [
   [14, "ScheduledTaskFlow", ForkMigration0014],
 ] as const;
 
+export const latestForkMigrationId = Math.max(0, ...forkMigrationEntries.map(([id]) => id));
+
 const makeForkMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
     Object.fromEntries(

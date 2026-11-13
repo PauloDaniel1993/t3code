@@ -5,8 +5,7 @@ import { ChevronDownIcon, FolderIcon } from "lucide-react";
 import { useProject, useThreadProjection } from "../state/entities";
 import { serverEnvironment } from "../state/server";
 import { useDiffPanelStore } from "../diffPanelStore";
-import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
-import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
+import { useRightPanelStore } from "../rightPanelStore";
 import { WorkspaceFolderGroups } from "./WorkspaceFolderGroups";
 import { workspaceFolderChipCount, workspaceFolderRows } from "./workspaceFolders.logic";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "./ui/popover";
@@ -19,7 +18,6 @@ interface WorkspaceFoldersChipProps {
 }
 
 function WorkspaceFoldersChipContents(props: WorkspaceFoldersChipProps) {
-  const activeThreadRef = useThreadRouteRef();
   const project = useProject(props.projectRef);
   const detail = useThreadProjection(props.threadRef ?? null)?.projection;
   const config = useAtomValue(serverEnvironment.configValueAtom(props.projectRef.environmentId));
@@ -46,19 +44,9 @@ function WorkspaceFoldersChipContents(props: WorkspaceFoldersChipProps) {
             ? (folder) => {
                 const ref = props.threadRef!;
                 if (!folder.folder.path) return;
-                const diffOpen =
-                  selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, ref) === "diff";
-                const isActiveThread =
-                  activeThreadRef?.environmentId === ref.environmentId &&
-                  activeThreadRef?.threadId === ref.threadId;
                 useDiffPanelStore
                   .getState()
-                  .selectWorkspaceFolder(
-                    ref,
-                    folder.folder.path,
-                    folder.label,
-                    !diffOpen || !isActiveThread,
-                  );
+                  .selectWorkspaceFolder(ref, folder.folder.path, folder.label);
                 useRightPanelStore.getState().open(ref, "diff");
                 props.onOpenThread?.(ref);
               }

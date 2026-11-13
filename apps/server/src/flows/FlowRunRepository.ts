@@ -84,6 +84,7 @@ const encodeDefinition = Schema.encodeSync(Schema.fromJsonString(FlowDefinition)
 const encodeInputs = Schema.encodeSync(Schema.fromJsonString(FlowInputs));
 const encodeOutput = Schema.encodeSync(Schema.fromJsonString(Schema.NullOr(FlowStepOutput)));
 const encodeError = Schema.encodeSync(Schema.fromJsonString(Schema.NullOr(FlowRunError)));
+const encodeStepPath = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeRun = Schema.decodeSync(Schema.fromJsonString(FlowRunSummary));
 const decodeDefinition = Schema.decodeSync(Schema.fromJsonString(FlowDefinition));
 const decodeInputs = Schema.decodeSync(Schema.fromJsonString(FlowInputs));
@@ -117,13 +118,14 @@ const make = Effect.gen(function* () {
           state: encodeStep(s),
           output: encodeOutput(s.output),
           error: encodeError(s.error),
+          stepPath: encodeStepPath(s.stepPath),
         }));
         const existing = yield* sql<{
           flow_run_id: string;
         }>`SELECT flow_run_id FROM flow_step_runs WHERE id = ${s.id}`;
         if (existing[0] && existing[0].flow_run_id !== id)
           return yield* new FlowPersistenceError({ operation: "step ownership", cause: null });
-        yield* sql`INSERT INTO flow_step_runs ${sql.insert({ id: s.id, flow_run_id: id, parent_step_run_id: s.parentStepRunId, step_path: JSON.stringify(s.stepPath), iteration: s.iteration ?? null, item_index: s.itemIndex ?? null, attempt: s.attempt, status: s.status, thread_id: s.threadId, output: encoded.output, error: encoded.error, created_at: s.createdAt, started_at: s.startedAt, finished_at: s.finishedAt, state_json: encoded.state })}
+        yield* sql`INSERT INTO flow_step_runs ${sql.insert({ id: s.id, flow_run_id: id, parent_step_run_id: s.parentStepRunId, step_path: encoded.stepPath, iteration: s.iteration ?? null, item_index: s.itemIndex ?? null, attempt: s.attempt, status: s.status, thread_id: s.threadId, output: encoded.output, error: encoded.error, created_at: s.createdAt, started_at: s.startedAt, finished_at: s.finishedAt, state_json: encoded.state })}
           ON CONFLICT(id) DO UPDATE SET status = excluded.status, thread_id = excluded.thread_id, output = excluded.output, error = excluded.error, started_at = excluded.started_at, finished_at = excluded.finished_at, state_json = excluded.state_json`;
       } else {
         const a = t.approval;

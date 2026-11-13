@@ -82,6 +82,7 @@ function projectRow(input: {
   return {
     projectId,
     title: "Folders",
+    hasCustomTitle: false,
     workspaceRoot: input.workspaceRoot,
     workspaceFile: input.folders === undefined ? null : `${input.workspaceRoot}.code-workspace`,
     folders: input.folders === undefined ? null : [...input.folders],

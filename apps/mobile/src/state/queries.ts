@@ -423,17 +423,13 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
     debouncedTarget.query.length > 0
       ? {
           environmentId: debouncedTarget.environmentId,
-          input: debouncedTarget.scope
-            ? {
-                scope: debouncedTarget.scope,
-                query: debouncedTarget.query,
-                limit: COMPOSER_PATH_SEARCH_LIMIT,
-              }
-            : {
-                cwd: debouncedTarget.cwd,
-                query: debouncedTarget.query,
-                limit: COMPOSER_PATH_SEARCH_LIMIT,
-              },
+          input: {
+            ...(debouncedTarget.scope
+              ? { scope: debouncedTarget.scope }
+              : { cwd: debouncedTarget.cwd }),
+            query: debouncedTarget.query.slice(0, 256).replace(/[\uD800-\uDBFF]$/, ""),
+            limit: COMPOSER_PATH_SEARCH_LIMIT,
+          },
         }
       : null;
   const result = useEnvironmentQuery(

@@ -188,6 +188,7 @@ vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
     ...actual,
+    useContext: () => null,
     useCallback: hooks.useCallback,
     useEffect: hooks.useEffect,
     useLayoutEffect: hooks.useEffect,
@@ -209,7 +210,7 @@ vi.mock("@effect/atom-react", () => ({
 
 vi.mock("~/terminal/ghostty/surface", () => {
   class GhosttyTerminalSurface {
-    readonly input = { readOnly: false };
+    readonly input = { readOnly: false, setAttribute: () => {} };
     cols = 80;
     rows = 24;
     readonly createdFont: TerminalFont | undefined;
@@ -250,6 +251,7 @@ vi.mock("~/terminal/ghostty/surface", () => {
       return Promise.resolve();
     }
     setTheme(): void {}
+    setSharedGrid(): void {}
     setVisible(): void {}
     write(): void {}
   }

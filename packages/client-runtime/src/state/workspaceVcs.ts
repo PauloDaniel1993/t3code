@@ -3,6 +3,7 @@ import type {
   VcsRunWorkspaceActionResult,
   VcsWorkspaceActionProgressEvent,
   VcsStatusResult,
+  VcsBranchStatus,
 } from "@t3tools/contracts";
 import {
   isCheckoutDrifted,
@@ -14,7 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-export type VcsBranchStatus = Pick<VcsStatusResult, "isRepo" | "refName">;
+export type { VcsBranchStatus };
 export type RunWorkspaceActionInput = VcsRunWorkspaceActionInput & {
   readonly cwds: ReadonlyArray<string>;
   readonly onProgress?: (event: VcsWorkspaceActionProgressEvent) => void;

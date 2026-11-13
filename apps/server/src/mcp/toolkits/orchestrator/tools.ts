@@ -54,6 +54,7 @@ import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
+import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
@@ -72,6 +73,8 @@ const linkingDependencies = [
   PeerLinkRequests.PeerLinkRequests,
   PeerLinks.PeerLinks,
 ];
+/** A send there may record a follow-up to a remote task. */
+const sendDependencies = [...dependencies, RemoteDelegation.RemoteDelegation];
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
@@ -94,7 +97,7 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Needs an agent running inside a T3 thread. Delegate one task to a T3-owned child agent/subagent of THIS thread and run it with only the supplied task prompt, without copying parent conversation history. Choose providers and models from orchestrator_capabilities, which uses the same live catalog as the composer. Prefer T3 tasks for task, delegation, and parallel-work requests, including same-provider and cross-provider work. Use native provider agents for explicit agent/sub-agent requests or when T3 task tools are unavailable. For every T3 delegated review round, call delegate_task again with the original brief, prior findings, responses, and unresolved objections in the task prompt. Track each round by its own taskId and use a distinct clientRequestId per round, stable across retries of that round. The childThreadId is backing storage, not the target for starting another delegated review round through t3_thread_send. Set isolation to worktree for a separate checkout based on the parent local commit, with project setup completed before the child starts. Uncommitted edits are not copied; omitted isolation shares the parent checkout. Use delegate_task when model options are requested or the child keeps the parent's provider instance and model with nonempty inheritedOptions from orchestrator_capabilities, even for native-supported models. Native subagents cannot reliably apply T3 model options. Set target.options using advertised IDs: Claude {effort: 'max', fastMode: true}; Codex {reasoningEffort: 'max', serviceTier: 'priority'}. Check providerInstanceId, model, and options in the result. Provider/model and modes inherit unless overridden. Options inherit only for the same instance and model; explicit entries override individual values and [] or {} clears them. A requested runtimeMode must be one the target provider lists in orchestrator_capabilities runtimeModes; an inherited one steps down to the broadest mode it offers. Leave runtimeMode unset unless the user asks for a supervised child: approval-required and auto-accept-edits usually make the child wait for a person at each action that needs approval. Prefer mode='async' for long work; mode='wait' blocks until completion, a blocking question, a pending approval, or timeout. If hasPendingQuestion, pass threadId=childThreadId to t3_pending_request_list, t3_pending_request_read (with requestId) and t3_pending_request_respond, or ask the user; the task's completion still wakes this thread. If pendingApproval is set, read the fresh full request in childThreadId before responding: the record can outlive its provider callback. It grants no approval authority; decisions remain with the child's existing approval holder, and pending request tools answer questions only. The child keeps running and its completion still wakes this thread. timeoutMs on mode=wait is only the parent's wait budget and does not cancel the child. waitTimedOut on that wait call means the timeout fired; keep that taskId and read status on later task_status. An async child's completion wakes this thread through a notification, steered into active turns where supported or queued otherwise, so end the turn instead of polling or spawning watchers; use task_status only when the result is needed mid-turn. Recover lost task IDs with task_list.",
+    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`. No secrets in `task`.",
   parameters: OrchestratorMcpDelegateTaskInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
@@ -204,7 +207,11 @@ const BackgroundWaitTool = Tool.make("t3_background_wait", {
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Title, "Wait on background work");
+})
+  .annotate(Tool.Title, "Wait on background work")
+  // Only marks which tasks keep the thread Working; Claude Plan mode blocks tools without this.
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
 
 const ScheduleTaskTool = Tool.make("schedule_task", {
   description:
@@ -259,7 +266,7 @@ const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
 
 const RequestSecretTool = Tool.make("request_secret", {
   description:
-    'Ask the user to enter a secret in a private card and wait. You never see the value. Returns a one-use `secretRef` for a tool that accepts it, or with `delivery: "file"` a private file path to read inside a shell command. Asked how to provide a secret: call this now, do not explain instead.',
+    'Ask for one secret per single-line card; never combine values. Open it, don\'t offer it. Returns one-use `secretRef`, or `delivery: "file"` a file read only in its command, e.g. `adb pair <ip:port> "$(cat <file>)"`. Asked how: call now. Sign-in link: `url`. Pasted secret for child/script: `value`. Never from an old thread.',
   parameters: OrchestratorMcpRequestSecretInput,
   success: OrchestratorMcpRequestSecretResult,
   failure: OrchestratorMcpFailure,
@@ -267,7 +274,9 @@ const RequestSecretTool = Tool.make("request_secret", {
   dependencies,
 })
   .annotate(Tool.Title, "Request a secret from the user")
-  .annotate(Tool.Destructive, false);
+  .annotate(Tool.Destructive, false)
+  // Claude Code defers MCP tools behind ToolSearch; agents that never load this one ask in chat.
+  .annotate(Tool.Meta, { "anthropic/alwaysLoad": true });
 
 const CreateThreadsTool = Tool.make("create_threads", {
   description:
@@ -298,7 +307,7 @@ const ThreadListTool = Tool.make("t3_thread_list", {
 
 const ThreadReadTool = Tool.make("t3_thread_read", {
   description:
-    "Read durable state and a paginated timeline from any T3 thread in this environment. The thread detail includes cwd, workspaceFile, frozen folders with current availability and effective paths, and optional worktree set members; branch and worktreePath describe the primary. workspaceFile is the project's currently linked file and may differ from the thread's frozen folders. The default messages view returns user messages, assistant messages, and proposed plans; activity returns all summarized timeline items. Reading an untruncated terminal assistant result from this parent thread's direct app-owned child acknowledges that child's automatic completion delivery. Continue with afterPosition=nextPosition. Recover long item text with itemId and textOffset=nextTextOffset until nextTextOffset is null; offsets count UTF-16 code units. The thread also reports its snooze state and, in pullRequests, every linked pull request; linkedPullRequest is a legacy single link and can be null while pullRequests still has entries. Mention the thread with its returned link verbatim. If no link is returned, write `[title](t3-thread://v1/<threadId>)` with the threadId exactly as returned, not URL-encoded.",
+    "Read any thread by id. View `messages` (default) or `activity` (all items). Newest first; older: `beforePosition=earlierPosition`; from the start: `afterPosition=-1`, then `nextPosition`. Cut-off text: `itemId`, `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
   parameters: OrchestratorMcpThreadReadInput,
   success: OrchestratorMcpThreadReadResult,
   failure: OrchestratorMcpFailure,
@@ -335,7 +344,7 @@ const ThreadSendTool = Tool.make("t3_thread_send", {
   success: OrchestratorMcpThreadSendResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: sendDependencies,
 })
   .annotate(Tool.Title, "Send to a T3 thread")
   .annotate(Tool.Destructive, true)

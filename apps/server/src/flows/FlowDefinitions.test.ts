@@ -26,7 +26,7 @@ const registry = Layer.effect(
     const changes = yield* PubSub.unbounded<void>();
     return {
       listInstances: Effect.succeed([]),
-      getInstance: () => Effect.sync(() => undefined),
+      getInstance: () => Effect.undefined,
       listUnavailable: Effect.succeed([]),
       streamChanges: Stream.empty,
       subscribeChanges: PubSub.subscribe(changes),

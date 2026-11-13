@@ -14,6 +14,7 @@ export interface ProjectScriptInput {
   readonly runOnWorktreeCreate: ProjectScript["runOnWorktreeCreate"];
   readonly waitForSetup: boolean;
   readonly runOnSettle: boolean;
+  readonly stopOnSettle?: boolean;
   readonly previewUrl: Exclude<ProjectScript["previewUrl"], undefined> | null;
   readonly autoOpenPreview: boolean;
   readonly folderPath?: string | null;
@@ -29,6 +30,7 @@ export function buildProjectScript(id: string, input: ProjectScriptInput): Proje
     ...(!input.runOnWorktreeCreate && input.folderPath ? { folderPath: input.folderPath } : {}),
     ...(input.runOnWorktreeCreate && input.waitForSetup ? { async: false } : {}),
     ...(input.runOnSettle ? { runOnSettle: true } : {}),
+    ...(input.stopOnSettle ? { stopOnSettle: true } : {}),
     ...(input.previewUrl === null
       ? {}
       : {

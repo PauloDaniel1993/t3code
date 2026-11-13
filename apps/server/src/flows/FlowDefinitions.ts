@@ -284,7 +284,12 @@ const make = Effect.gen(function* () {
               break;
             }
           }
-          if (JSON.stringify([...desired]) === JSON.stringify([...resolvedWatches])) return;
+          if (
+            desired.size === resolvedWatches.size &&
+            [...desired].every(([dir, resolved]) => resolvedWatches.get(dir) === resolved)
+          ) {
+            return;
+          }
           yield* Scope.close(watcherScope, Exit.void);
           watcherScope = yield* Scope.make();
           resolvedWatches.clear();

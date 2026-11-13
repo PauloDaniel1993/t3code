@@ -25,6 +25,8 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- symlink fixtures require native lstat semantics.
 import * as NodeFSP from "node:fs/promises";
+import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as CheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
@@ -138,7 +140,12 @@ it.effect.each([false, true, "interrupt"] as const)(
       const checkpoints = yield* CheckpointService.CheckpointServiceV2;
       if (lookupFails === "interrupt") {
         const exit = yield* Effect.exit(
-          checkpoints.materializeBaselineCheckpoint({ scope, ordinalWithinScope: 2 }),
+          checkpoints.materializeBaselineCheckpoint({
+            scope,
+            ordinalWithinScope: 2,
+            nodeId: scope.nodeId,
+            capturedAt: scope.createdAt,
+          }),
         );
         assert.isTrue(Exit.hasInterrupts(exit));
         const captureExit = yield* Effect.exit(
@@ -157,6 +164,8 @@ it.effect.each([false, true, "interrupt"] as const)(
       const baseline = yield* checkpoints.materializeBaselineCheckpoint({
         scope,
         ordinalWithinScope: 2,
+        nodeId: scope.nodeId,
+        capturedAt: scope.createdAt,
       });
 
       assert.equal(baseline.ordinalWithinScope, 2);
@@ -167,7 +176,7 @@ it.effect.each([false, true, "interrupt"] as const)(
           ordinalWithinScope: 2,
         }),
       );
-      assert.equal(baseline.status, lookupFails ? "missing" : "ready");
+      assert.equal(baseline.status, lookupFails ? "error" : "ready");
       assert.deepEqual(hasCheckpointRef.mock.calls[0]?.[0], {
         cwd: scope.cwd,
         checkpointRef: baseline.ref,
@@ -1048,10 +1057,178 @@ it.effect(
             const materialized = yield* checkpoints.materializeBaselineCheckpoint({
               scope,
               ordinalWithinScope: 0,
+              nodeId: scope.nodeId,
+              capturedAt: scope.createdAt,
             });
             assert.strictEqual(materialized.status, "missing");
           }
         }).pipe(Effect.provide(layerTest));
       }
     }),
+);
+
+it.effect.each(["legacy", "multipart"] as const)(
+  "bounds a slow baseline snapshot but waits for an in-flight capture of the same ref (%s)",
+  (layout) =>
+    Effect.gen(function* () {
+      const scope: OrchestrationV2CheckpointScope = {
+        id: CheckpointScopeId.make("checkpoint-scope:slow-baseline"),
+        threadId: ThreadId.make("thread:slow-baseline"),
+        runId: RunId.make("run:slow-baseline:1"),
+        nodeId: NodeId.make("node:slow-baseline:1"),
+        parentScopeId: null,
+        providerThreadId: ProviderThreadId.make("provider-thread:slow-baseline"),
+        kind: "root_run",
+        ordinalWithinParent: 0,
+        advancesAppRunCount: true,
+        cwd: "/repo/slow",
+        createdAt: DateTime.makeUnsafe("2026-07-28T00:00:00.000Z"),
+        ...(layout === "multipart"
+          ? {
+              parts: [
+                {
+                  key: "primary",
+                  cwd: "/repo/slow",
+                  vcs: "git" as const,
+                  pathspecs: ["."],
+                  folders: [],
+                },
+                {
+                  key: "fast",
+                  cwd: "/repo/fast",
+                  vcs: "git" as const,
+                  pathspecs: ["."],
+                  folders: [],
+                },
+              ],
+            }
+          : {}),
+      };
+      const refs = yield* Ref.make<ReadonlySet<string>>(new Set());
+      const snapshots = yield* Ref.make(0);
+      const firstSnapshotStarted = yield* Deferred.make<void>();
+      const baselineSnapshotStarted = yield* Deferred.make<void>();
+      const releaseSnapshot = yield* Deferred.make<void>();
+      const releaseBaselineSnapshot = yield* Deferred.make<void>();
+      const layerTest = CheckpointService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            FileSystem.layerNoop({ realPath: (target) => Effect.succeed(target) }),
+            Layer.mock(CheckpointStore.CheckpointStore)({
+              isGitRepository: () => Effect.succeed(true),
+              hasCheckpointRef: ({ checkpointRef }) =>
+                Ref.get(refs).pipe(Effect.map((current) => current.has(checkpointRef))),
+              captureCheckpoint: ({ cwd, checkpointRef }) =>
+                cwd === "/repo/fast"
+                  ? Ref.update(refs, (current) => new Set([...current, checkpointRef]))
+                  : Effect.gen(function* () {
+                      const count = yield* Ref.updateAndGet(snapshots, (count) => count + 1);
+                      yield* Deferred.succeed(
+                        count === 1 ? firstSnapshotStarted : baselineSnapshotStarted,
+                        undefined,
+                      );
+                      yield* Deferred.await(
+                        count === 1 ? releaseSnapshot : releaseBaselineSnapshot,
+                      );
+                      yield* Ref.update(refs, (current) => new Set([...current, checkpointRef]));
+                    }),
+            }),
+          ),
+        ),
+        Layer.provideMerge(NodeCrypto.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+        // A stopped run's post-turn capture writes the next run's baseline ref while holding the lock.
+        const postTurn = yield* checkpoints
+          .capture({
+            scope,
+            ordinalWithinScope: 1,
+            runId: scope.runId!,
+            nodeId: scope.nodeId!,
+            appRunOrdinal: 1,
+            capturedAt: scope.createdAt,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(firstSnapshotStarted);
+        const waitingBaseline = yield* checkpoints
+          .captureBaseline({ scope, ordinalWithinScope: 1 })
+          .pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust("10 seconds");
+        yield* Deferred.succeed(releaseSnapshot, undefined);
+        assert.strictEqual((yield* Fiber.join(postTurn)).status, "ready");
+        assert.strictEqual((yield* Fiber.join(waitingBaseline))._tag, "Success");
+
+        const slowBaseline = yield* checkpoints
+          .captureBaseline({ scope, ordinalWithinScope: 2 })
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(baselineSnapshotStarted);
+        yield* TestClock.adjust("5 seconds");
+        assert.strictEqual((yield* Fiber.join(slowBaseline))._tag, "Failure");
+        assert.strictEqual(yield* Ref.get(snapshots), 2);
+        assert.strictEqual((yield* Ref.get(refs)).size, layout === "multipart" ? 3 : 1);
+      }).pipe(Effect.provide(layerTest));
+    }),
+);
+
+it.effect("records a repository probe failure as an error checkpoint, not a missing one", () =>
+  Effect.gen(function* () {
+    const scope: OrchestrationV2CheckpointScope = {
+      id: CheckpointScopeId.make("checkpoint-scope:probe-failure"),
+      threadId: ThreadId.make("thread:probe-failure"),
+      runId: RunId.make("run:probe-failure:1"),
+      nodeId: NodeId.make("node:probe-failure:1"),
+      parentScopeId: null,
+      providerThreadId: ProviderThreadId.make("provider-thread:probe-failure"),
+      kind: "root_run",
+      ordinalWithinParent: 0,
+      advancesAppRunCount: true,
+      cwd: "/repo/bad-config",
+      createdAt: DateTime.makeUnsafe("2026-07-28T00:00:00.000Z"),
+    };
+    const layerTest = CheckpointService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          NodeServices.layer,
+          Layer.mock(CheckpointStore.CheckpointStore)({
+            isGitRepository: () =>
+              Effect.fail(
+                new VcsProcessExitError({
+                  operation: "GitVcsDriver.detectRepository",
+                  command: "git",
+                  cwd: scope.cwd,
+                  exitCode: 128,
+                  detail: "fatal: bad config line 1 in file .git/config",
+                }),
+              ),
+          }),
+        ),
+      ),
+      Layer.provideMerge(NodeCrypto.layer),
+    );
+
+    const statuses = yield* Effect.gen(function* () {
+      const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+      const baseline = yield* checkpoints.materializeBaselineCheckpoint({
+        scope,
+        ordinalWithinScope: 0,
+        nodeId: scope.nodeId,
+        capturedAt: scope.createdAt,
+      });
+      const turn = yield* checkpoints.capture({
+        scope,
+        ordinalWithinScope: 1,
+        runId: scope.runId!,
+        nodeId: scope.nodeId!,
+        appRunOrdinal: 1,
+        capturedAt: scope.createdAt,
+      });
+      return { baseline: baseline.status, turn: turn.status };
+    }).pipe(Effect.provide(layerTest));
+
+    assert.deepEqual(statuses, { baseline: "error", turn: "error" });
+  }),
 );

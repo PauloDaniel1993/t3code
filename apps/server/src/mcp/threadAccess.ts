@@ -71,7 +71,8 @@ export const dispatchFailure = (
 ) => {
   if (
     error._tag === "ThreadManagementProviderInstanceDisabledError" ||
-    error._tag === "OrchestratorRuntimeModeAboveCeilingError"
+    error._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
+    error._tag === "OrchestratorProviderSelectionBusyError"
   )
     return new OrchestratorMcpFailure({ code: "invalid_request", message: error.message });
   // A provider unable to reach the frozen folders gives the agent an actionable refusal.

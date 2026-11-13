@@ -1,10 +1,14 @@
+import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { isSamePath, owningFolder } from "@t3tools/shared/workspaceFolders";
 import { useMemo, useState } from "react";
-import { FlatList, Platform, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
-import { AndroidScreenHeader } from "../../../components/ui/AndroidScreenHeader";
+import { AppBar } from "../../../components/ui/AppBar";
+import { SheetPane } from "../../../components/ui/SheetPane";
+import { ScreenContent } from "../../../components/ui/ScreenContent";
+import { NativeScrollView } from "../../../native/NativeScrollViewMarker";
 import { useThreadWorkspace, useWorkspaceGitQueries } from "../use-thread-workspace";
 import { useEnvironmentQuery } from "../../../state/query";
 import { reviewEnvironment } from "../../../state/review";
@@ -80,39 +84,44 @@ export function WorkspaceChangesSheet({
     ? summary.files.filter((file) => file.folderLabel === selectedFolder.label)
     : summary.files;
   return (
-    <View className="flex-1 bg-screen">
-      {Platform.OS === "android" ? (
-        <AndroidScreenHeader
-          title={selectedFolder ? `${selectedFolder.folder.name} changes` : "Workspace changes"}
-          onBack={() => navigation.goBack()}
-        />
-      ) : null}
-      <FlatList
-        data={files}
-        keyExtractor={(file) => JSON.stringify([file.checkout.cwd, file.path])}
-        contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
-        renderItem={({ item }) => (
-          <ChangedFileRow
-            key={JSON.stringify([item.checkout.cwd, item.path])}
-            target={route.params}
-            file={item}
-          />
-        )}
-        ListEmptyComponent={
-          <Text className="p-4 text-foreground-muted">
-            {!workspace.thread
-              ? "Loading workspace…"
-              : loading
-                ? "Loading changes…"
-                : !summary.known
-                  ? "Repository status unavailable. Refresh Version Control and try again."
-                  : selectedFolder?.unavailable
-                    ? selectedFolder.reason
-                    : "No working tree changes"}
-          </Text>
-        }
+    <SheetPane surface="screen">
+      <AppBar
+        title={selectedFolder ? `${selectedFolder.folder.name} changes` : "Workspace changes"}
+        onBack={() => navigation.goBack()}
       />
-    </View>
+      <ScreenContent surface="screen">
+        <LegendList
+          renderScrollComponent={NativeScrollView}
+          style={{ flex: 1 }}
+          extraData={route.params}
+          estimatedItemSize={80}
+          recycleItems={false}
+          data={files}
+          keyExtractor={(file) => JSON.stringify([file.checkout.cwd, file.path])}
+          contentInsetAdjustmentBehavior="automatic"
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
+          renderItem={({ item }) => (
+            <ChangedFileRow
+              key={JSON.stringify([item.checkout.cwd, item.path])}
+              target={route.params}
+              file={item}
+            />
+          )}
+          ListEmptyComponent={
+            <Text className="p-4 text-foreground-muted">
+              {!workspace.thread
+                ? "Loading workspace…"
+                : loading
+                  ? "Loading changes…"
+                  : !summary.known
+                    ? "Repository status unavailable. Refresh Version Control and try again."
+                    : selectedFolder?.unavailable
+                      ? selectedFolder.reason
+                      : "No working tree changes"}
+            </Text>
+          }
+        />
+      </ScreenContent>
+    </SheetPane>
   );
 }

@@ -16,7 +16,6 @@ import {
   flattenTemporaryWorktreeBranchName,
   isTemporaryWorktreeBranch,
   sanitizeBranchFragment,
-  WORKTREE_BRANCH_PREFIX,
 } from "@t3tools/shared/git";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import {
@@ -30,6 +29,7 @@ import {
   threadUsingWorktrees,
   workspaceGitCheckouts,
 } from "@t3tools/shared/workspaceFolders";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -44,6 +44,7 @@ import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import type { GitWorktreeBaseRemote } from "../vcs/GitVcsDriver.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import { parseGitCloneProgressLine } from "../project/gitCloneProgress.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import type * as Orchestrator from "./Orchestrator.ts";
@@ -112,17 +113,19 @@ export interface ReusableWorktreeSet {
 /** Where one member's worktree lives, and the checkout git runs in to manage it. */
 type WorktreeLocation = Pick<OrchestrationV2ThreadWorktree, "repositoryRoot" | "path">;
 
-/** Drives the fetch and checkout stages of a thread's setup tracker. */
+/** Drives the fetch, checkout and submodule stages of a thread's setup tracker. */
 export interface WorktreeSetProgress {
   readonly stage: (
-    stage: "fetch" | "checkout",
+    stage: "fetch" | "checkout" | "submodules",
     status: WorktreeSetupStageStatus,
+    detail?: string,
   ) => Effect.Effect<void>;
   /** Checkout progress over the whole set; `detail` names the repository for sets of several. */
   readonly checkout: (progress: {
     readonly percent: number;
     readonly detail: string | null;
   }) => Effect.Effect<void>;
+  readonly submodules?: (progress: { readonly detail: string }) => Effect.Effect<void>;
 }
 
 export const noWorktreeSetProgress: WorktreeSetProgress = {
@@ -163,6 +166,7 @@ export class WorktreeSetService extends Context.Service<
       readonly projectRoot: string;
       readonly baseRef: string;
       readonly branch: string;
+      readonly generatedTemporaryBranch?: boolean;
       readonly startFromOrigin: boolean;
       /** The session directory, instead of one under the worktrees directory. */
       readonly path?: string | undefined;
@@ -351,6 +355,7 @@ export const makeRecreateMissingWorktrees = ({
     | "listLocalBranchNames"
     | "hasCommit"
     | "resolveRemoteTrackingCommit"
+    | "resolvePrimaryRemoteName"
     | "invalidateLocalStatus"
     | "localStatus"
   >;
@@ -380,8 +385,12 @@ export const makeRecreateMissingWorktrees = ({
           return;
         }
         const cwd = member.repositoryRoot;
-        const pushedRef = `refs/remotes/origin/${member.branch}`;
-        if (yield* git.hasCommit({ cwd, refName: pushedRef })) {
+        const remoteName = yield* git
+          .resolvePrimaryRemoteName(cwd)
+          .pipe(Effect.orElseSucceed(() => null));
+        const pushedRef =
+          remoteName === null ? undefined : `refs/remotes/${remoteName}/${member.branch}`;
+        if (pushedRef !== undefined && (yield* git.hasCommit({ cwd, refName: pushedRef }))) {
           yield* git.createWorktree({
             cwd,
             refName: pushedRef,
@@ -397,14 +406,17 @@ export const makeRecreateMissingWorktrees = ({
         if (currentBranch !== null) {
           refName = `refs/heads/${currentBranch}`;
           baseRefName = refName;
-        } else if (yield* git.hasCommit({ cwd, refName: "refs/remotes/origin/HEAD" })) {
+        } else if (
+          remoteName !== null &&
+          (yield* git.hasCommit({ cwd, refName: `refs/remotes/${remoteName}/HEAD` }))
+        ) {
           const { commitSha } = yield* git.resolveRemoteTrackingCommit({
             cwd,
             refName: "HEAD",
-            fallbackRemoteName: "origin",
+            fallbackRemoteName: remoteName,
           });
           refName = commitSha;
-          baseRefName = "refs/remotes/origin/HEAD";
+          baseRefName = `refs/remotes/${remoteName}/HEAD`;
         } else if (yield* git.hasCommit({ cwd, refName: "HEAD" })) {
           refName = "HEAD";
         } else {
@@ -513,6 +525,16 @@ const make = Effect.gen(function* () {
           `Branch '${member.branch}' already exists in ${member.repositoryRoot}.`,
         );
       }
+      const conflictingBranch = branches.find(
+        (existing) =>
+          existing.startsWith(`${member.branch}/`) || member.branch.startsWith(`${existing}/`),
+      );
+      if (conflictingBranch !== undefined) {
+        return yield* failure(
+          threadId,
+          `Branch '${member.branch}' conflicts with '${conflictingBranch}' in ${member.repositoryRoot}.`,
+        );
+      }
       const place = member.path;
       if (place === null) continue;
       const inUse = yield* fileSystem.exists(place).pipe(
@@ -530,22 +552,27 @@ const make = Effect.gen(function* () {
     }
   });
 
-  // A repository may already have a branch named t3, blocking t3/<hash> refs.
-  const availableTemporaryBranch = Effect.fnUntraced(function* (
-    threadId: ThreadId,
-    cwd: string,
-    branch: string,
-  ) {
-    if (!isTemporaryWorktreeBranch(branch)) return branch;
-    const prefixExists = yield* git
-      .hasCommit({ cwd, refName: `refs/heads/${WORKTREE_BRANCH_PREFIX}` })
-      .pipe(
-        Effect.mapError((cause) =>
-          failure(threadId, "Could not inspect the worktree branch prefix.", cause),
-        ),
-      );
-    return prefixExists ? flattenTemporaryWorktreeBranchName(branch) : branch;
-  });
+  const availableTemporaryBranch = Effect.fn("WorktreeSetService.availableTemporaryBranch")(
+    function* (threadId: ThreadId, cwd: string, branch: string, generatedTemporaryBranch = false) {
+      if (!generatedTemporaryBranch && !isTemporaryWorktreeBranch(branch)) return branch;
+      const parts = branch.split("/");
+      for (let depth = 1; depth < parts.length; depth++) {
+        const prefixExists = yield* git
+          .hasCommit({ cwd, refName: `refs/heads/${parts.slice(0, depth).join("/")}` })
+          .pipe(
+            Effect.mapError((cause) =>
+              failure(threadId, "Could not inspect the worktree branch prefix.", cause),
+            ),
+          );
+        if (prefixExists) {
+          return generatedTemporaryBranch
+            ? branch.replaceAll("/", "-")
+            : flattenTemporaryWorktreeBranchName(branch);
+        }
+      }
+      return branch;
+    },
+  );
 
   const plan: WorktreeSetService["Service"]["plan"] = Effect.fn("WorktreeSetService.plan")(
     function* (input) {
@@ -556,7 +583,12 @@ const make = Effect.gen(function* () {
         const member = {
           repositoryRoot: input.projectRoot,
           path: input.path ?? null,
-          branch: yield* availableTemporaryBranch(threadId, input.projectRoot, input.branch),
+          branch: yield* availableTemporaryBranch(
+            threadId,
+            input.projectRoot,
+            input.branch,
+            input.generatedTemporaryBranch,
+          ),
           startRef: input.baseRef,
           baseBranch: input.baseRef,
         };
@@ -672,7 +704,12 @@ const make = Effect.gen(function* () {
           return {
             repositoryRoot: root,
             path: places[index]!,
-            branch: yield* availableTemporaryBranch(threadId, root, names[index]!),
+            branch: yield* availableTemporaryBranch(
+              threadId,
+              root,
+              names[index]!,
+              input.generatedTemporaryBranch,
+            ),
             startRef: baseBranch ?? "HEAD",
             baseBranch,
           } satisfies PlannedMember;
@@ -726,7 +763,7 @@ const make = Effect.gen(function* () {
     function* (planned, progress) {
       const claimed: Array<OrchestrationV2ThreadWorktree> = [];
       return yield* Effect.gen(function* () {
-        // "Start from origin" is a stored default; repos without an origin, or
+        // "Start from origin" is a stored default; repos without a remote, or
         // without the base there, start from the local base.
         const remotes = yield* Effect.forEach(planned.members, (member) =>
           planned.startFromOrigin && member.baseBranch !== null
@@ -753,6 +790,10 @@ const make = Effect.gen(function* () {
         yield* progress.stage("checkout", "running");
         const order = creationOrder(planned.members);
         const created = new Map<PlannedMember, string>();
+        let submodulesStarted = false;
+        let submoduleWarning: string | undefined;
+        let submodulesSkippedDetail = "none";
+        let submoduleProgressReportedAt = Number.NEGATIVE_INFINITY;
         for (const [position, member] of order.entries()) {
           const detail =
             order.length === 1 ? null : `Repository ${position + 1} of ${order.length}`;
@@ -782,6 +823,41 @@ const make = Effect.gen(function* () {
                       });
                     }),
                   onCheckoutProgress: (checkout) => report(checkout.percent),
+                  onSubmodulesStarted: () => {
+                    submodulesStarted = true;
+                    return progress
+                      .stage("checkout", "done")
+                      .pipe(Effect.andThen(progress.stage("submodules", "running")));
+                  },
+                  onSubmodulesDisabled: ({ source }) => {
+                    submodulesSkippedDetail = `disabled in ${source}`;
+                    return submodulesStarted
+                      ? Effect.void
+                      : progress.stage("submodules", "skipped", submodulesSkippedDetail);
+                  },
+                  onSubmoduleLine: (line) => {
+                    const submodulePath = /^\s*Submodule path '(.+)': /.exec(line)?.[1];
+                    if (submodulePath !== undefined) {
+                      return progress.submodules?.({ detail: submodulePath }) ?? Effect.void;
+                    }
+                    if (parseGitCloneProgressLine(line) === null) return Effect.void;
+                    return Effect.flatMap(Clock.currentTimeMillis, (now) => {
+                      if (now - submoduleProgressReportedAt < 1000) return Effect.void;
+                      submoduleProgressReportedAt = now;
+                      return (
+                        progress.submodules?.({ detail: line.trim().replace(/\s+/g, " ") }) ??
+                        Effect.void
+                      );
+                    });
+                  },
+                  onSubmodulesFinished: ({ ok, detail }) => {
+                    if (!ok) submoduleWarning ??= detail ?? "submodule checkout failed";
+                    return progress.stage(
+                      "submodules",
+                      submoduleWarning === undefined ? "done" : "warning",
+                      submoduleWarning,
+                    );
+                  },
                 },
               },
             )
@@ -827,6 +903,11 @@ const make = Effect.gen(function* () {
           });
         }
         yield* progress.stage("checkout", "done");
+        yield* progress.stage(
+          "submodules",
+          submodulesStarted ? (submoduleWarning === undefined ? "done" : "warning") : "skipped",
+          submodulesStarted ? submoduleWarning : submodulesSkippedDetail,
+        );
         return { ...set, startedFromOrigin: starts[0]?.fromOrigin === true };
       }).pipe(Effect.onError(() => discardMembers(claimed)));
     },

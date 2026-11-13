@@ -32,7 +32,6 @@ import {
 
 const liveLayer = Layer.mergeAll(
   McpProviderSessions.layer,
-  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   IdAllocator.layer,
   CursorAgentSdk.layer.pipe(
     Layer.provideMerge(CursorSdk.layer),
@@ -43,7 +42,7 @@ const liveLayer = Layer.mergeAll(
       ),
     ),
   ),
-);
+).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 const quote = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 // This bypasses admission only to collect the evidence needed before Cursor

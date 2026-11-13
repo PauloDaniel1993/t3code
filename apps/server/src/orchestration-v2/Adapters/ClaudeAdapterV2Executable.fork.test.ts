@@ -87,6 +87,10 @@ const makeFixture = Effect.fnUntraced(function* (input: {
         Effect.sync(() => {
           opened.push(query.options);
           return {
+            mcpServerStatus: Effect.succeed([]),
+            readMcpResource: () => Effect.succeed({ contents: [] }),
+            callMcpTool: () => Effect.die("Unused MCP tool call"),
+            listPermissionRules: Effect.succeed([]),
             messages: Stream.never,
             offer: () => Effect.void,
             setModel: () => Effect.void,
@@ -99,6 +103,7 @@ const makeFixture = Effect.fnUntraced(function* (input: {
           };
         }),
       forkSession: () => Effect.die("unused"),
+      subagentModel: () => Effect.succeed(null),
       subagentLaunchToolUseId: () => Effect.succeed(null),
       assertComplete: Effect.void,
     },

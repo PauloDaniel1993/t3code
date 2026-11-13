@@ -32,7 +32,8 @@ vi.mock("@effect/atom-react", async () => {
       atom.kind === "status" && atom.ref ? parentStatus(atom.ref) : DEFAULT_RESOLVED_KEYBINDINGS,
   };
 });
-vi.mock("@tanstack/react-router", () => ({
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useParams: () => (state.route ? { kind: "server", threadRef: state.route } : null),
 }));
 vi.mock("../state/session", () => ({ readEnvironmentScope: () => true }));

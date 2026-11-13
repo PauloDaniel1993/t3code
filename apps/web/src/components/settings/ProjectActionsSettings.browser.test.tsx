@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   input: null as NewProjectScriptInput | null,
   error: "",
 }));
+vi.mock("../../lib/utils", async () => ({ cn: (await import("class-variance-authority")).cx }));
 vi.mock("./useScopedSettings", () => ({ useScopedSettingsWriteAllowed: () => true }));
 vi.mock("./SettingsScopeContext", () => ({ useSettingsScope: () => state.scope }));
 vi.mock("../../state/environments", () => ({
@@ -44,8 +45,22 @@ vi.mock("../../hooks/useT3ProjectFileScripts", () => ({
     };
   },
 }));
-vi.mock("../projectScriptEditor", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../projectScriptEditor")>()),
+vi.mock("../projectScriptEditor", () => ({
+  EMPTY_PROJECT_SCRIPT_INPUT: {
+    name: "",
+    command: "",
+    icon: "play",
+    runOnWorktreeCreate: false,
+    waitForSetup: false,
+    runOnSettle: false,
+    keybinding: null,
+    previewUrl: null,
+    autoOpenPreview: false,
+  } satisfies NewProjectScriptInput,
+  editorRequestForScript: () => {
+    throw new Error("Unexpected edit request");
+  },
+  ScriptIcon: () => null,
   ProjectScriptEditorDialog: (props: React.ComponentProps<typeof ProjectScriptEditorDialog>) =>
     props.request ? (
       <button
@@ -66,7 +81,6 @@ vi.mock("./settingsLayout", () => ({
   SettingsSection: ({ children }: { children: ReactNode }) => children,
   SettingsRow: ({ control }: { control?: ReactNode }) => control ?? null,
 }));
-vi.mock("../ui/button", () => ({ Button: "button" }));
 vi.mock("../ui/select", () => ({
   Select: ({
     onValueChange,

@@ -3,12 +3,12 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Schema from "effect/Schema";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -24,6 +24,7 @@ import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
+import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
@@ -32,11 +33,15 @@ const layerShellEnvironment = (prepared = true) =>
   Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
     installIntoProcess: Effect.succeed(prepared),
     awaitDiscovery: Effect.succeed(prepared),
+    awaitUserShellDiscovery: Effect.succeed(prepared),
     updates: Stream.empty,
   });
 
 const layerBackendConfiguration = (prepared = true) =>
-  DesktopBackendConfiguration.layer.pipe(Layer.provide(layerShellEnvironment(prepared)));
+  DesktopBackendConfiguration.layer.pipe(
+    Layer.provide(layerShellEnvironment(prepared)),
+    Layer.provide(DesktopState.layer),
+  );
 
 const encodeShellCommand = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 const encodeShellArgs = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
@@ -103,14 +108,6 @@ function layerEnvironment(
     ),
   );
 }
-
-const restoreEnv = (name: string, value: string | undefined) => {
-  if (value === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = value;
-  }
-};
 
 const withHarness = <A, E, R>(
   effect: Effect.Effect<
@@ -257,35 +254,22 @@ describe("DesktopBackendConfiguration", () => {
           T3CODE_DESKTOP_LOCAL_IDENTITY: "inherited-flag",
         };
         const names = Object.keys(expected);
-        const previous = names.map((name) => [name, process.env[name]] as const);
-        try {
-          Object.assign(process.env, expected);
-          const previousPath = process.env.PATH;
-          process.env.PATH = "";
-          let config;
-          try {
-            config = yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration)
-              .resolvePrimary;
-          } finally {
-            restoreEnv("PATH", previousPath);
-          }
-          assert.isTrue(config.extendEnv);
-          assert.equal(config.bootstrap.t3Home, environment.baseDir);
-          assert.equal(
-            environment.stateDir,
-            environment.path.join(environment.baseDir, "userdata"),
+        const env = { ...(yield* HostProcess.Environment), ...expected };
+        const config =
+          yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration).resolvePrimary.pipe(
+            Effect.provideService(HostProcess.Environment, { ...env, PATH: "" }),
           );
-          const encodedNames = yield* encodeShellArgs(names);
-          const probe = `process.stdout.write(${encodedNames}.map(name => process.env[name] ?? '').join('|'))`;
-          const output = NodeChildProcess.execFileSync(process.execPath, ["-e", probe], {
-            env: { ...process.env, ...config.env },
-            encoding: "utf8",
-            windowsHide: true,
-          });
-          assert.equal(output, Object.values(expected).join("|"));
-        } finally {
-          for (const [name, value] of previous) restoreEnv(name, value);
-        }
+        assert.isTrue(config.extendEnv);
+        assert.equal(config.bootstrap.t3Home, environment.baseDir);
+        assert.equal(environment.stateDir, environment.path.join(environment.baseDir, "userdata"));
+        const encodedNames = yield* encodeShellArgs(names);
+        const probe = `process.stdout.write(${encodedNames}.map(name => process.env[name] ?? '').join('|'))`;
+        const output = NodeChildProcess.execFileSync(process.execPath, ["-e", probe], {
+          env: { ...env, ...config.env },
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        assert.equal(output, Object.values(expected).join("|"));
       }),
       {
         platform: "win32",
@@ -300,86 +284,71 @@ describe("DesktopBackendConfiguration", () => {
       const testHostPlatform = yield* HostProcess.Platform;
       return yield* withHarness(
         Effect.gen(function* () {
-          const names = [
-            "T3CODE_DESKTOP_LOCAL_IDENTITY",
-            "T3CODE_HOME",
-            "APPDATA",
-            "T3CODE_DESKTOP_DISPLAY_NAME",
-            "T3CODE_DESKTOP_APP_USER_MODEL_ID",
-            "T3CODE_DISABLE_AUTO_UPDATE",
-          ];
-          const previous = names.map((name) => [name, process.env[name]] as const);
-          try {
-            Object.assign(process.env, {
-              T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
-              T3CODE_HOME: "C:\\Users\\alice\\.t3.local",
-              APPDATA: "C:\\Users\\alice\\.t3.local\\appdata",
-              T3CODE_DESKTOP_DISPLAY_NAME: "T3 v2.local",
-              T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code.v2.local",
-              T3CODE_DISABLE_AUTO_UPDATE: "true",
-            });
-            const previousPath = process.env.PATH;
-            process.env.PATH = "";
-            let config;
-            try {
-              config = yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration)
-                .resolvePrimary;
-            } finally {
-              restoreEnv("PATH", previousPath);
-            }
-            assert.isFalse(config.extendEnv);
-            assert.equal(config.bootstrap.shellEnvironmentPrepared, true);
-            assert.equal(config.bootstrap.desktopBrowserFd, 6);
-            assert.equal(config.bootstrap.desktopBrowserControlFd, 7);
-            assert.isNotEmpty(config.bootstrap.t3Home);
-            if (testHostPlatform === "win32") {
-              assert.equal(config.env.HOME, NodeOS.userInfo().homedir);
-              assert.equal(
-                config.env.APPDATA,
-                NodePath.win32.join(NodeOS.userInfo().homedir, "AppData", "Roaming"),
-              );
-            }
-            const env = Object.fromEntries(
-              Object.entries(config.env).filter(
-                (entry): entry is [string, string] => entry[1] !== undefined,
-              ),
+          const hostEnv = yield* HostProcess.Environment;
+          const inheritedEnv = {
+            ...hostEnv,
+            T3CODE_DESKTOP_LOCAL_IDENTITY: "true",
+            T3CODE_HOME: "C:\\Users\\alice\\.t3.local",
+            APPDATA: "C:\\Users\\alice\\.t3.local\\appdata",
+            T3CODE_DESKTOP_DISPLAY_NAME: "T3 v2.local",
+            T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.t3tools.t3code.v2.local",
+            T3CODE_DISABLE_AUTO_UPDATE: "true",
+            PATH: "",
+          };
+          const config =
+            yield* (yield* DesktopBackendConfiguration.DesktopBackendConfiguration).resolvePrimary.pipe(
+              Effect.provideService(HostProcess.Environment, inheritedEnv),
             );
-            // A backend-shaped Node process starts the same kind of ordinary shell
-            // used by providers/terminals, without booting a server or an app.
-            const shell =
-              testHostPlatform === "win32"
-                ? NodePath.win32.join(
-                    process.env.SystemRoot ?? "C:\\Windows",
-                    "System32",
-                    "WindowsPowerShell",
-                    "v1.0",
-                    "powershell.exe",
-                  )
-                : "/bin/sh";
-            const shellArgs =
-              testHostPlatform === "win32"
-                ? [
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "[Console]::Write($env:T3CODE_DESKTOP_LOCAL_IDENTITY + '|' + $env:T3CODE_HOME + '|' + $env:T3CODE_DESKTOP_DISPLAY_NAME)",
-                  ]
-                : [
-                    "-c",
-                    'printf "%s|%s|%s" "$T3CODE_DESKTOP_LOCAL_IDENTITY" "$T3CODE_HOME" "$T3CODE_DESKTOP_DISPLAY_NAME"',
-                  ];
-            const shellJson = yield* encodeShellCommand(shell);
-            const argsJson = yield* encodeShellArgs(shellArgs);
-            const probe = `const cp = require('node:child_process'); process.stdout.write(cp.execFileSync(${shellJson}, ${argsJson}, {encoding:'utf8', windowsHide:true}));`;
-            const output = NodeChildProcess.execFileSync(process.execPath, ["-e", probe], {
-              env,
-              encoding: "utf8",
-              windowsHide: true,
-            });
-            assert.equal(output, "||");
-          } finally {
-            for (const [name, value] of previous) restoreEnv(name, value);
+          assert.isFalse(config.extendEnv);
+          assert.equal(config.bootstrap.shellEnvironmentPrepared, true);
+          assert.equal(config.bootstrap.desktopBrowserFd, 6);
+          assert.equal(config.bootstrap.desktopBrowserControlFd, 7);
+          assert.isNotEmpty(config.bootstrap.t3Home);
+          if (testHostPlatform === "win32") {
+            assert.equal(config.env.HOME, NodeOS.userInfo().homedir);
+            assert.equal(
+              config.env.APPDATA,
+              NodePath.win32.join(NodeOS.userInfo().homedir, "AppData", "Roaming"),
+            );
           }
+          const env = Object.fromEntries(
+            Object.entries(config.env).filter(
+              (entry): entry is [string, string] => entry[1] !== undefined,
+            ),
+          );
+          // A backend-shaped Node process starts the same kind of ordinary shell
+          // used by providers/terminals, without booting a server or an app.
+          const shell =
+            testHostPlatform === "win32"
+              ? NodePath.win32.join(
+                  hostEnv.SystemRoot ?? "C:\\Windows",
+                  "System32",
+                  "WindowsPowerShell",
+                  "v1.0",
+                  "powershell.exe",
+                )
+              : "/bin/sh";
+          const shellArgs =
+            testHostPlatform === "win32"
+              ? [
+                  "-NoProfile",
+                  "-NonInteractive",
+                  "-Command",
+                  "[Console]::Write($env:T3CODE_DESKTOP_LOCAL_IDENTITY + '|' + $env:T3CODE_HOME + '|' + $env:T3CODE_DESKTOP_DISPLAY_NAME)",
+                ]
+              : [
+                  "-c",
+                  'printf "%s|%s|%s" "$T3CODE_DESKTOP_LOCAL_IDENTITY" "$T3CODE_HOME" "$T3CODE_DESKTOP_DISPLAY_NAME"',
+                ];
+          const shellJson = yield* encodeShellCommand(shell);
+          const argsJson = yield* encodeShellArgs(shellArgs);
+          const probe = `const cp = require('node:child_process'); process.stdout.write(cp.execFileSync(${shellJson}, ${argsJson}, {encoding:'utf8', windowsHide:true}));`;
+          const output = NodeChildProcess.execFileSync(process.execPath, ["-e", probe], {
+            env,
+            encoding: "utf8",
+            windowsHide: true,
+          });
+          assert.equal(output, "||");
         }),
         { platform: testHostPlatform, localIdentity: true },
       );
@@ -474,10 +443,10 @@ describe("DesktopBackendConfiguration", () => {
         );
         assert.equal(
           first.bootstrap.desktopBootstrapToken,
-          currentDesktopBootstrapToken(
+          yield* currentDesktopBootstrapToken(
             first.bootstrap.desktopBootstrapSecret ?? "",
             yield* Clock.currentTimeMillis,
-          ),
+          ).pipe(Effect.provide(NodeCrypto.layerMac)),
         );
         assert.equal(
           yield* configuration.currentBootstrapToken,
@@ -908,49 +877,38 @@ describe("DesktopBackendConfiguration", () => {
         prefix: "t3-desktop-backend-config-test-",
       });
 
-      const previousWslEnv = process.env.WSLENV;
-      const previousDisabled = process.env.OTEL_SDK_DISABLED;
-      const previousTelemetry = process.env.T3CODE_TELEMETRY_ENABLED;
-      const previousResourceAttributes = process.env.OTEL_RESOURCE_ATTRIBUTES;
-      try {
-        delete process.env.WSLENV;
-        process.env.OTEL_SDK_DISABLED = "true";
-        process.env.T3CODE_TELEMETRY_ENABLED = "false";
-        process.env.OTEL_RESOURCE_ATTRIBUTES = "deployment.environment.name=staging";
+      yield* Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        const config = yield* configuration.resolveWsl({ port: 5050, distro: null });
 
-        yield* Effect.gen(function* () {
-          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
-          const config = yield* configuration.resolveWsl({ port: 5050, distro: null });
-
-          assert.equal(config.env.OTEL_SDK_DISABLED, "true");
-          assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_SDK_DISABLED");
-          assert.equal(config.env.T3CODE_TELEMETRY_ENABLED, "false");
-          assert.include((config.env.WSLENV ?? "").split(":"), "T3CODE_TELEMETRY_ENABLED");
-          assert.equal(config.env.OTEL_RESOURCE_ATTRIBUTES, "deployment.environment.name=staging");
-          assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_RESOURCE_ATTRIBUTES");
-        }).pipe(
-          Effect.provide(
-            layerBackendConfiguration().pipe(
-              Layer.provideMerge(layerServerExposure),
-              Layer.provideMerge(DesktopAppSettings.layerTest()),
-              Layer.provideMerge(DesktopWslServerTree.layerTest()),
-              Layer.provideMerge(
-                DesktopWslEnvironment.layerTest({
-                  isAvailable: true,
-                  windowsToWslPath: () => Option.some("/mnt/c/repo/apps/server/src/index.ts"),
-                  getDistroIp: () => Option.some("172.27.0.99"),
-                }),
-              ),
-              Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
+        assert.equal(config.env.OTEL_SDK_DISABLED, "true");
+        assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_SDK_DISABLED");
+        assert.equal(config.env.T3CODE_TELEMETRY_ENABLED, "false");
+        assert.include((config.env.WSLENV ?? "").split(":"), "T3CODE_TELEMETRY_ENABLED");
+        assert.equal(config.env.OTEL_RESOURCE_ATTRIBUTES, "deployment.environment.name=staging");
+        assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_RESOURCE_ATTRIBUTES");
+      }).pipe(
+        Effect.provide(
+          layerBackendConfiguration().pipe(
+            Layer.provideMerge(layerServerExposure),
+            Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
+            Layer.provideMerge(
+              DesktopWslEnvironment.layerTest({
+                isAvailable: true,
+                windowsToWslPath: () => Option.some("/mnt/c/repo/apps/server/src/index.ts"),
+                getDistroIp: () => Option.some("172.27.0.99"),
+              }),
             ),
+            Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
           ),
-        );
-      } finally {
-        restoreEnv("WSLENV", previousWslEnv);
-        restoreEnv("OTEL_SDK_DISABLED", previousDisabled);
-        restoreEnv("T3CODE_TELEMETRY_ENABLED", previousTelemetry);
-        restoreEnv("OTEL_RESOURCE_ATTRIBUTES", previousResourceAttributes);
-      }
+        ),
+        Effect.provideService(HostProcess.Environment, {
+          OTEL_SDK_DISABLED: "true",
+          T3CODE_TELEMETRY_ENABLED: "false",
+          OTEL_RESOURCE_ATTRIBUTES: "deployment.environment.name=staging",
+        }),
+      );
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
@@ -961,63 +919,48 @@ describe("DesktopBackendConfiguration", () => {
         prefix: "t3-desktop-backend-config-test-",
       });
 
-      const previousWslEnv = process.env.WSLENV;
-      const previousOpenAiKey = process.env.OPENAI_API_KEY;
-      const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
-      const previousOtlpHeaders = process.env.T3CODE_OTLP_HEADERS;
-      const previousOtlpProtocol = process.env.T3CODE_OTLP_PROTOCOL;
-      const ambientOtel = Object.entries(process.env).filter(([name]) => name.startsWith("OTEL_"));
-      try {
-        for (const [name] of ambientOtel) delete process.env[name];
-        process.env.WSLENV = "GOPATH/p:OPENAI_API_KEY/u:EMPTY::AZURE_DEVOPS_EXT_PAT/u";
-        process.env.OPENAI_API_KEY = "openai-key";
-        process.env.ANTHROPIC_API_KEY = "anthropic-key";
-        process.env.T3CODE_OTLP_HEADERS = 'authorization="Bearer%20my-token"';
-        process.env.T3CODE_OTLP_PROTOCOL = "http/protobuf";
+      yield* Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        const config = yield* configuration.resolveWsl({ port: 5050, distro: null });
 
-        yield* Effect.gen(function* () {
-          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
-          const config = yield* configuration.resolveWsl({ port: 5050, distro: null });
-
-          assert.equal(config.executablePath, "wsl.exe");
-          assert.equal(config.bootstrap.port, 5050);
-          assert.equal(config.bootstrap.host, "0.0.0.0");
-          assert.equal(config.bootstrap.tailscaleServeEnabled, false);
-          assert.notProperty(config.bootstrap, "desktopTelemetryFd");
-          assert.notProperty(config.bootstrap, "resourceMonitorPath");
-          assert.equal(config.httpBaseUrl.href, "http://172.27.0.99:5050/");
-          assert.equal(config.env.OPENAI_API_KEY, "openai-key");
-          assert.equal(config.env.ANTHROPIC_API_KEY, "anthropic-key");
-          assert.equal(config.env.T3CODE_OTLP_PROTOCOL, "http/protobuf");
-          assert.equal(
-            config.env.WSLENV,
-            "GOPATH/p:OPENAI_API_KEY/u:EMPTY::AZURE_DEVOPS_EXT_PAT/u:ANTHROPIC_API_KEY:T3CODE_OTLP_HEADERS:T3CODE_OTLP_PROTOCOL",
-          );
-        }).pipe(
-          Effect.provide(
-            layerBackendConfiguration().pipe(
-              Layer.provideMerge(layerServerExposure),
-              Layer.provideMerge(DesktopAppSettings.layerTest()),
-              Layer.provideMerge(DesktopWslServerTree.layerTest()),
-              Layer.provideMerge(
-                DesktopWslEnvironment.layerTest({
-                  isAvailable: true,
-                  windowsToWslPath: () => Option.some("/mnt/c/repo/apps/server/src/index.ts"),
-                  getDistroIp: () => Option.some("172.27.0.99"),
-                }),
-              ),
-              Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
-            ),
-          ),
+        assert.equal(config.executablePath, "wsl.exe");
+        assert.equal(config.bootstrap.port, 5050);
+        assert.equal(config.bootstrap.host, "0.0.0.0");
+        assert.equal(config.bootstrap.tailscaleServeEnabled, false);
+        assert.notProperty(config.bootstrap, "desktopTelemetryFd");
+        assert.notProperty(config.bootstrap, "resourceMonitorPath");
+        assert.equal(config.httpBaseUrl.href, "http://172.27.0.99:5050/");
+        assert.equal(config.env.OPENAI_API_KEY, "openai-key");
+        assert.equal(config.env.ANTHROPIC_API_KEY, "anthropic-key");
+        assert.equal(config.env.T3CODE_OTLP_PROTOCOL, "http/protobuf");
+        assert.equal(
+          config.env.WSLENV,
+          "GOPATH/p:OPENAI_API_KEY/u:EMPTY::AZURE_DEVOPS_EXT_PAT/u:ANTHROPIC_API_KEY:T3CODE_OTLP_HEADERS:T3CODE_OTLP_PROTOCOL",
         );
-      } finally {
-        restoreEnv("WSLENV", previousWslEnv);
-        restoreEnv("OPENAI_API_KEY", previousOpenAiKey);
-        restoreEnv("ANTHROPIC_API_KEY", previousAnthropicKey);
-        restoreEnv("T3CODE_OTLP_HEADERS", previousOtlpHeaders);
-        restoreEnv("T3CODE_OTLP_PROTOCOL", previousOtlpProtocol);
-        for (const [name, value] of ambientOtel) restoreEnv(name, value);
-      }
+      }).pipe(
+        Effect.provide(
+          layerBackendConfiguration().pipe(
+            Layer.provideMerge(layerServerExposure),
+            Layer.provideMerge(DesktopAppSettings.layerTest()),
+            Layer.provideMerge(DesktopWslServerTree.layerTest()),
+            Layer.provideMerge(
+              DesktopWslEnvironment.layerTest({
+                isAvailable: true,
+                windowsToWslPath: () => Option.some("/mnt/c/repo/apps/server/src/index.ts"),
+                getDistroIp: () => Option.some("172.27.0.99"),
+              }),
+            ),
+            Layer.provideMerge(layerEnvironment(baseDir, { platform: "win32" })),
+          ),
+        ),
+        Effect.provideService(HostProcess.Environment, {
+          WSLENV: "GOPATH/p:OPENAI_API_KEY/u:EMPTY::AZURE_DEVOPS_EXT_PAT/u",
+          OPENAI_API_KEY: "openai-key",
+          ANTHROPIC_API_KEY: "anthropic-key",
+          T3CODE_OTLP_HEADERS: 'authorization="Bearer%20my-token"',
+          T3CODE_OTLP_PROTOCOL: "http/protobuf",
+        }),
+      );
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 

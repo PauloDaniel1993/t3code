@@ -79,6 +79,10 @@ const makeHarness = Effect.fnUntraced(function* () {
         const process = { input, messages, closed: false, models: [] as string[], flagUpdates: 0 };
         queries.push(process);
         return {
+          mcpServerStatus: Effect.succeed([]),
+          readMcpResource: () => Effect.succeed({ contents: [] }),
+          callMcpTool: () => Effect.die("Unused MCP tool call"),
+          listPermissionRules: Effect.succeed([]),
           messages: Stream.fromQueue(messages),
           offer: () => Effect.void,
           setModel: (model) =>
@@ -99,6 +103,7 @@ const makeHarness = Effect.fnUntraced(function* () {
         };
       }),
       forkSession: () => Effect.succeed({ sessionId: "00000000-0000-4000-8000-000000000200" }),
+      subagentModel: () => Effect.succeed(null),
       subagentLaunchToolUseId: () => Effect.succeed(null),
       assertComplete: Effect.void,
     },

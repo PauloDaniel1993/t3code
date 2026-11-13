@@ -21,6 +21,7 @@ interface RedactedObservation {
   readonly shape?: ReadonlyArray<string>;
 }
 
+const environment = { ...process.env };
 const isRecord = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
 
 function describeRawInputShape(rawInput: unknown): ReadonlyArray<string> {
@@ -45,7 +46,7 @@ function describeRawInputShape(rawInput: unknown): ReadonlyArray<string> {
   return shape;
 }
 
-const binaryPath = process.env.T3_KIMI_BINARY?.trim() || "kimi";
+const binaryPath = environment.T3_KIMI_BINARY?.trim() || "kimi";
 const decodeSetupShape = Schema.decodeUnknownOption(
   Schema.Struct({
     configOptions: Schema.optionalKey(
@@ -62,14 +63,14 @@ const decodeSetupShape = Schema.decodeUnknownOption(
   }),
 );
 const probeEnvironment: NodeJS.ProcessEnv = {
-  ...process.env,
+  ...environment,
   KIMI_CODE_NO_AUTO_UPDATE: "1",
-  ...(process.env.T3_KIMI_CODE_HOME?.trim()
-    ? { KIMI_CODE_HOME: process.env.T3_KIMI_CODE_HOME.trim() }
+  ...(environment.T3_KIMI_CODE_HOME?.trim()
+    ? { KIMI_CODE_HOME: environment.T3_KIMI_CODE_HOME.trim() }
     : {}),
 };
 
-describe.runIf(process.env.T3_KIMI_ACP_PROBE === "1")("Kimi ACP CLI probe", () => {
+describe.runIf(environment.T3_KIMI_ACP_PROBE === "1")("Kimi ACP CLI probe", () => {
   it.live("authenticates, starts, settles a prompt, and resumes without exposing secrets", () =>
     Effect.gen(function* () {
       const cwd = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
@@ -219,7 +220,7 @@ describe.runIf(process.env.T3_KIMI_ACP_PROBE === "1")("Kimi ACP CLI probe", () =
                 .pipe(Effect.timeout("60 seconds"));
               expect(typeof settled.stopReason).toBe("string");
 
-              if (process.env.T3_KIMI_ACP_INTERACTION_PROBE === "1") {
+              if (environment.T3_KIMI_ACP_INTERACTION_PROBE === "1") {
                 yield* runtime
                   .prompt({
                     prompt: [
@@ -253,7 +254,7 @@ describe.runIf(process.env.T3_KIMI_ACP_PROBE === "1")("Kimi ACP CLI probe", () =
             observation.status === "succeeded",
         ),
       ).toBe(true);
-      if (process.env.T3_KIMI_ACP_INTERACTION_PROBE === "1") {
+      if (environment.T3_KIMI_ACP_INTERACTION_PROBE === "1") {
         expect(
           observations.some(
             (observation) =>

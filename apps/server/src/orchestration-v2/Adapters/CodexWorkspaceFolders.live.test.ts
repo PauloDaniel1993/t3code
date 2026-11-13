@@ -43,9 +43,10 @@ import {
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 import { makeReplayServerConfig } from "./CodexAdapterV2.testkit.ts";
 
+const environment = { ...process.env };
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
-  model: process.env.T3_CODEX_WORKSPACE_FOLDERS_MODEL ?? "gpt-6.1-sol",
+  model: environment.T3_CODEX_WORKSPACE_FOLDERS_MODEL ?? "gpt-6.1-sol",
   options: [{ id: "reasoningEffort", value: "low" }],
 } satisfies ModelSelection;
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
@@ -71,7 +72,7 @@ const liveLayer = Layer.mergeAll(
 // Opt in with T3_CODEX_WORKSPACE_FOLDERS_LIVE=1. Only auth.json is copied from
 // T3_CODEX_WORKSPACE_FOLDERS_AUTH_HOME (default ~/.codex); all writes and native
 // session history stay in temporary directories, with no T3 userdata involved.
-describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
+describe.runIf(environment.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
   "Codex workspace folders live",
   () => {
     it.live(
@@ -87,7 +88,7 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
           const temp = path.join(root, "temp");
           for (const directory of [primary, extra, home, temp]) yield* fs.makeDirectory(directory);
           const authHome =
-            process.env.T3_CODEX_WORKSPACE_FOLDERS_AUTH_HOME ??
+            environment.T3_CODEX_WORKSPACE_FOLDERS_AUTH_HOME ??
             path.join(NodeOS.homedir(), ".codex");
           yield* fs.copyFile(path.join(authHome, "auth.json"), path.join(home, "auth.json"));
           yield* fs.writeFileString(
@@ -107,10 +108,10 @@ describe.runIf(process.env.T3_CODEX_WORKSPACE_FOLDERS_LIVE === "1")(
             instanceId: modelSelection.instanceId,
             settings: decodeCodexSettings({
               homePath: home,
-              binaryPath: process.env.T3_CODEX_WORKSPACE_FOLDERS_BINARY ?? "",
+              binaryPath: environment.T3_CODEX_WORKSPACE_FOLDERS_BINARY ?? "",
             }),
             environment: {
-              ...process.env,
+              ...environment,
               // Codex grants the default temp root too; keep that sandbox work isolated.
               TEMP: temp,
               TMP: temp,

@@ -42,7 +42,10 @@ import { SYNTHETIC_CLAUDE_MODEL_CATALOG } from "../provider/ClaudeModelCatalog.t
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
+import {
+  OrchestratorProjectionError,
+  type OrchestratorV2Shape,
+} from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import { McpInvocationContext, type McpInvocationScope } from "./McpInvocationContext.ts";
@@ -215,11 +218,13 @@ function makeLayer(
   records: Map<ThreadId, OrchestrationV2ThreadProjection>,
   options: {
     reads?: ThreadId[];
-    dispatch?: ThreadManagement.ThreadManagementService["Service"]["dispatch"];
+    dispatch?: OrchestratorV2Shape["dispatch"];
     providers?: readonly ServerProvider[];
     unreadable?: ThreadId;
   } = {},
 ) {
+  const dispatch =
+    options.dispatch ?? (() => Effect.die("Listing must not acknowledge or dispatch."));
   return OrchestratorMcp.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
@@ -266,6 +271,11 @@ function makeLayer(
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           stopDelegatedTasks: () => Effect.void,
+          cancelDelegatedTask: ({ command, stopDescendants }) =>
+            stopDescendants(dispatch).pipe(
+              Effect.andThen(() => dispatch(command)),
+              Effect.asVoid,
+            ),
           getThreadRecords: (id) =>
             id === options.unreadable
               ? Effect.fail(
@@ -280,8 +290,7 @@ function makeLayer(
                   if (record === undefined) throw new Error(`Unexpected thread read ${id}`);
                   return record;
                 }),
-          dispatch:
-            options.dispatch ?? (() => Effect.die("Listing must not acknowledge or dispatch.")),
+          dispatch,
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed(options.providers ?? [provider]),

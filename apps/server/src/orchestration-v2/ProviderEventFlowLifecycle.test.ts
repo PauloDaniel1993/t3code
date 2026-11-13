@@ -1,3 +1,4 @@
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -75,6 +76,7 @@ it.effect(
           Layer.mergeAll(
             Layer.mock(CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
             idLayer,
+            ThreadCommandExecutor.layer,
             McpAppModelContext.layerEmpty,
             PreviewAgentActivity.layer,
             ServerSettings.layerTest(),
@@ -82,6 +84,12 @@ it.effect(
               allocate: () => Effect.die("Unused position allocation"),
             }),
             Layer.mock(EventSinkV2)({
+              consumeProviderEvents: (source, process, after) =>
+                source.pipe(
+                  Stream.mapEffect((event) => process(event).pipe(Effect.andThen(after))),
+                  Stream.takeUntil(Boolean),
+                  Stream.runDrain,
+                ),
               write: () => Effect.succeed([]),
               writeIfRunCurrent: (input) =>
                 Effect.sync(() => {

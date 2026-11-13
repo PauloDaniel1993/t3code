@@ -1,10 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
-import type {
-  EnvironmentId,
-  OrchestrationV2ThreadWorktree,
-  VcsStatusResult,
-} from "@t3tools/contracts";
-import { workspaceBranchState } from "@t3tools/client-runtime/state/vcs";
+import type { EnvironmentId, OrchestrationV2ThreadWorktree } from "@t3tools/contracts";
+import { workspaceBranchState, type VcsBranchStatus } from "@t3tools/client-runtime/state/vcs";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useRetainedValue } from "../components/Sidebar.logic";
@@ -19,25 +15,29 @@ const workspaceStatusesAtom = Atom.family((key: string) => {
   );
 });
 
-const secondaryStatusesAtom = Atom.family((key: string) => {
-  const [environmentId, tuple, lease] = JSON.parse(key) as [
+const branchAgreementAtom = Atom.family((key: string) => {
+  const [environmentId, tuple, primary, lease] = JSON.parse(key) as [
     EnvironmentId,
     Array<OrchestrationV2ThreadWorktree>,
+    VcsBranchStatus | null,
     boolean,
   ];
-  return Atom.make((get) =>
-    !lease || tuple.length < 2
-      ? []
-      : tuple
-          .slice(1)
-          .map((member) =>
-            Option.getOrNull(
-              AsyncResult.value(
-                get(vcsEnvironment.branchStatus({ environmentId, input: { cwd: member.path } })),
-              ),
-            ),
+  return Atom.make((get) => {
+    if (!lease || tuple.length < 2) return null;
+    const secondary = tuple
+      .slice(1)
+      .map((member) =>
+        Option.getOrNull(
+          AsyncResult.value(
+            get(vcsEnvironment.branchStatus({ environmentId, input: { cwd: member.path } })),
           ),
-  );
+        ),
+      );
+    return workspaceBranchState(
+      tuple.map((member) => ({ expectedBranch: member.branch })),
+      [primary, ...secondary],
+    );
+  });
 });
 
 /** All checkout queries are shared atoms; the panel owns only their leases. */
@@ -57,20 +57,12 @@ export function useWorkspaceStatuses(
 export function useSidebarBranchAgreement(
   environmentId: EnvironmentId,
   members: ReadonlyArray<OrchestrationV2ThreadWorktree> | undefined,
-  primary: VcsStatusResult | null,
+  primary: VcsBranchStatus | null,
   lease: boolean,
 ) {
   const key = JSON.stringify(members ?? []);
-  const secondary = useAtomValue(
-    secondaryStatusesAtom(JSON.stringify([environmentId, members ?? [], lease])),
+  const state = useAtomValue(
+    branchAgreementAtom(JSON.stringify([environmentId, members ?? [], primary, lease])),
   );
-  const tuple = JSON.parse(key) as Array<OrchestrationV2ThreadWorktree>;
-  const state =
-    tuple.length >= 2 && secondary.length === tuple.length - 1
-      ? workspaceBranchState(
-          tuple.map((member) => ({ expectedBranch: member.branch })),
-          [primary, ...secondary],
-        )
-      : null;
   return useRetainedValue(JSON.stringify([environmentId, key]), state?.complete ? state : null);
 }

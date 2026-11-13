@@ -32,7 +32,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { issueAssetUrl, resolveAsset } from "../assets/AssetAccess.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { base64UrlEncode, signPayload } from "../auth/utils.ts";
+import * as AssetSigner from "../assets/AssetSigner.ts";
+import * as PayloadSigner from "../auth/PayloadSigner.ts";
+import * as DeviceService from "../device/DeviceService.ts";
+import { base64UrlEncode } from "../auth/utils.ts";
 import { ServerConfig } from "../config.ts";
 import * as ServerConfiguration from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -99,12 +102,17 @@ const testLayer = Layer.mergeAll(
   WorkspacePaths.layer,
   Layer.mock(ProjectFaviconResolver)({ resolvePath: () => Effect.die("unused favicon") }),
   Layer.mock(NativeAppIconResolver)({ resolve: () => Effect.die("unused icon") }),
-  ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
+  AssetSigner.layer.pipe(
+    Layer.provideMerge(ServerSecretStore.layer.pipe(Layer.provide(configLayer))),
+  ),
   RuntimeLayer.layerEventSink.pipe(Layer.provide(databaseLayer)),
   outboxLayer.pipe(Layer.provide(databaseLayer)),
   ResourceCleanup.layer.pipe(
     Layer.provide(configLayer),
     Layer.provide(databaseLayer),
+    Layer.provide(
+      Layer.mock(DeviceService.DeviceService)({ sessionsForThread: () => Effect.succeed([]) }),
+    ),
     Layer.provide(Layer.mock(TerminalManager)({ close: () => Effect.void })),
     Layer.provide(Layer.mock(PreviewManager.PreviewManager)({ close: () => Effect.void })),
     Layer.provide(Layer.mock(ScheduledTaskService)({ deleteForThread: () => Effect.void })),
@@ -235,7 +243,8 @@ const signedClaim = Effect.fnUntraced(function* (claims: object, secretOverride?
       ...claims,
     }),
   );
-  return `${encoded}.${signPayload(encoded, secret)}`;
+  const signer = yield* PayloadSigner.fromSecret(secret);
+  return `${encoded}.${yield* signer.sign(encoded)}`;
 });
 
 describe("pending draft verification", () => {
@@ -563,6 +572,7 @@ describe("signed attachment ownership", () => {
         yield* createThread(ThreadId.make("thread-other"));
         const secretStore = yield* ServerSecretStore.ServerSecretStore;
         const secret = yield* secretStore.getOrCreateRandom("asset-access-signing-key", 32);
+        const signer = yield* PayloadSigner.fromSecret(secret);
         for (const extra of [
           {},
           { threadId: "missing" },
@@ -581,7 +591,7 @@ describe("signed attachment ownership", () => {
             }),
           );
           expect(
-            yield* resolveAsset(`${encoded}.${signPayload(encoded, secret)}`, "image.png"),
+            yield* resolveAsset(`${encoded}.${yield* signer.sign(encoded)}`, "image.png"),
           ).toBeNull();
         }
       }).pipe(Effect.provide(testLayer)),
@@ -830,7 +840,7 @@ describe("attachment pruning through the effect outbox", () => {
           Effect.provideService(OrchestrationEffectExecutorV2, executor),
         );
         for (let n = 0; n < (completion === "startup signal" ? 10 : 1); n++) {
-          expect(yield* worker.runOnce).toBe(n === 0);
+          expect(yield* worker.runOnce()).toBe(n === 0);
           expect(
             yield* sql`SELECT status, attempt_count FROM orchestration_v2_effect_outbox WHERE effect_type = 'attachment.cleanup'`,
           ).toEqual([{ status: "pending", attempt_count: 0 }]);

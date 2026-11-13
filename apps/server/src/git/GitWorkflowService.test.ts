@@ -122,9 +122,9 @@ describe("GitWorkflowService", () => {
   it.effect("reports a non-Git VCS repository as not a Git repository", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
-      const isRepository = yield* workflow.isRepository("/jj-repo");
+      const repositoryRoot = yield* workflow.repositoryRoot("/jj-repo");
 
-      assert.equal(isRepository, false);
+      assert.equal(repositoryRoot, null);
     }).pipe(
       Effect.provide(
         layer({
@@ -499,6 +499,7 @@ function makeWorkspaceLayer(input: {
           Effect.succeedSome({
             projectId: PROJECT_ID,
             title: "Workspace",
+            hasCustomTitle: false,
             workspaceRoot: "/src/app",
             workspaceFile: "/src/workspace.code-workspace",
             folders: workspaceFolders.map(({ path, name }) => ({ path, name })),

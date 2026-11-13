@@ -5,7 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { reconcileBaseMigrationLedger, runForkMigrations } from "./ForkMigrations.ts";
 import ProjectionProjectsWorkspaceFile from "./ForkMigrations/012_ProjectionProjectsWorkspaceFile.ts";
-import { runMigrations } from "./Migrations.ts";
+import { migrationManifest, runMigrations } from "./Migrations.ts";
 
 const Database = NodeSqliteClient.layer({ filename: ":memory:" });
 const migrate = Effect.gen(function* () {
@@ -40,14 +40,13 @@ it.effect("keeps upstream and fork histories separate on fresh startup and resta
     const sql = yield* SqlClient.SqlClient;
     const base = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     const fork = yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`;
-    assert.lengthOf(base, 79);
+    assert.lengthOf(base, migrationManifest.length);
     assert.lengthOf(fork, 14);
     assert.deepEqual(
       yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 78 ORDER BY migration_id`,
-      [
-        { migration_id: 78, name: "DropOrchestrationEventCorrelationIndex" },
-        { migration_id: 79, name: "DelegatedRecoveryIndexes" },
-      ],
+      migrationManifest
+        .filter(([id]) => id >= 78)
+        .map(([migration_id, name]) => ({ migration_id, name })),
     );
     assert.deepEqual(
       yield* sql`SELECT name FROM pragma_table_info('flow_runs') WHERE name = 'version'`,

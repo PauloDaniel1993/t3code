@@ -382,7 +382,7 @@ const make = Effect.gen(function* () {
         turnId: run.id,
         text: subagentResultForRun(
           yield* threads
-            .getThreadRecords(threadId, ["messages", "turnItems"], {
+            .getThreadRecords(threadId, ["messages", "turnItems", "providerTurns"], {
               messageRunIds: [run.id],
               turnItemRunIds: [run.id],
             })

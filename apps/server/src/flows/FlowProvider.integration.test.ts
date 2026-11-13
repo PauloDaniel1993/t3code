@@ -176,6 +176,7 @@ it.effect(
                       generateBranchName: () => Effect.die("unused"),
                       generateThreadTitle: () => Effect.die("unused"),
                       generateReviewGuide: () => Effect.die("unused"),
+                      generateTranscriptionPostProcessing: () => Effect.die("unused"),
                     },
                     snapshot: {
                       getSnapshot: Effect.succeed(provider),

@@ -20,6 +20,7 @@ import {
 
 const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
 const PROJECT_SEARCH_CONTENTS_MAX_LIMIT = 500;
+export const PROJECT_SEARCH_CONTENTS_QUERY_MAX_LENGTH = 256;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
 const PROJECT_READ_FILE_PATH_MAX_LENGTH = 512;
 
@@ -43,6 +44,7 @@ export const ProjectScript = Schema.Struct({
   folderPath: Schema.optional(TrimmedNonEmptyString),
   /** Run in the thread's worktree each time the thread settles. */
   runOnSettle: Schema.optional(Schema.Boolean),
+  stopOnSettle: Schema.optional(Schema.Boolean),
   async: Schema.optional(Schema.Boolean),
   previewUrl: Schema.optional(TrimmedNonEmptyString),
   autoOpenPreview: Schema.optional(Schema.Boolean),
@@ -520,7 +522,10 @@ export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 
 const ProjectSearchContentsFields = {
   // Preserve whitespace because it is significant in content queries.
-  query: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
+  query: Schema.String.check(
+    Schema.isNonEmpty(),
+    Schema.isMaxLength(PROJECT_SEARCH_CONTENTS_QUERY_MAX_LENGTH),
+  ),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_CONTENTS_MAX_LIMIT)),
   caseSensitive: Schema.Boolean,
   wholeWord: Schema.Boolean,
@@ -729,7 +734,7 @@ export class ProjectListEntriesError extends Schema.TaggedError<ProjectListEntri
 export const ProjectReadFileCwdInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   // Workspace-relative or absolute host path; only workspace-relative paths are writable.
-  relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_READ_FILE_PATH_MAX_LENGTH)),
+  relativePath: Schema.NonEmptyString.check(Schema.isMaxLength(PROJECT_READ_FILE_PATH_MAX_LENGTH)),
   // Optional files can be absent without failing the read.
   allowMissing: Schema.optional(Schema.Boolean),
 });
@@ -738,7 +743,7 @@ export type ProjectReadFileCwdInput = typeof ProjectReadFileCwdInput.Type;
 /** A file by canonical path. Absolute host paths stay on the `cwd` form. */
 export const ProjectReadFileScopedInput = Schema.Struct({
   scope: WorkspaceScope,
-  path: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_READ_FILE_PATH_MAX_LENGTH)),
+  path: Schema.NonEmptyString.check(Schema.isMaxLength(PROJECT_READ_FILE_PATH_MAX_LENGTH)),
   allowMissing: Schema.optional(Schema.Boolean),
 });
 export type ProjectReadFileScopedInput = typeof ProjectReadFileScopedInput.Type;
@@ -751,7 +756,7 @@ export type ProjectReadFileInput = typeof ProjectReadFileInput.Type;
 
 export const ProjectReadFileResult = Schema.Struct({
   /** For a scoped read, the canonical path. */
-  relativePath: TrimmedNonEmptyString,
+  relativePath: Schema.NonEmptyString,
   contents: Schema.String,
   byteLength: NonNegativeInt,
   truncated: Schema.Boolean,
@@ -796,12 +801,12 @@ export class ProjectReadFileError extends Schema.TaggedError<ProjectReadFileErro
   "ProjectReadFileError",
   {
     cwd: Schema.optional(TrimmedNonEmptyString),
-    relativePath: Schema.optional(TrimmedNonEmptyString),
+    relativePath: Schema.optional(Schema.NonEmptyString),
     failure: Schema.optional(ProjectFileFailure),
-    resolvedPath: Schema.optional(TrimmedNonEmptyString),
+    resolvedPath: Schema.optional(Schema.NonEmptyString),
     resolvedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
     operation: Schema.optional(ProjectFileOperation),
-    operationPath: Schema.optional(TrimmedNonEmptyString),
+    operationPath: Schema.optional(Schema.NonEmptyString),
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
   },
@@ -819,7 +824,7 @@ export class ProjectReadFileError extends Schema.TaggedError<ProjectReadFileErro
 
 export const ProjectWriteFileCwdInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
-  relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  relativePath: Schema.NonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
   contents: Schema.String,
 });
 export type ProjectWriteFileCwdInput = typeof ProjectWriteFileCwdInput.Type;
@@ -827,7 +832,7 @@ export type ProjectWriteFileCwdInput = typeof ProjectWriteFileCwdInput.Type;
 /** Writes a file by canonical path, inside its folder. */
 export const ProjectWriteFileScopedInput = Schema.Struct({
   scope: WorkspaceScope,
-  path: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  path: Schema.NonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
   contents: Schema.String,
 });
 export type ProjectWriteFileScopedInput = typeof ProjectWriteFileScopedInput.Type;
@@ -840,7 +845,7 @@ export type ProjectWriteFileInput = typeof ProjectWriteFileInput.Type;
 
 export const ProjectWriteFileResult = Schema.Struct({
   /** For a scoped write, the canonical path. */
-  relativePath: TrimmedNonEmptyString,
+  relativePath: Schema.NonEmptyString,
 });
 export type ProjectWriteFileResult = typeof ProjectWriteFileResult.Type;
 
@@ -876,12 +881,12 @@ export class ProjectWriteFileError extends Schema.TaggedError<ProjectWriteFileEr
   "ProjectWriteFileError",
   {
     cwd: Schema.optional(TrimmedNonEmptyString),
-    relativePath: Schema.optional(TrimmedNonEmptyString),
+    relativePath: Schema.optional(Schema.NonEmptyString),
     failure: Schema.optional(ProjectFileFailure),
-    resolvedPath: Schema.optional(TrimmedNonEmptyString),
+    resolvedPath: Schema.optional(Schema.NonEmptyString),
     resolvedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
     operation: Schema.optional(ProjectFileOperation),
-    operationPath: Schema.optional(TrimmedNonEmptyString),
+    operationPath: Schema.optional(Schema.NonEmptyString),
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
   },

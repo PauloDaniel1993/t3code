@@ -3,7 +3,6 @@ import * as NodeFSP from "node:fs/promises";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -27,10 +26,10 @@ const TestLayer = Layer.merge(
   WayfinderMaps.layer.pipe(Layer.provide(WorkspaceLayer)),
 );
 
-class LinkError extends Data.TaggedError("LinkError")<{
-  readonly code: string | undefined;
-  readonly cause: unknown;
-}> {}
+class LinkError extends Schema.TaggedError<LinkError>()("LinkError", {
+  code: Schema.UndefinedOr(Schema.String),
+  cause: Schema.Defect(),
+}) {}
 
 const SECRET = "OUTSIDE-SECRET-MARKER";
 

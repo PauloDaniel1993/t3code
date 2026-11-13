@@ -1,6 +1,6 @@
 import { EnvironmentId, ProjectId, ThreadId, type VcsStatusResult } from "@t3tools/contracts";
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
-import { createElement, type ComponentProps, type ReactNode } from "react";
+import { type ComponentProps, type ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { act, render, type Screen } from "../../../test/render";
 import { workspaceFolderRows, type WorkspaceFoldersProject } from "../workspaceFolders.logic";
@@ -14,6 +14,10 @@ const fixtures = vi.hoisted(() => ({
   queries: vi.fn(),
   canRun: true,
   canSwitch: true,
+}));
+vi.mock("../../lib/utils", async () => ({
+  cn: (await import("class-variance-authority")).cx,
+  randomUUID: () => "workspace-action",
 }));
 vi.mock("../../state/workspaceVcs", () => ({
   useWorkspaceStatuses: (...args: unknown[]) => {
@@ -51,11 +55,6 @@ vi.mock("../GitActionsControl", () => ({
       {showChanges ? <span>Individual repository changes</span> : null}
     </div>
   ),
-}));
-vi.mock("../ui/button", () => ({ Button: (props: object) => createElement("button", props) }));
-vi.mock("../ui/input", () => ({ Input: (props: object) => createElement("input", props) }));
-vi.mock("../ui/textarea", () => ({
-  Textarea: (props: object) => createElement("textarea", props),
 }));
 vi.mock("../ui/dialog", () => {
   const Container = ({ children }: { children?: ReactNode }) => <div>{children}</div>;

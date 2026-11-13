@@ -41,6 +41,8 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 
 const CHECKPOINT_REFS_PREFIX = "refs/t3/orchestration-v2/checkpoints";
 const ROOT_CHECKPOINT_SCOPE_NAME = "root";
+// The provider turn waits on the baseline, so bound each snapshot, not the lock wait.
+const BASELINE_CAPTURE_BUDGET = "5 seconds";
 
 export class CheckpointRootScopePrepareError extends Schema.TaggedError<CheckpointRootScopePrepareError>()(
   "CheckpointRootScopePrepareError",
@@ -152,6 +154,8 @@ export interface CheckpointServiceV2Shape {
   readonly materializeBaselineCheckpoint: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
     readonly ordinalWithinScope: number;
+    readonly nodeId: NodeId;
+    readonly capturedAt: DateTime.Utc;
     /** Records a missing checkpoint without touching git, for side chats sharing a parent's worktree. */
     readonly forceMissing?: boolean;
   }) => Effect.Effect<OrchestrationV2Checkpoint, CheckpointServiceV2Error>;
@@ -335,8 +339,19 @@ export const layer: Layer.Layer<
         Effect.flatMap((path) => checkoutLocks.withLock(path, effect)),
       );
 
-    const isGitCheckpointable = (cwd: string) =>
-      checkpointStore.isGitRepository(cwd).pipe(Effect.orElseSucceed(() => false));
+    const probeRepository = (scope: OrchestrationV2CheckpointScope, cwd: string) =>
+      checkpointStore.isGitRepository(cwd).pipe(
+        Effect.map((isRepository) =>
+          isRepository ? ("repository" as const) : ("missing" as const),
+        ),
+        Effect.catch((cause) =>
+          Effect.logWarning("orchestration V2 checkpoint repository probe failed", {
+            scopeId: scope.id,
+            cwd,
+            cause: String(cause),
+          }).pipe(Effect.as("error" as const)),
+        ),
+      );
 
     const partRef = (
       scope: OrchestrationV2CheckpointScope,
@@ -352,7 +367,7 @@ export const layer: Layer.Layer<
       withCheckoutLock(
         part.cwd,
         Effect.gen(function* () {
-          if (!(yield* isGitCheckpointable(part.cwd))) {
+          if (!(yield* checkpointStore.isGitRepository(part.cwd))) {
             return;
           }
 
@@ -371,7 +386,10 @@ export const layer: Layer.Layer<
               checkpointRef,
               pathspecs: part.pathspecs,
             })
-            .pipe(Effect.catchTags({ VcsUnsupportedOperationError: () => Effect.void }));
+            .pipe(
+              Effect.timeout(BASELINE_CAPTURE_BUDGET),
+              Effect.catchTags({ VcsUnsupportedOperationError: () => Effect.void }),
+            );
         }),
       );
 
@@ -410,24 +428,23 @@ export const layer: Layer.Layer<
         part.cwd,
         Effect.gen(function* () {
           const checkpointRef = yield* partRef(scope, part, ordinalWithinScope);
-          const checkpointable = yield* isGitCheckpointable(part.cwd);
-          const available = checkpointable
-            ? yield* checkpointStore
-                .hasCheckpointRef({
-                  cwd: part.cwd,
+          const repository = yield* probeRepository(scope, part.cwd);
+          if (repository !== "repository") {
+            return { ...part, ref: checkpointRef, status: repository } as const;
+          }
+          const status = yield* checkpointStore
+            .hasCheckpointRef({ cwd: part.cwd, checkpointRef })
+            .pipe(
+              Effect.map((exists) => (exists ? ("ready" as const) : ("missing" as const))),
+              Effect.catch((cause) =>
+                Effect.logWarning("orchestration V2 baseline ref lookup failed", {
+                  scopeId: scope.id,
                   checkpointRef,
-                })
-                .pipe(
-                  Effect.catch((cause) =>
-                    Effect.logWarning("orchestration V2 baseline ref lookup failed", {
-                      scopeId: scope.id,
-                      checkpointRef,
-                      cause: String(cause),
-                    }).pipe(Effect.as(false)),
-                  ),
-                )
-            : false;
-          return { ...part, ref: checkpointRef, status: available ? "ready" : "missing" } as const;
+                  cause: String(cause),
+                }).pipe(Effect.as("error" as const)),
+              ),
+            );
+          return { ...part, ref: checkpointRef, status };
         }),
       );
     };
@@ -458,13 +475,13 @@ export const layer: Layer.Layer<
             id: checkpointId,
             scope: input.scope,
             runId: null,
-            nodeId: input.scope.nodeId,
+            nodeId: input.nodeId,
             parentCheckpointId: null,
             ordinalWithinScope: input.ordinalWithinScope,
             appRunOrdinal: null,
             parts,
             files: [],
-            capturedAt: input.scope.createdAt,
+            capturedAt: input.capturedAt,
           });
         },
         (effect, input) =>
@@ -502,8 +519,12 @@ export const layer: Layer.Layer<
             part,
             Math.max(0, ordinalWithinScope - 1),
           );
-          if (!(yield* isGitCheckpointable(part.cwd))) {
-            return { part: { ...part, ref: checkpointRef, status: "missing" }, files: [] } as const;
+          const repository = yield* probeRepository(scope, part.cwd);
+          if (repository !== "repository") {
+            return {
+              part: { ...part, ref: checkpointRef, status: repository },
+              files: [],
+            } as const;
           }
 
           const captureStatus = yield* checkpointStore

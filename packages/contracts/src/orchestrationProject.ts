@@ -8,6 +8,9 @@ import { ProjectScript, ProjectWorkspaceFileFields, ReceivedProjectIcon } from "
 export const OrchestrationProjectShell = Schema.Struct({
   id: ProjectId,
   title: TrimmedNonEmptyString,
+  // Set once someone renames the project. A folder-default title can equal the
+  // repository name, so grouped labels need this to tell a chosen name apart.
+  hasCustomTitle: Schema.optional(Schema.Boolean),
   workspaceRoot: TrimmedNonEmptyString,
   ...ProjectWorkspaceFileFields,
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),

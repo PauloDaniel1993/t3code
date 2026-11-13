@@ -52,7 +52,13 @@ export function SubagentTooltipContent(props: {
   result?: string | null | undefined;
   progress?: string | null | undefined;
 }) {
-  const { modelLabel } = resolveSubagentMetadata(props);
+  const childSelection =
+    props.modelSelection ??
+    (props.origin === "app_owned" ? props.childThread?.modelSelection : undefined);
+  const { modelLabel, modelSlug } = resolveSubagentMetadata({
+    ...props,
+    modelSelection: childSelection,
+  });
   // A bound thread keeps its original primary folder when project membership changes.
   const currentWorkspace = threadPrimaryPath(props.parentThread, props.parentProject);
   const childWorkspace = threadPrimaryPath(props.childThread, props.childProject);
@@ -76,14 +82,7 @@ export function SubagentTooltipContent(props: {
       : []),
   ];
   const preview = subagentDetailPreview(props);
-  const model = props.model?.trim();
-  const modelSlug = props.provider
-    ? resolveSelectableModel(props.provider.driver, model, props.provider.models)
-    : model;
   const providerModel = props.provider?.models.find((candidate) => candidate.slug === modelSlug);
-  const childSelection =
-    props.modelSelection ??
-    (props.origin === "app_owned" ? props.childThread?.modelSelection : undefined);
   const childModel = props.provider
     ? (resolveSelectableModel(
         props.provider.driver,
@@ -93,7 +92,7 @@ export function SubagentTooltipContent(props: {
     : childSelection?.model.trim();
   const provider = props.provider;
   const matchingSelection =
-    childModel === (modelSlug ?? model) && childSelection?.instanceId === props.providerInstanceId
+    childModel === modelSlug && childSelection?.instanceId === props.providerInstanceId
       ? childSelection
       : undefined;
   const effort = REASONING_EFFORT_OPTION_IDS.map((id) =>
@@ -108,19 +107,18 @@ export function SubagentTooltipContent(props: {
             descriptor.type === "boolean" &&
             typeof saved?.value === "boolean"
           ) {
-            return getTraitsSpeedDisplay(provider.driver, {
+            return getTraitsSpeedDisplay({
               ...descriptor,
               currentValue: saved.value,
             });
           }
           if (
-            provider.driver === "codex" &&
             descriptor.id === "serviceTier" &&
             descriptor.type === "select" &&
             typeof saved?.value === "string" &&
             descriptor.options.some((option) => option.id === saved.value)
           ) {
-            return getTraitsSpeedDisplay(provider.driver, {
+            return getTraitsSpeedDisplay({
               ...descriptor,
               currentValue: saved.value,
             });

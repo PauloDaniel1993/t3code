@@ -8,13 +8,14 @@ import {
 import type { WorkspaceGitCheckout } from "@t3tools/shared/workspaceFolders";
 import { useMemo, useState } from "react";
 import { Atom } from "effect/reactivity";
-import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
-import { Screen, ScreenStack, ScreenStackHeaderConfig } from "react-native-screens";
+import { Alert, Pressable, View } from "react-native";
 import * as Cause from "effect/Cause";
 import { AppText as Text, AppTextInput } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
-import { AndroidSheetHeader } from "../../../components/ui/AndroidScreenHeader";
-import { withUniwind } from "uniwind";
+import { AppBar } from "../../../components/ui/AppBar";
+import { SheetPane } from "../../../components/ui/SheetPane";
+import { ScreenContent } from "../../../components/ui/ScreenContent";
+import { NativeScrollView } from "../../../native/NativeScrollViewMarker";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { uuidv4 } from "../../../lib/uuid";
 import { useThreadWorkspace, useWorkspaceGitQueries } from "../use-thread-workspace";
@@ -33,11 +34,6 @@ import {
   useLinkedPullRequestLines,
 } from "../LinkedPullRequestList";
 import { useLinkedPullRequestActions } from "../useLinkedPullRequestActions";
-
-const ThemedScreen = withUniwind(Screen);
-const ThemedHeader = withUniwind(ScreenStackHeaderConfig, {
-  color: { fromClassName: "colorClassName", styleProperty: "color" },
-});
 
 function reportFailure(result: { readonly _tag: string; readonly cause?: Cause.Cause<unknown> }) {
   if (result._tag === "Failure" && result.cause) {
@@ -288,9 +284,9 @@ function PrimaryRepositoryTools(props: {
 export function WorkspaceGitOverviewSheet(props: {
   readonly target: ScopedThreadRef;
   readonly presentation?: "sheet" | "inspector";
-  readonly headerInset?: number;
 }) {
   const navigation = useNavigation();
+  const isInspector = props.presentation === "inspector";
   const workspace = useThreadWorkspace(props.target);
   const queries = useWorkspaceGitQueries(props.target, workspace.checkouts);
   const statuses = queries.map((query) => query.status);
@@ -409,7 +405,7 @@ export function WorkspaceGitOverviewSheet(props: {
     else await execute();
   };
   const content = (
-    <ScrollView
+    <NativeScrollView
       className="flex-1"
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ padding: 16, paddingBottom: 40, gap: 12 }}
@@ -646,52 +642,16 @@ export function WorkspaceGitOverviewSheet(props: {
         </ListSection>
       ) : null}
       <Button label="Refresh repositories" disabled={busy} onPress={() => void refreshAll()} />
-    </ScrollView>
+    </NativeScrollView>
   );
-  if (Platform.OS === "ios")
-    return (
-      <View
-        className={
-          props.presentation === "inspector"
-            ? "flex-1 border-l border-border bg-sheet"
-            : "flex-1 bg-sheet"
-        }
-      >
-        <ScreenStack style={{ flex: 1 }}>
-          <ThemedScreen
-            activityState={2}
-            enabled
-            isNativeStack
-            screenId="workspace-vcs"
-            className="flex-1 bg-sheet"
-          >
-            {content}
-            <ThemedHeader
-              title="Version Control"
-              hideBackButton
-              translucent
-              colorClassName="text-foreground"
-            />
-          </ThemedScreen>
-        </ScreenStack>
-      </View>
-    );
   return (
-    <View
-      className={
-        props.presentation === "inspector"
-          ? "flex-1 border-l border-border bg-sheet"
-          : "flex-1 bg-sheet"
-      }
-    >
-      {props.presentation === "inspector" ? (
-        <View style={{ paddingTop: props.headerInset ?? 0 }} className="px-4 py-3">
-          <Text className="text-xl font-t3-semibold">Version Control</Text>
-        </View>
-      ) : (
-        <AndroidSheetHeader title="Version Control" onBack={() => navigation.goBack()} />
-      )}
-      {content}
-    </View>
+    <SheetPane surface={isInspector ? "screen" : "sheet"}>
+      <AppBar
+        title="Version Control"
+        hideBottomBorder={!isInspector}
+        onClose={isInspector ? undefined : () => navigation.goBack()}
+      />
+      <ScreenContent insetHorizontal={isInspector ? true : undefined}>{content}</ScreenContent>
+    </SheetPane>
   );
 }

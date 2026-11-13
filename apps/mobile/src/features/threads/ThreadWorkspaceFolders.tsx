@@ -9,11 +9,14 @@ import {
 import { projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { owningFolder } from "@t3tools/shared/workspaceFolders";
 import { useState } from "react";
-import { Platform, Pressable, ScrollView, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { Menu } from "../../components/ui/Menu";
-import { AndroidSheetHeader } from "../../components/ui/AndroidScreenHeader";
+import { SheetHeader } from "../../components/ui/SheetHeader";
+import { SheetPane } from "../../components/ui/SheetPane";
+import { ScreenContent } from "../../components/ui/ScreenContent";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { uuidv4 } from "../../lib/uuid";
 import { useEnvironmentQuery } from "../../state/query";
@@ -354,26 +357,29 @@ export function ThreadWorkspaceFoldersSheet({
 }>) {
   const navigation = useNavigation();
   return (
-    <View className="flex-1 bg-sheet">
-      {Platform.OS === "android" ? (
-        <AndroidSheetHeader title="Workspace folders" onBack={() => navigation.goBack()} />
-      ) : null}
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={{ paddingBottom: 32 }}
-      >
-        {route.params.threadId ? (
-          <ThreadWorkspaceFolders
-            target={{ environmentId: route.params.environmentId, threadId: route.params.threadId }}
-            showEnvironmentMode={false}
-          />
-        ) : route.params.projectId ? (
-          <DraftWorkspaceFolders
-            environmentId={route.params.environmentId}
-            projectId={route.params.projectId}
-          />
-        ) : null}
-      </ScrollView>
-    </View>
+    <SheetPane>
+      <SheetHeader title="Workspace folders" onClose={() => navigation.goBack()} />
+      <ScreenContent>
+        <NativeScrollView
+          contentInsetAdjustmentBehavior="automatic"
+          contentContainerStyle={{ paddingBottom: 32 }}
+        >
+          {route.params.threadId ? (
+            <ThreadWorkspaceFolders
+              target={{
+                environmentId: route.params.environmentId,
+                threadId: route.params.threadId,
+              }}
+              showEnvironmentMode={false}
+            />
+          ) : route.params.projectId ? (
+            <DraftWorkspaceFolders
+              environmentId={route.params.environmentId}
+              projectId={route.params.projectId}
+            />
+          ) : null}
+        </NativeScrollView>
+      </ScreenContent>
+    </SheetPane>
   );
 }

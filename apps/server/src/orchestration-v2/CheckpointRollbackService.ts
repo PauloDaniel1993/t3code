@@ -11,6 +11,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -20,15 +21,20 @@ import * as Schema from "effect/Schema";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import type * as ServerConfig from "../config.ts";
 import type * as ServerSettings from "../serverSettings.ts";
-import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import {
+  withCheckpointRestoreReservation,
+  withWorkspaceLease,
+} from "../workspace/workspaceLease.ts";
 import { makeCheckoutLeaseKeys } from "./checkoutLease.ts";
 import { makeManagedWorktreeRecreation } from "./managedWorktreeRecreation.ts";
 import { makeRecreateMissingWorktrees } from "./WorktreeSetService.ts";
 import {
+  restoreIsolationRefusal,
   fileRestoreRefusal,
   fileRestoreRefusalMessage,
   fileRestoreRefusalReason,
 } from "./CheckpointRestoreSafety.ts";
+import { checkpointRestoreParts } from "./CheckpointScopeParts.ts";
 import { CheckpointRestoreError, CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -264,7 +270,97 @@ export const layer: Layer.Layer<
                   ...(message === undefined ? {} : { message }),
                 };
               });
-      yield* recreateManagedWorktrees(context.thread, recreateMissing);
+      const managedPaths: string[] = [];
+      yield* recreateManagedWorktrees(context.thread, (managed) =>
+        Effect.sync(() => {
+          managedPaths.push(
+            ...(managed.worktrees?.map((member) => member.path) ??
+              (managed.worktreePath === null ? [] : [managed.worktreePath])),
+          );
+        }),
+      );
+      const leftoverPaths = restoreFiles
+        ? yield* Effect.filter(managedPaths, (location) =>
+            fileSystem
+              .exists(location)
+              .pipe(
+                Effect.flatMap((exists) =>
+                  exists
+                    ? fileSystem.exists(path.join(location, ".git")).pipe(Effect.map((git) => !git))
+                    : Effect.succeed(false),
+                ),
+              ),
+          )
+        : [];
+      const leftovers = leftoverPaths.filter(
+        (location) =>
+          !leftoverPaths.some((other) => {
+            if (location === other) return false;
+            const relative = path.relative(other, location);
+            return (
+              relative !== "" &&
+              relative !== ".." &&
+              !relative.startsWith(`..${path.sep}`) &&
+              !path.isAbsolute(relative)
+            );
+          }),
+      );
+      if (leftovers.length > 0) {
+        const refusal = yield* restoreIsolationRefusal(
+          context.thread,
+          checkpointRestoreParts(scope, checkpoint),
+          {
+            fileSystem,
+            projections,
+            projects,
+            path,
+          },
+        );
+        if (refusal !== undefined)
+          return yield* new CheckpointRollbackExecutionError({
+            reason: "file-restore-refused",
+            threadId: input.threadId,
+            providerThreadId: input.providerThreadId,
+            checkpointId: input.checkpointId,
+            detail: fileRestoreRefusalMessage(refusal),
+          });
+      }
+      yield* Effect.acquireUseRelease(
+        Effect.succeed([] as Array<{ location: string; aside: string }>),
+        (saved) =>
+          Effect.gen(function* () {
+            for (const location of leftovers) {
+              const aside = yield* fileSystem.makeTempDirectory({
+                directory: path.dirname(location),
+                prefix: ".t3-replaced-",
+              });
+              yield* fileSystem.rename(location, path.join(aside, "folder"));
+              saved.push({ location, aside });
+            }
+            yield* recreateManagedWorktrees(context.thread, recreateMissing);
+          }),
+        (saved, exit) =>
+          Effect.forEach(
+            [...saved].reverse(),
+            ({ location, aside }) =>
+              (Exit.isSuccess(exit)
+                ? Effect.void
+                : fileSystem
+                    .remove(location, { recursive: true, force: true })
+                    .pipe(Effect.andThen(fileSystem.rename(path.join(aside, "folder"), location)))
+              ).pipe(
+                Effect.andThen(fileSystem.remove(aside, { recursive: true, force: true })),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Edit from here left a worktree folder set aside", {
+                    worktreePath: location,
+                    setAside: path.join(aside, "folder"),
+                    cause,
+                  }),
+                ),
+              ),
+            { discard: true },
+          ),
+      );
       if (restoreFiles) {
         const refusal = yield* fileRestoreRefusal(context.thread, scope, checkpoint, {
           checkpoints,
@@ -463,10 +559,30 @@ export const layer: Layer.Layer<
             ...(thread.worktreePath === null ? [] : [thread.worktreePath]),
           ];
           const leases = yield* checkoutLeaseKeys(locations);
-          yield* leases.reduceRight(
+          const rollback = leases.reduceRight(
             (effect, location) => withWorkspaceLease(location, effect),
             execute(input),
           );
+          const roots = leases.filter(
+            (location) =>
+              !leases.some((other) => {
+                if (other === location) return false;
+                const relative = path.relative(other, location);
+                return (
+                  relative !== "" &&
+                  relative !== ".." &&
+                  !relative.startsWith(`..${path.sep}`) &&
+                  !path.isAbsolute(relative)
+                );
+              }),
+          );
+          yield* input.restoreFiles === false
+            ? rollback
+            : roots.reduceRight(
+                (effect, location) =>
+                  withCheckpointRestoreReservation(fileSystem, path, location, effect),
+                rollback,
+              );
         },
         (effect, input) =>
           effect.pipe(

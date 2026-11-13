@@ -1,4 +1,4 @@
-import type { VcsStatusResult } from "@t3tools/contracts";
+import type { VcsBranchStatus, VcsStatusResult } from "@t3tools/contracts";
 import {
   isCheckoutDrifted,
   owningFolder,
@@ -82,7 +82,7 @@ export function workspaceGitSummary(
 
 export function worktreeBranchAgreement(
   members: ReadonlyArray<{ readonly branch: string }>,
-  statuses: ReadonlyArray<Pick<VcsStatusResult, "isRepo" | "refName"> | null>,
+  statuses: ReadonlyArray<VcsBranchStatus | null>,
 ) {
   if (
     members.length < 2 ||

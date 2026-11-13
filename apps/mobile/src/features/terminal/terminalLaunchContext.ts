@@ -19,6 +19,7 @@ export interface PendingTerminalLaunch {
   readonly worktreePath: string | null;
   readonly env?: Record<string, string>;
   readonly initialInput?: string;
+  readonly stopOnSettle?: boolean;
 }
 
 const pendingTerminalLaunches = new Map<string, PendingTerminalLaunch>();
@@ -36,6 +37,7 @@ export function stagePendingTerminalLaunch(input: {
     worktreePath: input.launch.worktreePath,
     env: input.launch.env ? { ...input.launch.env } : undefined,
     initialInput: input.launch.initialInput,
+    stopOnSettle: input.launch.stopOnSettle,
   });
 }
 

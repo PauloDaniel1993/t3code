@@ -26,6 +26,7 @@ import * as ServerConfig from "../config.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as DeviceService from "../device/DeviceService.ts";
 import * as ResourceCleanup from "./ResourceCleanupService.ts";
 import * as Path from "effect/Path";
 import {
@@ -121,6 +122,11 @@ describe("attachment reference index", () => {
     }).pipe(
       Effect.provide(
         ResourceCleanup.layer.pipe(
+          Layer.provide(
+            Layer.mock(DeviceService.DeviceService)({
+              sessionsForThread: () => Effect.succeed([]),
+            }),
+          ),
           Layer.provideMerge(testLayer),
           Layer.provideMerge(
             ServerConfig.layerTest(process.cwd(), { prefix: "t3-sidecar-cleanup-" }),
@@ -254,7 +260,9 @@ describe("attachment reference index", () => {
             (db) => Effect.sync(() => db.close()),
           );
           external.exec("DROP TRIGGER fork_v2_attachment_message_insert");
-          external.exec(`INSERT INTO orchestration_v2_projection_messages SELECT 'new-external-message', thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
+          external.exec(`INSERT INTO orchestration_v2_projection_messages
+          (message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json)
+          SELECT 'new-external-message', thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
           FROM orchestration_v2_projection_messages WHERE message_id = 'message-005'`);
           expect(
             yield* sql`SELECT row_id FROM fork_v2_attachment_references WHERE row_id = 'new-external-message'`,
@@ -647,7 +655,9 @@ describe("attachment reference index", () => {
         expect(yield* initializeAttachmentReferenceIndex()).toBe(false);
         expect(yield* sql`SELECT cursor FROM fork_v2_attachment_reference_state`).toEqual(cursor);
         yield* sql`UPDATE orchestration_v2_projection_messages SET payload_json = '{"attachments":[]}' WHERE message_id = 'message-000'`;
-        yield* sql`INSERT INTO orchestration_v2_projection_messages SELECT 'a-background-import', thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
+        yield* sql`INSERT INTO orchestration_v2_projection_messages
+          (message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json)
+          SELECT 'a-background-import', thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
         FROM orchestration_v2_projection_messages WHERE message_id = 'message-005'`;
         yield* sql`DELETE FROM orchestration_v2_projection_messages WHERE message_id = 'message-199'`;
         yield* rebuildAttachmentReferenceIndex();

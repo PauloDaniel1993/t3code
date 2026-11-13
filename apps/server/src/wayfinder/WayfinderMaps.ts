@@ -1,7 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -12,6 +11,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -103,9 +103,10 @@ function recordScanStart(starts: Map<string, number>, key: string, now: number, 
 }
 
 /** A new subscription was refused because its connection holds as many as it may. */
-export class WayfinderMapsCapacityError extends Data.TaggedError("WayfinderMapsCapacityError")<{
-  readonly message: string;
-}> {}
+export class WayfinderMapsCapacityError extends Schema.TaggedError<WayfinderMapsCapacityError>()(
+  "WayfinderMapsCapacityError",
+  { message: Schema.String },
+) {}
 
 export type WayfinderMapsError =
   | WayfinderMapsCapacityError

@@ -14,6 +14,7 @@ import {
 } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 
+import type { ProjectionRecordFilter } from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { requireThreadScope, type McpInvocationScope } from "./McpInvocationContext.ts";
@@ -38,10 +39,14 @@ function reasoningDescriptor(descriptors: readonly ProviderOptionDescriptor[] = 
   );
 }
 
-const readParent = Effect.fn("ForkTaskAliases.readParent")(function* (scope: McpInvocationScope) {
+const readParent = Effect.fn("ForkTaskAliases.readParent")(function* (
+  scope: McpInvocationScope,
+  fields: ReadonlyArray<"subagents"> = [],
+  filter?: ProjectionRecordFilter,
+) {
   const caller = yield* requireThreadScope(scope, "Task aliases");
   const threads = yield* ThreadManagement.ThreadManagementService;
-  return yield* threads.getThreadRecords(caller.thread.threadId, ["subagents"]).pipe(
+  return yield* threads.getThreadRecords(caller.thread.threadId, fields, filter).pipe(
     Effect.mapError(
       () =>
         new OrchestratorMcpFailure({
@@ -195,7 +200,7 @@ export const forkTaskCreate = Effect.fn("ForkTaskAliases.create")(function* (
     },
     ...(input.clientRequestId === undefined ? {} : { clientRequestId: input.clientRequestId }),
   });
-  const createdParent = yield* readParent(scope);
+  const createdParent = yield* readParent(scope, ["subagents"], { subagentIds: [status.taskId] });
   const task = createdParent.subagents.find((task) => task.id === status.taskId);
   if (task === undefined)
     return yield* new OrchestratorMcpFailure({
@@ -215,7 +220,7 @@ export const forkTaskCancel = Effect.fn("ForkTaskAliases.cancel")(function* (
   if (input.threadId === undefined && input.taskId !== undefined)
     return yield* service.cancelTask(scope, { ...input, taskId: input.taskId });
   yield* service.capabilities(scope);
-  const parent = yield* readParent(scope);
+  const parent = yield* readParent(scope, ["subagents"]);
   const task = parent.subagents.find(
     (task) =>
       task.origin === "app_owned" &&

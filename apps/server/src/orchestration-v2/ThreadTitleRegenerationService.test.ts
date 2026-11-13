@@ -83,6 +83,7 @@ function makeHarness(
               folders: null,
               defaultModelSelection: modelSelection,
               defaultThreadEnvMode: null,
+              hasCustomTitle: false,
               autoPull: false,
               faviconPath: null,
               projectIcon: null,
@@ -435,6 +436,10 @@ describe("ThreadTitleRegenerationService", () => {
           const projection = yield* threads.getThreadProjection(threadId);
           assert.equal(projection.thread.title, "Fresh title");
           assert.isNotOk(projection.thread.titleRegeneration);
+          assert.deepInclude(projection.thread.lastTitleRegeneration, {
+            requestId,
+            status: "renamed",
+          });
         }
       }).pipe(Effect.provide(harness.layer));
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -546,39 +551,19 @@ describe("ThreadTitleRegenerationService", () => {
     }),
   );
 
-  it.effect("keeps the current title when regeneration reproduces it", () =>
-    Effect.gen(function* () {
-      const harness = makeHarness({
-        generateTitle: () => Effect.succeed({ title: "Seed title" }),
-      });
-      yield* Effect.gen(function* () {
-        const threads = yield* ThreadManagement.ThreadManagementService;
-        const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
-        const threadId = yield* createThread({
-          command: "command:title:unchanged:create",
-          thread: "thread:title:unchanged",
-        });
-        yield* dispatchUserMessage({
-          command: "command:title:unchanged:message",
-          threadId,
-          text: "Some conversation",
-        });
-        const requestId = yield* armRegeneration({
-          command: "command:title:unchanged:1",
-          threadId,
-        });
-
-        yield* titleRegeneration.execute({ threadId, requestId, kind: { type: "regenerate" } });
-
-        const projection = yield* threads.getThreadProjection(threadId);
-        assert.equal(projection.thread.title, "Seed title");
-        assert.isNotOk(projection.thread.titleRegeneration);
-      }).pipe(Effect.provide(harness.layer));
-    }),
-  );
-
   it.effect.each([
-    ["model defect", Effect.die(new Error("model unavailable"))],
+    ["model defect", Effect.die(new Error("model unavailable")), "Title generation failed."],
+    [
+      "provider failure",
+      Effect.fail(
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail:
+            "Codex CLI command failed: OpenAI Codex\nuser\nConversation text\nmodel unavailable\n",
+        }),
+      ),
+      "model unavailable",
+    ],
     [
       "unreadable Codex image",
       Effect.fail(
@@ -587,8 +572,9 @@ describe("ThreadTitleRegenerationService", () => {
           detail: "Image attachment 'screenshot.png' could not be read for Codex text generation.",
         }),
       ),
+      "Image attachment 'screenshot.png' could not be read for Codex text generation.",
     ],
-  ] as const)("clears the marker and keeps the title after %s", ([, failure]) =>
+  ] as const)("clears the marker and keeps the title after %s", ([, failure, expectedMessage]) =>
     Effect.gen(function* () {
       const harness = makeHarness({
         generateTitle: () => failure,
@@ -616,6 +602,46 @@ describe("ThreadTitleRegenerationService", () => {
         const projection = yield* threads.getThreadProjection(threadId);
         assert.equal(projection.thread.title, "Seed title");
         assert.isNotOk(projection.thread.titleRegeneration);
+        assert.deepInclude(projection.thread.lastTitleRegeneration, {
+          requestId,
+          status: "failed",
+          message: expectedMessage,
+        });
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("records an unchanged outcome when the model keeps the current title", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({
+        generateTitle: () => Effect.succeed({ title: "Seed title" }),
+      });
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+        const threadId = yield* createThread({
+          command: "command:title:unchanged:create",
+          thread: "thread:title:unchanged",
+        });
+        yield* dispatchUserMessage({
+          command: "command:title:unchanged:message",
+          threadId,
+          text: "Some conversation",
+        });
+        const requestId = yield* armRegeneration({
+          command: "command:title:unchanged:1",
+          threadId,
+        });
+
+        yield* titleRegeneration.execute({ threadId, requestId, kind: { type: "regenerate" } });
+
+        const projection = yield* threads.getThreadProjection(threadId);
+        assert.equal(projection.thread.title, "Seed title");
+        assert.isNotOk(projection.thread.titleRegeneration);
+        assert.deepInclude(projection.thread.lastTitleRegeneration, {
+          requestId,
+          status: "unchanged",
+        });
       }).pipe(Effect.provide(harness.layer));
     }),
   );

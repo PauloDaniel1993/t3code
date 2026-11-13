@@ -23,6 +23,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
+import * as Stream from "effect/Stream";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -112,6 +113,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
         steer: () => Effect.void,
+        applyModelSelection: () => Effect.void,
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -133,6 +135,7 @@ function layerExecutorFor(input: {
         detach: () => record("detach"),
         otherWorkingThreads: () => Effect.succeed([]),
         releaseUnlessBusy: () => Effect.succeed(true),
+        subscribePromptSuggestion: () => Stream.empty,
       }),
     ),
     Layer.succeed(
@@ -405,7 +408,7 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );
@@ -475,7 +478,7 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );
@@ -541,7 +544,7 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );
@@ -602,7 +605,7 @@ it.effect("requeues a replay-safe claim when success settlement fails", () =>
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );
@@ -676,7 +679,7 @@ it.effect("keeps a process-bound executor failure retryable when retry settlemen
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );
@@ -747,7 +750,7 @@ it.effect("keeps a max-attempt replay-safe failure terminal when fail settlement
     );
 
     const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
+      Effect.flatMap((worker) => worker.runOnce()),
       Effect.provide(layerWorker),
       Effect.exit,
     );
@@ -770,16 +773,20 @@ it.effect("uses durable deadlines, notifications, and a slow liveness poll", () 
     const worker = EffectWorker.OrchestrationEffectWorkerV2.of({
       awaitWork: Queue.take(available),
       runRecoveryOnce: Effect.succeed(false),
-      runOnce: Effect.gen(function* () {
-        const count = yield* Ref.updateAndGet(attempts, (current) => current + 1);
-        if (count === 2) {
-          yield* Ref.set(nextClaimableAt, Option.some(DateTime.add(now, { milliseconds: 5_000 })));
-        }
-        if (count === 3) yield* Ref.set(nextClaimableAt, Option.none());
-        yield* Queue.offer(attempted, count);
-        return false;
-      }),
-      nextClaimableAt: Ref.get(nextClaimableAt),
+      runOnce: () =>
+        Effect.gen(function* () {
+          const count = yield* Ref.updateAndGet(attempts, (current) => current + 1);
+          if (count === 2) {
+            yield* Ref.set(
+              nextClaimableAt,
+              Option.some(DateTime.add(now, { milliseconds: 5_000 })),
+            );
+          }
+          if (count === 3) yield* Ref.set(nextClaimableAt, Option.none());
+          yield* Queue.offer(attempted, count);
+          return false;
+        }),
+      nextClaimableAt: () => Ref.get(nextClaimableAt),
       drain: () => Effect.succeed(0),
     });
     yield* EffectWorker.runDaemonWithOptions({
@@ -817,16 +824,17 @@ it.effect("does not hot-loop when a claim fails", () =>
     const worker = EffectWorker.OrchestrationEffectWorkerV2.of({
       awaitWork: Effect.never,
       runRecoveryOnce: Effect.succeed(false),
-      runOnce: Ref.updateAndGet(attempts, (count) => count + 1).pipe(
-        Effect.tap((count) => Queue.offer(attempted, count)),
-        Effect.andThen(
-          new EffectWorker.OrchestrationEffectWorkerError({
-            operation: "claim",
-            cause: "simulated database failure",
-          }),
+      runOnce: () =>
+        Ref.updateAndGet(attempts, (count) => count + 1).pipe(
+          Effect.tap((count) => Queue.offer(attempted, count)),
+          Effect.andThen(
+            new EffectWorker.OrchestrationEffectWorkerError({
+              operation: "claim",
+              cause: "simulated database failure",
+            }),
+          ),
         ),
-      ),
-      nextClaimableAt: Effect.succeedSome(now),
+      nextClaimableAt: () => Effect.succeedSome(now),
       drain: () => Effect.succeed(0),
     });
 
@@ -854,11 +862,12 @@ it.effect("backs off briefly when a due deadline loses a claim race", () =>
     const worker = EffectWorker.OrchestrationEffectWorkerV2.of({
       awaitWork: Effect.never,
       runRecoveryOnce: Effect.succeed(false),
-      runOnce: Ref.updateAndGet(attempts, (count) => count + 1).pipe(
-        Effect.tap((count) => Queue.offer(attempted, count)),
-        Effect.as(false),
-      ),
-      nextClaimableAt: Effect.succeedSome(now),
+      runOnce: () =>
+        Ref.updateAndGet(attempts, (count) => count + 1).pipe(
+          Effect.tap((count) => Queue.offer(attempted, count)),
+          Effect.as(false),
+        ),
+      nextClaimableAt: () => Effect.succeedSome(now),
       drain: () => Effect.succeed(0),
     });
 
@@ -923,6 +932,7 @@ it.effect(
           cleanupScheduledTasks: () => Effect.void,
           cleanupTerminals: () => Effect.void,
           cleanupPreviews: () => Effect.void,
+          cleanupDevices: () => Effect.void,
           cleanupAttachments: () =>
             Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
         }),
@@ -941,6 +951,7 @@ it.effect(
           cleanupScheduledTasks: () => Effect.void,
           cleanupTerminals: () => Effect.void,
           cleanupPreviews: () => Effect.void,
+          cleanupDevices: () => Effect.void,
           cleanupAttachments: () =>
             Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
         }),
@@ -959,6 +970,7 @@ it.effect(
           cleanupScheduledTasks: () => Effect.void,
           cleanupTerminals: () => Effect.void,
           cleanupPreviews: () => Effect.void,
+          cleanupDevices: () => Effect.void,
           cleanupAttachments: () =>
             Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
         }),

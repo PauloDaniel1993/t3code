@@ -109,6 +109,7 @@ it("preserves a scheduled flow target through MCP input and output", () => {
       enabled: true,
       projectId: "project-1",
       boundThreadId: null,
+      freshSession: false,
       workspaceStrategy: { type: "root" },
       schedule: { type: "interval", everyMs: 3600000 },
       nextRunAt: null,

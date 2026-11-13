@@ -1,3 +1,4 @@
+import { isLocalEditorFileUrl } from "@t3tools/contracts";
 import { fileBasename, isAbsolutePath, workspaceRelativeFilePath } from "@t3tools/shared/path";
 import {
   inlineCodeFilePathCandidate,
@@ -21,6 +22,7 @@ export interface MarkdownFileLinkMeta {
   basename: string;
   line?: number;
   column?: number;
+  endLine?: number;
 }
 
 export function isMarkdownFileExternalOpenModifier(
@@ -58,12 +60,16 @@ export function rewriteMarkdownFileHrefForRendering(href: string): string | null
   return `file:///${normalizedHref.replaceAll("\\", "/")}`;
 }
 
-/**
- * Inline code spans mostly hold identifiers, commands, and refs (`node.meta`,
- * `origin/main`) rather than deliberate link destinations, so auto-linking
- * them demands stronger path evidence than an explicit markdown link does:
- * an unambiguous path prefix, a file extension, or a :line suffix.
- */
+export function isLocalEditorFileHref(href: string): boolean {
+  try {
+    return isLocalEditorFileUrl(new URL(href));
+  } catch {
+    return false;
+  }
+}
+
+// Inline code also holds identifiers and refs, so auto-linking needs stronger path evidence
+// than an explicit markdown link: a path prefix, extension, or :line suffix.
 export function resolveInlineCodeFileLinkMeta(
   codeText: string,
   cwd?: string,
@@ -100,6 +106,7 @@ export function resolveMarkdownFileLinkMeta(
   const source = href ? parseMarkdownFileLink(href) : null;
   return {
     ...buildFileLinkMetaFromTarget(targetPath, cwd),
+    ...(source?.endLine !== undefined ? { endLine: source.endLine } : {}),
     workspaceLookupPath:
       source !== null &&
       !isAbsolutePath(source.path) &&

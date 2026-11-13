@@ -13,32 +13,50 @@ import {
 const THREAD_REF = scopeThreadRef(EnvironmentId.make("environment-1"), ThreadId.make("thread-1"));
 
 describe("diffPanelStore", () => {
-  it("preserves a folder pin for one explicit panel open and clears it for ordinary changes", () => {
-    useDiffPanelStore.getState().selectWorkspaceFolder(THREAD_REF, "/api", "api", true);
+  it("retains folder selections across navigation and scopes them to each thread and environment", () => {
+    const otherThread = scopeThreadRef(THREAD_REF.environmentId, ThreadId.make("another-thread"));
+    const otherEnvironment = scopeThreadRef(
+      EnvironmentId.make("environment-2"),
+      THREAD_REF.threadId,
+    );
+    const store = useDiffPanelStore.getState();
+    store.selectWorkspaceFolder(THREAD_REF, "/api", "api");
     expect(
-      useDiffPanelStore
-        .getState()
-        .consumeKeepSelectionOnOpen(
-          scopeThreadRef(THREAD_REF.environmentId, ThreadId.make("another-thread")),
-        ),
-    ).toBe(false);
-    expect(useDiffPanelStore.getState().consumeKeepSelectionOnOpen(THREAD_REF)).toBe(true);
-    expect(useDiffPanelStore.getState().consumeKeepSelectionOnOpen(THREAD_REF)).toBe(false);
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, otherThread),
+    ).toEqual({ kind: "branch", baseRef: null });
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, otherEnvironment),
+    ).toEqual({ kind: "branch", baseRef: null });
+
+    store.selectWorkspaceFolder(otherThread, "/web", "web");
+    store.selectWorkspaceFolder(otherEnvironment, "/worker", "worker");
+    store.reconcileTurnSelection(THREAD_REF, []);
     expect(
       selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
     ).toEqual({ kind: "unstaged", folderPath: "/api", folderLabel: "api" });
-    useDiffPanelStore.getState().selectGitScope(THREAD_REF, "unstaged");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, otherThread),
+    ).toEqual({ kind: "unstaged", folderPath: "/web", folderLabel: "web" });
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, otherEnvironment),
+    ).toEqual({ kind: "unstaged", folderPath: "/worker", folderLabel: "worker" });
+
+    store.selectWorkspaceFolder(THREAD_REF, "/web", "web");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({ kind: "unstaged", folderPath: "/web", folderLabel: "web" });
+    store.selectGitScope(THREAD_REF, "unstaged");
     expect(
       selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
     ).toEqual({ kind: "unstaged" });
-    useDiffPanelStore.getState().selectWorkspaceFolder(THREAD_REF, "/web", "web");
-    expect(useDiffPanelStore.getState().consumeKeepSelectionOnOpen(THREAD_REF)).toBe(false);
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, otherThread),
+    ).toEqual({ kind: "unstaged", folderPath: "/web", folderLabel: "web" });
   });
   beforeEach(() => {
     useDiffPanelStore.setState({
       byThreadKey: {},
       branchBaseRefByThreadKey: {},
-      keepSelectionOnOpenThreadKey: null,
     });
     useDiffPanelSessionStore.setState({ collapsedFileKeysByScopeKey: {} });
   });

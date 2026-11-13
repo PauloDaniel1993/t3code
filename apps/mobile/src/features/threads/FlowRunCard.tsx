@@ -1,5 +1,6 @@
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { useAtomValue } from "@effect/atom-react";
+import { LegendList } from "@legendapp/list/react-native";
 import {
   flowStepRunList,
   latestStepAttempts,
@@ -17,7 +18,7 @@ import type {
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { useState } from "react";
-import { FlatList, Pressable, TextInput, View } from "react-native";
+import { Pressable, TextInput, View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { flowEnvironment } from "../../state/flows";
@@ -157,10 +158,14 @@ function FlowRunDetails({
           }}
         />
       ) : null}
-      <FlatList
+      {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- Nested in the thread feed, which owns the header scroll view. */}
+      <LegendList
         style={{ maxHeight: 360 }}
         nestedScrollEnabled
         data={flowStepRunList(snapshot)}
+        extraData={{ environmentId, snapshot, now, latest }}
+        estimatedItemSize={72}
+        recycleItems={false}
         keyExtractor={(step) => step.id}
         renderItem={({ item }) => (
           <View style={{ paddingLeft: item.depth * 12 }}>

@@ -101,6 +101,8 @@ export class ProjectEnrichmentService extends Context.Service<
     ) => Effect.Effect<void>;
     /** Invalidate workspace-derived metadata. */
     readonly invalidate: (workspaceRoots: Iterable<string>) => Effect.Effect<void>;
+    /** Re-resolves past both identity caches and publishes a found identity, leaving the favicon alone. */
+    readonly refreshRepositoryIdentity: (workspaceRoot: string) => Effect.Effect<void>;
     readonly subscribeChanges: Effect.Effect<
       PubSub.Subscription<ProjectEnrichmentChange>,
       never,
@@ -145,15 +147,48 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
   const repositoryIdentityRefreshes = new Set<string>();
 
+  // Outlives the cache entry so an expired or refreshing identity still reads as its last value.
+  const lastRepositoryIdentities = new Map<string, RepositoryIdentity>();
+  // `invalidate` drops a root's in-flight lookup so its late result cannot overwrite a newer one.
+  const lookupsInFlight = new Map<string, object>();
+  const rememberRepositoryIdentity = (
+    workspaceRoot: string,
+    repositoryIdentity: RepositoryIdentity | null,
+  ) => {
+    lastRepositoryIdentities.delete(workspaceRoot);
+    if (repositoryIdentity === null) return;
+    if (lastRepositoryIdentities.size >= cacheCapacity) {
+      const oldestRoot = lastRepositoryIdentities.keys().next().value;
+      if (oldestRoot !== undefined) lastRepositoryIdentities.delete(oldestRoot);
+    }
+    lastRepositoryIdentities.set(workspaceRoot, repositoryIdentity);
+  };
+
   const repositoryIdentityCache = yield* Cache.makeWith(
     (workspaceRoot: string) =>
-      Effect.suspend(() =>
-        Effect.exit(
+      Effect.suspend(() => {
+        const lookup = {};
+        lookupsInFlight.set(workspaceRoot, lookup);
+        const isCurrent = () => lookupsInFlight.get(workspaceRoot) === lookup;
+        return Effect.exit(
           repositoryIdentityResolver.resolve(workspaceRoot, {
             refresh: repositoryIdentityRefreshes.delete(workspaceRoot),
           }),
-        ),
-      ),
+        ).pipe(
+          Effect.tap((result) =>
+            Effect.sync(() => {
+              if (Exit.isSuccess(result) && isCurrent()) {
+                rememberRepositoryIdentity(workspaceRoot, result.value);
+              }
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (isCurrent()) lookupsInFlight.delete(workspaceRoot);
+            }),
+          ),
+        );
+      }),
     {
       capacity: cacheCapacity,
       timeToLive: Exit.match({
@@ -211,6 +246,8 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
       // folder gaining or leaving a nested checkout changes that path's owner.
       // If its previous probe was evicted, a warm identity still needs checking.
       repositoryIdentityRefreshes.add(probe.path);
+      lookupsInFlight.delete(probe.path);
+      lastRepositoryIdentities.delete(probe.path);
       yield* Cache.invalidate(repositoryIdentityCache, probe.path);
     }
     publishedFolderFacts.delete(probe.path);
@@ -352,10 +389,13 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         ] as const,
         { concurrency: "unbounded" },
       );
+      const repositoryIdentityResolved = isSuccessfullyResolved(repositoryIdentity);
       return {
-        repositoryIdentity: availableValue(repositoryIdentity),
+        repositoryIdentity: repositoryIdentityResolved
+          ? availableValue(repositoryIdentity)
+          : (lastRepositoryIdentities.get(workspaceRoot) ?? null),
         faviconPath: availableValue(faviconPath),
-        repositoryIdentityResolved: isSuccessfullyResolved(repositoryIdentity),
+        repositoryIdentityResolved,
       };
     },
   );
@@ -411,7 +451,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     const cached = yield* Cache.getSuccess(repositoryIdentityCache, path);
     if (isSuccessfullyResolved(cached)) return availableValue(cached);
     if (request) yield* requestLane(repositoryIdentityLane, path, "repositoryIdentity");
-    return undefined;
+    return lastRepositoryIdentities.get(path);
   });
 
   const getAvailableFolders: ProjectEnrichmentService["Service"]["getAvailableFolders"] = Effect.fn(
@@ -525,6 +565,10 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         Effect.all(
           [
             Cache.invalidate(repositoryIdentityCache, workspaceRoot),
+            Effect.sync(() => {
+              lookupsInFlight.delete(workspaceRoot);
+              lastRepositoryIdentities.delete(workspaceRoot);
+            }),
             Cache.invalidate(faviconCache, workspaceRoot),
             // The resolver keeps its own misses, which would outlive a clone filling the folder.
             faviconResolver.invalidate(workspaceRoot),
@@ -552,6 +596,16 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     ],
     { concurrency: "unbounded", discard: true },
   );
+  const refreshRepositoryIdentity: ProjectEnrichmentService["Service"]["refreshRepositoryIdentity"] =
+    Effect.fn("ProjectEnrichmentService.refreshRepositoryIdentity")(function* (workspaceRoot) {
+      // Remote-less folders hit this after every turn; publishing their unchanged null would
+      // push a shell frame to every subscriber.
+      if ((yield* repositoryIdentityResolver.resolve(workspaceRoot, { refresh: true })) === null) {
+        return;
+      }
+      yield* Cache.invalidate(repositoryIdentityCache, workspaceRoot);
+      yield* resolveRepositoryIdentity(workspaceRoot);
+    });
 
   return ProjectEnrichmentService.of({
     peek,
@@ -564,6 +618,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     setWorkspaceFileStatus,
     readRepositoryIdentity,
     invalidate,
+    refreshRepositoryIdentity,
     subscribeChanges: PubSub.subscribe(changes),
   });
 });

@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { toCanonicalPath } from "@t3tools/shared/workspaceFolders";
 import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Atom } from "effect/reactivity";
 
@@ -26,6 +27,8 @@ import { useWorkspaceFileBindingKey } from "../../state/workspace-file-bindings"
 import { collectFileTreeEntries } from "./fileTree";
 
 const EMPTY_FOLDERS: ReadonlyArray<WorkspaceScopeFolder> = [];
+
+const isProjectListEntriesError = Schema.is(ProjectListEntriesError);
 
 function createDirectories() {
   return {
@@ -326,8 +329,7 @@ export function useFileTreeEntries(input: {
     });
   };
   const missingRoot =
-    root.failure instanceof ProjectListEntriesError &&
-    root.failure.failure === "workspace_root_not_found";
+    isProjectListEntriesError(root.failure) && root.failure.failure === "workspace_root_not_found";
   const rootData = missingRoot ? null : root.data;
   const rootListing = root.successResult ?? directories.rootListing;
   if (

@@ -71,12 +71,11 @@ export const layer: Layer.Layer<
         rootNode,
         scope,
         providerThread,
-        readyCheckpointOrdinals,
+        preservedCheckpointOrdinals,
         partTurnCheckpointOrdinals,
         sideChat,
       } = yield* projections.getCheckpointCaptureContext(input.threadId, input);
-      // A stopped run is already terminal. Its checkpoint is the rollback point
-      // for the message after it, so capture leaves its status alone.
+      // Stopped runs remain terminal; their checkpoint is the next message's rollback point.
       const stopped = run?.status === "interrupted" || run?.status === "cancelled";
 
       // A checkpoint on a settled run proves this at-least-once effect already committed.
@@ -117,26 +116,24 @@ export const layer: Layer.Layer<
               .pipe(Effect.map((thread) => checkpointScopeForRun({ scope, thread, run })));
       const capturedAt = yield* DateTime.now;
       const baselineOrdinalWithinScope = Math.max(0, run.ordinal - 1);
-      // A turn's checkpoint with parts stays even when its barrier failed: its
-      // healthy parts still diff.
-      const keepsCheckpoint = (ordinalWithinScope: number) =>
-        readyCheckpointOrdinals.includes(ordinalWithinScope) ||
+      const isPreserved = (ordinalWithinScope: number) =>
+        preservedCheckpointOrdinals.includes(ordinalWithinScope) ||
         partTurnCheckpointOrdinals.includes(ordinalWithinScope);
+      // The baselines this capture materializes are attributed to the run materializing them. The
+      // thread's scope may already be a later run's: one queued meanwhile, or sent after Stop.
+      const materializeBaseline = (ordinalWithinScope: number) =>
+        checkpoints.materializeBaselineCheckpoint({
+          scope: runScope,
+          ordinalWithinScope,
+          nodeId: rootNode.id,
+          capturedAt: run.requestedAt,
+          forceMissing: sideChat,
+        });
       const threadStartCheckpoint =
-        baselineOrdinalWithinScope === 0 || keepsCheckpoint(0)
-          ? null
-          : yield* checkpoints.materializeBaselineCheckpoint({
-              scope: runScope,
-              ordinalWithinScope: 0,
-              forceMissing: sideChat,
-            });
-      const baselineCheckpoint = keepsCheckpoint(baselineOrdinalWithinScope)
+        baselineOrdinalWithinScope === 0 || isPreserved(0) ? null : yield* materializeBaseline(0);
+      const baselineCheckpoint = isPreserved(baselineOrdinalWithinScope)
         ? null
-        : yield* checkpoints.materializeBaselineCheckpoint({
-            scope: runScope,
-            ordinalWithinScope: baselineOrdinalWithinScope,
-            forceMissing: sideChat,
-          });
+        : yield* materializeBaseline(baselineOrdinalWithinScope);
       const checkpoint = yield* checkpoints.capture({
         scope: runScope,
         runId: run.id,

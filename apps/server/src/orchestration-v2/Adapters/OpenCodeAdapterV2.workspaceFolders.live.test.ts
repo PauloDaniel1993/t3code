@@ -38,13 +38,14 @@ import {
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeOpenCodeAdapterV2 } from "@t3tools/provider-opencode/testing";
 
+const environment = { ...process.env };
 const quote = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const decodeSettings = Schema.decodeEffect(OpenCodeSettings);
 
 // Run with a credentialed OpenCode 1 binary and T3_OPENCODE_LIVE_MODEL=provider/model.
 // This bypasses the public eligibility guard to gather evidence; it does not
 // change the provider's unverified capability.
-describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
+describe.runIf(environment.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
   "OpenCode 1 workspace-folder access",
   () => {
     it.live(
@@ -60,7 +61,7 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
           yield* fs.makeDirectory(primary);
           yield* fs.makeDirectory(extra);
           const file = path.join(extra, "access.txt");
-          const model = process.env.T3_OPENCODE_LIVE_MODEL;
+          const model = environment.T3_OPENCODE_LIVE_MODEL;
           assert.isDefined(model, "Set T3_OPENCODE_LIVE_MODEL to a credentialed provider/model.");
           const modelSelection = {
             instanceId: ProviderInstanceId.make("opencode-live"),
@@ -79,8 +80,8 @@ describe.runIf(process.env.T3_OPENCODE_LIVE_WORKSPACE_FOLDERS === "1")(
           );
           yield* OpenCodeRuntime.OpenCodeRuntime;
           const settings = yield* decodeSettings(
-            process.env.T3_OPENCODE_LIVE_BINARY
-              ? { binaryPath: process.env.T3_OPENCODE_LIVE_BINARY }
+            environment.T3_OPENCODE_LIVE_BINARY
+              ? { binaryPath: environment.T3_OPENCODE_LIVE_BINARY }
               : {},
           );
           const adapter = yield* makeOpenCodeAdapterV2({

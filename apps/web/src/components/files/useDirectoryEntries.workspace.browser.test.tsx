@@ -4,6 +4,10 @@ import { useLayoutEffect } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { act, render } from "../../../test/render";
 const mocks = vi.hoisted(() => ({ list: vi.fn(), execute: vi.fn() }));
+vi.mock("~/connection/catalog", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { environmentCatalog: { sessionGenerationAtom: () => Atom.make(1) } };
+});
 vi.mock("~/state/projects", () => ({ projectEnvironment: { listEntries: mocks.list } }));
 vi.mock("~/rpc/atomRegistry", () => ({ appAtomRegistry: {} }));
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({ executeAtomQuery: mocks.execute }));

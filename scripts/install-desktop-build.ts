@@ -68,6 +68,7 @@ interface ParseState {
   launch: boolean;
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off - this script throws it synchronously, outside any Effect.
 export class InstallDesktopBuildError extends Error {
   override readonly name = "InstallDesktopBuildError";
 }

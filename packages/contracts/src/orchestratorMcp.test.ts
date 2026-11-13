@@ -71,6 +71,7 @@ describe("orchestrator MCP contracts", () => {
       enabled: true,
       projectId: "project:audit",
       boundThreadId: null,
+      freshSession: false,
       workspaceStrategy: { type: "root" },
       schedule: { type: "interval", everyMs: 60_000 },
       nextRunAt: "2026-10-11T12:00:00.000Z",

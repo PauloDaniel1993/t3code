@@ -40,7 +40,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { EventSinkV2 } from "./EventSink.ts";
-import { OrchestratorV2 } from "./Orchestrator.ts";
+import { OrchestratorDispatchError, OrchestratorV2 } from "./Orchestrator.ts";
 import {
   IdAllocatorV2,
   layer as idAllocatorLayer,
@@ -126,6 +126,7 @@ const TestLayer = Layer.mergeAll(RuntimeLayer.layer, RuntimeLayer.layerEventSink
         }),
       request: () => Effect.void,
       readRepositoryIdentity: () => Effect.succeed(null),
+      refreshRepositoryIdentity: () => Effect.void,
       getAvailable: () =>
         Effect.succeed({
           repositoryIdentity: null,
@@ -408,6 +409,44 @@ it.effect(
         commandId: CommandId.make("archive:parent"),
         threadId: parentId,
       };
+      const nestedThread = (yield* store.getThreadProjection(nestedId)).thread;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("nested:uncovered"),
+            type: "thread.metadata-updated",
+            threadId: nestedId,
+            occurredAt: now,
+            payload: {
+              ...nestedThread,
+              lineage: { ...nestedThread.lineage, parentThreadId: parentId },
+            },
+          },
+        ],
+      });
+      const refusal = yield* orchestrator
+        .dispatch({ ...command, commandId: CommandId.make("archive:uncovered-nested") })
+        .pipe(Effect.flip);
+      assert.instanceOf(refusal, OrchestratorDispatchError);
+      assert.strictEqual(
+        refusal.cause,
+        `Thread ${ids[0]} has running delegated tasks. Wait for them or cancel them before archiving.`,
+      );
+      for (const id of [parentId, ...ids, nestedId])
+        assert.isNull((yield* store.getThreadProjection(id)).thread.archivedAt);
+      assert.strictEqual((yield* store.getThreadProjection(ids[0]!)).runs[0]?.status, "running");
+      assert.strictEqual((yield* store.getThreadProjection(nestedId)).runs[0]?.status, "running");
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("nested:covered"),
+            type: "thread.metadata-updated",
+            threadId: nestedId,
+            occurredAt: now,
+            payload: nestedThread,
+          },
+        ],
+      });
       const archived = yield* orchestrator.dispatch(command);
       assert.strictEqual(
         archived.storedEvents.filter((stored) => stored.event.type === "thread.archived").length,
@@ -435,7 +474,12 @@ it.effect(
       const archiveOrder = archived.storedEvents
         .filter((stored) => stored.event.type === "thread.archived")
         .map((stored) => stored.event.threadId);
+      assert.isBelow(archiveOrder.indexOf(nestedId), archiveOrder.indexOf(ids[0]!));
       assert.strictEqual(archiveOrder.at(-1), parentId);
+      assert.strictEqual(
+        (yield* store.getThreadProjection(ids[0]!)).subagents[0]?.status,
+        "cancelled",
+      );
       const replay = yield* orchestrator.dispatch(command);
       assert.strictEqual(replay.sequence, archived.sequence);
       yield* orchestrator.dispatch({

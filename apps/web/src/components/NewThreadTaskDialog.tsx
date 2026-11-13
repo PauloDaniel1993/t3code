@@ -13,7 +13,11 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { useId, useRef, useState } from "react";
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { withAsyncCleanup } from "../lib/withAsyncCleanup";
-import { type AppModelOption, getAppModelOptionsForInstance } from "../modelSelection";
+import {
+  type AppModelOption,
+  getAppModelOptionsForInstance,
+  selectsPlanAgent,
+} from "../modelSelection";
 import { isProviderInstancePickerReady, providerInstanceEntriesFor } from "../providerInstances";
 import {
   useNewThreadTaskAvailability,
@@ -224,7 +228,7 @@ export function NewThreadTaskDialog(props: {
                     models={selectedEntry.models}
                     model={model.model}
                     modelOptions={model.options}
-                    planModeEnabled={settings.planModeEnabled}
+                    includePlanAgent={selectsPlanAgent(model.options)}
                     promptUltrathink={readPromptUltrathink(draft.prompt)}
                     onPromptEdit={(edit) =>
                       setDraft((current) => ({ ...current, prompt: edit(current.prompt) }))

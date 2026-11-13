@@ -22,6 +22,7 @@ import {
   workspaceFolderModelSelection,
 } from "./ClaudeWorkspaceFolders.testkit.ts";
 
+const environment = { ...process.env };
 const platformLayer = Layer.mergeAll(
   PortScanner.layerTest,
   McpProviderSessions.layer,
@@ -39,7 +40,7 @@ const liveLayer = Layer.merge(
 );
 
 // Explicit config selection keeps opt-in runs away from the default Team account.
-describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
+describe.runIf(environment.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
   "Claude Personal workspace folders (live)",
   () => {
     it.effect(
@@ -47,7 +48,7 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
       () =>
         Effect.scoped(
           Effect.gen(function* () {
-            const configDir = process.env.CLAUDE_CONFIG_DIR;
+            const configDir = environment.CLAUDE_CONFIG_DIR;
             assert.isDefined(
               configDir,
               "Set CLAUDE_CONFIG_DIR to the Claude Personal instance's home.",
@@ -71,14 +72,14 @@ describe.runIf(process.env.T3_CLAUDE_LIVE_WORKSPACE_FOLDERS === "1")(
             const harness = yield* makeClaudeWorkspaceFolderHarness({
               runtimePolicy: scope,
               queryRunner: yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
-              environment: process.env,
+              environment: environment,
               settings: decodeClaudeSettings({
                 homePath: configDir,
-                binaryPath: process.env.T3_CLAUDE_LIVE_BINARY ?? "claude",
+                binaryPath: environment.T3_CLAUDE_LIVE_BINARY ?? "claude",
               }),
               modelSelection: {
                 ...workspaceFolderModelSelection,
-                model: process.env.T3_CLAUDE_LIVE_MODEL ?? "claude-sonnet-4-6",
+                model: environment.T3_CLAUDE_LIVE_MODEL ?? "claude-sonnet-4-6",
               },
             });
             const prove = Effect.fnUntraced(function* (
