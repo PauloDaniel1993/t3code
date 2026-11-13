@@ -6,21 +6,44 @@ export type FlowNode = Node<
   { step: FlowStep; errors?: ReadonlyArray<string>; dropTarget?: boolean },
   "step"
 >;
-const CARD = { width: 224, height: 80 };
+// Geometry is in rem, like the cards it sizes, so the layout follows the interface font size.
+export const FLOW_CARD = { width: 14, height: 5 };
 /** Loop and map steps keep their title and summary above their steps. */
-export const CONTAINER_HEADER = 56;
-const PAD = 16;
-const GAP = 32;
-type Rect = { x: number; y: number; width: number; height: number };
+export const CONTAINER_HEADER = 3.5;
+const PAD = 1;
+const GAP = 2;
 /** Closer than this, an edge between two stacked steps has no room for its arrow. */
-const MARGIN = 24;
-const crowds = (a: Rect, b: Rect) =>
-  a.x < b.x + b.width + MARGIN &&
-  b.x < a.x + a.width + MARGIN &&
-  a.y < b.y + b.height + MARGIN &&
-  b.y < a.y + a.height + MARGIN;
+const MARGIN = 1.5;
+type Rect = { x: number; y: number; width: number; height: number };
 
-export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<FlowNode> = []) {
+const geometry = (rem: number) => {
+  const card = { width: FLOW_CARD.width * rem, height: FLOW_CARD.height * rem };
+  const pad = PAD * rem;
+  const top = (CONTAINER_HEADER + PAD) * rem;
+  return {
+    card,
+    pad,
+    top,
+    gap: GAP * rem,
+    margin: MARGIN * rem,
+    frame: (right: number, bottom: number) => ({
+      width: Math.max(card.width + pad * 2, right + pad),
+      height: Math.max(top + card.height + pad, bottom + pad),
+    }),
+  };
+};
+
+export function flowGraph(
+  definition: FlowDefinition,
+  previous: ReadonlyArray<FlowNode> = [],
+  rem = 16,
+) {
+  const { card, pad, top, gap, margin, frame } = geometry(rem);
+  const crowds = (a: Rect, b: Rect) =>
+    a.x < b.x + b.width + margin &&
+    b.x < a.x + a.width + margin &&
+    a.y < b.y + b.height + margin &&
+    b.y < a.y + a.height + margin;
   const nodes: FlowNode[] = [];
   const oldNodes = new Map(previous.map((node) => [node.id, node]));
   const edges: Edge[] = [];
@@ -44,23 +67,23 @@ export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<Fl
     }> = [];
     for (const step of steps) {
       const container = step.kind === "loop" || step.kind === "map";
-      const size = container ? measure(step.steps, true).size : CARD;
+      const size = container ? measure(step.steps, true).size : card;
       const saved = definition.layout?.[step.id];
       const below = measured.length
-        ? Math.max(...measured.map((placed) => placed.position.y + placed.size.height)) + GAP
+        ? Math.max(...measured.map((placed) => placed.position.y + placed.size.height)) + gap
         : nested
-          ? CONTAINER_HEADER
+          ? top
           : 80;
       const rect = saved
         ? nested
-          ? { x: Math.max(PAD, saved.x), y: Math.max(CONTAINER_HEADER, saved.y), ...size }
+          ? { x: Math.max(pad, saved.x), y: Math.max(top, saved.y), ...size }
           : { ...saved, ...size }
-        : { x: nested ? PAD : 200, y: below, ...size };
+        : { x: nested ? pad : 200, y: below, ...size };
       for (let moved = true; moved;) {
         moved = false;
         for (const placed of measured)
           if (crowds(rect, { ...placed.position, ...placed.size })) {
-            rect.y = placed.position.y + placed.size.height + GAP;
+            rect.y = placed.position.y + placed.size.height + gap;
             moved = true;
           }
       }
@@ -68,13 +91,7 @@ export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<Fl
     }
     const right = Math.max(0, ...measured.map(({ position, size }) => position.x + size.width));
     const bottom = Math.max(0, ...measured.map(({ position, size }) => position.y + size.height));
-    return {
-      measured,
-      size: {
-        width: Math.max(CARD.width + PAD * 2, right + PAD),
-        height: Math.max(CONTAINER_HEADER + CARD.height + PAD, bottom + PAD),
-      },
-    };
+    return { measured, size: frame(right, bottom) };
   };
   const visit = (
     steps: ReadonlyArray<FlowStep>,
@@ -129,6 +146,41 @@ export function flowGraph(definition: FlowDefinition, previous: ReadonlyArray<Fl
   };
   visit(definition.steps, definition.edges);
   return { nodes, edges };
+}
+
+/** Applies the layout's frame rules to live positions, so a frame follows a step being dragged. */
+export function fitFrames(nodes: ReadonlyArray<FlowNode>, rem = 16): FlowNode[] {
+  const { card, pad, top, frame } = geometry(rem);
+  const extents = new Map<string, { right: number; bottom: number }>();
+  const result = [...nodes];
+  // Steps follow their frame in the list, so walking backwards sizes inner frames first.
+  for (let index = result.length - 1; index >= 0; index--) {
+    let node = result[index]!;
+    const position = node.parentId
+      ? { x: Math.max(pad, node.position.x), y: Math.max(top, node.position.y) }
+      : node.position;
+    let size = card;
+    if (node.data.step.kind === "loop" || node.data.step.kind === "map") {
+      const extent = extents.get(node.id);
+      size = frame(extent?.right ?? 0, extent?.bottom ?? 0);
+    }
+    if (
+      position.x !== node.position.x ||
+      position.y !== node.position.y ||
+      (size !== card && (node.style?.width !== size.width || node.style?.height !== size.height))
+    ) {
+      node = { ...node, position, ...(size !== card ? { style: { ...node.style, ...size } } : {}) };
+      result[index] = node;
+    }
+    if (node.parentId) {
+      const extent = extents.get(node.parentId);
+      extents.set(node.parentId, {
+        right: Math.max(extent?.right ?? 0, position.x + size.width),
+        bottom: Math.max(extent?.bottom ?? 0, position.y + size.height),
+      });
+    }
+  }
+  return result;
 }
 
 export function findStep(steps: ReadonlyArray<FlowStep>, id: string): FlowStep | undefined {

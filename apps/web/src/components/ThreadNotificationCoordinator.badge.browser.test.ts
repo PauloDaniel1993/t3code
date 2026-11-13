@@ -356,6 +356,47 @@ it.each([false, true])(
   },
 );
 
+it("closes a Windows completion toast on its own and keeps the badge", async () => {
+  await using app = setup();
+  using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+  app.start();
+  using _timers = fakeTimers();
+  state.shells.set(
+    "one",
+    shell({
+      latestTurn: { turnId: "turn", state: "completed", completedAt: "2026-09-13T07:00:01.000Z" },
+    }),
+  );
+  const notification = TestNotification.sent[0]!;
+  expect(notification.options.requireInteraction).toBe(true);
+  vi.advanceTimersByTime(9_999);
+  expect(notification.close).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1);
+  expect(notification.close).toHaveBeenCalledOnce();
+  expect(state.badge).toHaveBeenLastCalledWith(1);
+});
+
+it("gives each desktop notification its own tag and closes the thread's older one", async () => {
+  await using app = setup();
+  using _bridge = stubGlobal("desktopBridge", {
+    onNotificationBadgeClear: () => () => undefined,
+    revealWindow: async () => undefined,
+  });
+  app.start();
+  state.shells.set("one", shell({ hasPendingApprovals: true }));
+  state.shells.set(
+    "one",
+    shell({
+      latestTurn: { turnId: "turn", state: "completed", completedAt: "2026-09-13T07:00:01.000Z" },
+    }),
+  );
+  const [asking, completed] = TestNotification.sent;
+  expect(completed?.title).toBe("Thread completed");
+  expect(completed?.tag).not.toBe(asking?.tag);
+  expect(asking?.close).toHaveBeenCalledOnce();
+  expect(state.badge).toHaveBeenLastCalledWith(1);
+});
+
 it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
   "notifies for offline completion and %s once across reconnects",
   async (flag) => {

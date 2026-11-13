@@ -27,16 +27,20 @@ import type {
   FlowStepRunStatus,
 } from "@t3tools/contracts";
 import { flowStepStatusById, flowStepCountsById } from "@t3tools/client-runtime/flows";
+import { clampInterfaceFontSize } from "../../appearanceFonts";
+import { useClientSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { Button } from "../ui/button";
 import {
   CONTAINER_HEADER,
+  FLOW_CARD,
   conditionLabel,
   stepIdAtPath,
   flowGraph,
   dropTarget,
   editLevel,
   findStep,
+  fitFrames,
   newStep,
   type FlowNode,
 } from "./flowGraph";
@@ -128,7 +132,7 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
         "h-full rounded-xl border text-xs text-card-foreground shadow-xs",
         container
           ? "flex min-h-full flex-col border-foreground/15 bg-muted/30 dark:bg-muted/15"
-          : "h-20 w-56 bg-card px-3 py-2",
+          : "bg-card px-3 py-2",
         data.dropTarget && "ring-2 ring-primary/40",
         selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
         (status === "skipped" || status === "cancelled") && "opacity-60",
@@ -138,13 +142,16 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
         (status === "running" || status === "waiting_report") && "border-primary",
         status === "waiting_approval" && "border-warning",
       )}
+      style={
+        container ? undefined : { width: `${FLOW_CARD.width}rem`, height: `${FLOW_CARD.height}rem` }
+      }
     >
       <Handle type="target" position={Position.Top} />
       {container ? (
         <>
           <div
             className="flex shrink-0 flex-col justify-center rounded-t-xl border-b border-foreground/10 bg-card/60 px-3"
-            style={{ height: CONTAINER_HEADER }}
+            style={{ height: `${CONTAINER_HEADER}rem` }}
           >
             {title}
             {status ? runStatus : summary}
@@ -212,14 +219,16 @@ function Canvas({
   const { screenToFlowPosition, setCenter, getViewport } = useReactFlow();
   const wrapper = useRef<HTMLDivElement>(null);
   const [dropParent, setDropParent] = useState<string | null>(null);
+  const rem = useClientSettings((settings) => clampInterfaceFontSize(settings.fontSizeInterface));
   const [graphState, setGraphState] = useState(() => ({
     definition,
-    graph: flowGraph(definition),
+    rem,
+    graph: flowGraph(definition, [], rem),
   }));
   let graph = graphState.graph;
-  if (definition !== graphState.definition) {
-    graph = flowGraph(definition, graph.nodes);
-    setGraphState({ definition, graph });
+  if (definition !== graphState.definition || rem !== graphState.rem) {
+    graph = flowGraph(definition, graph.nodes, rem);
+    setGraphState({ definition, rem, graph });
   }
   const nodes = graph.nodes.map((node) => {
     const selected = selectedId === node.id;
@@ -240,7 +249,7 @@ function Canvas({
   });
   if (nodes.some((node, i) => node !== graph.nodes[i])) {
     graph = { ...graph, nodes };
-    setGraphState({ definition, graph });
+    setGraphState({ definition, rem, graph });
   }
   const selectedNode = graph.nodes.find((node) => node.id === selectedId);
   let selectedX = selectedNode?.position.x;
@@ -259,14 +268,18 @@ function Canvas({
     const left = selectedX * zoom + x;
     const top = selectedY * zoom + y;
     const { clientWidth, clientHeight } = wrapper.current;
+    const width = FLOW_CARD.width * rem;
+    const height = FLOW_CARD.height * rem;
     if (
       left >= 0 &&
       top >= 0 &&
-      left + 224 * zoom <= clientWidth &&
-      top + 80 * zoom <= clientHeight * 0.55
+      left + width * zoom <= clientWidth &&
+      top + height * zoom <= clientHeight * 0.55
     )
       return;
-    void setCenter(selectedX + 112, selectedY + 40 + (clientHeight * 0.22) / zoom, { zoom });
+    void setCenter(selectedX + width / 2, selectedY + height / 2 + (clientHeight * 0.22) / zoom, {
+      zoom,
+    });
   };
   // Grabbing a step selects it on pointer down; panning then would fling the dragged step away.
   const pointerSelection = useRef<string | null>(null);
@@ -289,7 +302,7 @@ function Canvas({
   );
   if (edges.some((edge, i) => edge !== graph.edges[i])) {
     graph = { ...graph, edges };
-    setGraphState({ definition, graph });
+    setGraphState({ definition, rem, graph });
   }
   const [runState, setRunState] = useState(() => ({
     snapshot,
@@ -309,6 +322,11 @@ function Canvas({
     };
     setRunState(currentRun);
   }
+  // Half a rem, relative to the parent frame: every position the layout itself picks is on it.
+  const snap = ({ x, y }: { x: number; y: number }) => ({
+    x: (Math.round((x * 2) / rem) * rem) / 2,
+    y: (Math.round((y * 2) / rem) * rem) / 2,
+  });
   const add = (
     kind: FlowStep["kind"],
     position?: { x: number; y: number },
@@ -322,7 +340,7 @@ function Canvas({
       ...level,
       steps: [...level.steps, step],
     }));
-    onChange(position ? { ...next, layout: { ...next.layout, [step.id]: position } } : next);
+    onChange(position ? { ...next, layout: { ...next.layout, [step.id]: snap(position) } } : next);
     onSelectStep(step.id);
   };
   // Small flows otherwise zoom past 1:1; the left inset keeps the palette off the first step.
@@ -394,14 +412,18 @@ function Canvas({
                 pointerSelection.current = selected.id;
                 onSelectStep(selected.id);
               }
-              const nextNodes = applyNodeChanges(changes, graph.nodes);
-              setGraphState({ definition, graph: { ...graph, nodes: nextNodes } });
+              const applied = applyNodeChanges(changes, graph.nodes);
+              const nextNodes = changes.some((change) => change.type === "position")
+                ? fitFrames(applied, rem)
+                : applied;
+              setGraphState({ definition, rem, graph: { ...graph, nodes: nextNodes } });
               if (locked) return;
               const layout = { ...definition.layout };
               let changed = false;
               for (const change of changes)
                 if (change.type === "position" && change.position && change.dragging !== true) {
-                  layout[change.id] = change.position;
+                  const fitted = nextNodes.find((node) => node.id === change.id);
+                  layout[change.id] = snap(fitted?.position ?? change.position);
                   changed = true;
                 }
               if (changed) onChange({ ...definition, layout });
