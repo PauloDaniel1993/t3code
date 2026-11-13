@@ -42,7 +42,7 @@ export function createSidebarTaskGrouper() {
     const nativeParentKeys = new Set<string>();
     const nativeGrouped = new Map<string, Thread[]>();
     let parents: Map<Thread["environmentId"], Map<Thread["id"], Thread>> | undefined;
-    const findParent = (thread: Thread, parentId: Thread["id"]) => {
+    const findParent = (environmentId: Thread["environmentId"], parentId: Thread["id"]) => {
       if (parents === undefined) {
         parents = new Map();
         for (const candidate of input.threads) {
@@ -53,12 +53,49 @@ export function createSidebarTaskGrouper() {
           environment.set(candidate.id, candidate);
         }
       }
-      return parents.get(thread.environmentId)?.get(parentId);
+      return parents.get(environmentId)?.get(parentId);
+    };
+    // Flatten to the nearest displayed ancestor, as V2 can delegate below a task.
+    const displayedAncestor = (thread: Thread, start: Thread | undefined) => {
+      let parent = start;
+      const seen = new Set([thread.id]);
+      while (parent !== undefined && isSidebarTaskThread(parent) && input.supportsTasks(parent)) {
+        if (seen.has(parent.id)) return undefined;
+        seen.add(parent.id);
+        const ancestorId = parent.lineage.parentThreadId;
+        parent = ancestorId === null ? undefined : findParent(parent.environmentId, ancestorId);
+      }
+      return parent;
+    };
+    const addTask = (parent: Thread, thread: Thread) => {
+      const key = scopedThreadKey({ environmentId: parent.environmentId, threadId: parent.id });
+      const group = grouped.get(key);
+      if (group === undefined) grouped.set(key, [thread]);
+      else group.push(thread);
     };
     for (const thread of input.threads) {
+      if (thread.archivedAt !== null || thread.deletedAt !== null) continue;
+      // A task a linked environment runs for a thread here joins that thread's group,
+      // which the parent's project filter scopes.
+      const delegatedFrom = thread.delegatedFrom;
+      if (delegatedFrom != null && thread.lineage.parentThreadId === null) {
+        const parent =
+          input.enabled === false
+            ? undefined
+            : displayedAncestor(
+                thread,
+                findParent(delegatedFrom.environmentId, delegatedFrom.threadId),
+              );
+        if (parent !== undefined && input.supportsTasks(parent)) {
+          if (
+            input.scopedProjectKeys === null ||
+            input.scopedProjectKeys.has(`${parent.environmentId}:${parent.projectId}`)
+          )
+            addTask(parent, thread);
+          continue;
+        }
+      }
       if (
-        thread.archivedAt !== null ||
-        thread.deletedAt !== null ||
         thread.lineage.sideChat === true ||
         (input.scopedProjectKeys !== null &&
           !input.scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`))
@@ -87,19 +124,7 @@ export function createSidebarTaskGrouper() {
         continue;
       }
       if (isSidebarTaskThread(thread) && input.supportsTasks(thread) && parentId !== null) {
-        let parent = findParent(thread, parentId);
-        // V2 can delegate below a task. Flatten that lineage to the nearest
-        // displayed ancestor rather than creating a third level or losing work.
-        const seen = new Set([thread.id]);
-        while (parent !== undefined && isSidebarTaskThread(parent) && input.supportsTasks(parent)) {
-          if (seen.has(parent.id)) {
-            parent = undefined;
-            break;
-          }
-          seen.add(parent.id);
-          const ancestorId = parent.lineage.parentThreadId;
-          parent = ancestorId === null ? undefined : findParent(thread, ancestorId);
-        }
+        const parent = displayedAncestor(thread, findParent(thread.environmentId, parentId));
         // Older servers may retain children after parent removal. Only their
         // surviving work belongs at top level, within the project filter.
         if (parent === undefined) {
@@ -107,10 +132,7 @@ export function createSidebarTaskGrouper() {
             topLevel.push(thread);
           continue;
         }
-        const key = scopedThreadKey({ environmentId: thread.environmentId, threadId: parent.id });
-        const group = grouped.get(key);
-        if (group === undefined) grouped.set(key, [thread]);
-        else group.push(thread);
+        addTask(parent, thread);
       } else topLevel.push(thread);
     }
     const tasksByParent = new Map<string, ReadonlyArray<Thread>>();

@@ -255,6 +255,52 @@ describe("sidebar delegated task grouping", () => {
     });
     expect(scoped.tasksByParent.get("local:parent")).toEqual([local]);
   });
+  it("groups a task a linked environment runs under the delegating thread, scoped by its project", () => {
+    const parent = thread("parent");
+    const localTask = child("local-task");
+    const delegatedFrom = {
+      environmentId: parent.environmentId,
+      threadId: localTask.id,
+      title: "Local task",
+    };
+    const worker = EnvironmentId.make("worker");
+    const remote = thread("remote-task", {
+      environmentId: worker,
+      projectId: ProjectId.make("worker-project"),
+      delegatedFrom,
+    });
+    const orphan = thread("orphan", {
+      environmentId: worker,
+      delegatedFrom: { ...delegatedFrom, threadId: ThreadId.make("missing") },
+    });
+    const group = createSidebarTaskGrouper();
+    const all = group({
+      threads: [parent, localTask, remote, orphan],
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+    });
+    expect(all.tasksByParent.get("local:parent")?.map((row) => row.id)).toEqual([
+      "local-task",
+      "remote-task",
+    ]);
+    expect(all.topLevel.map((row) => row.id)).toEqual(["parent", "orphan"]);
+    const scoped = group({
+      threads: [parent, localTask, remote],
+      scopedProjectKeys: new Set([`local:${parent.projectId}`]),
+      supportsTasks: () => true,
+    });
+    expect(scoped.tasksByParent.get("local:parent")?.map((row) => row.id)).toEqual([
+      "local-task",
+      "remote-task",
+    ]);
+    const disabled = group({
+      threads: [parent, remote],
+      scopedProjectKeys: null,
+      supportsTasks: () => true,
+      enabled: false,
+    });
+    expect(disabled.topLevel.map((row) => row.id)).toEqual(["parent", "remote-task"]);
+  });
   it("orders every visible task newest first with no cap and keeps unchanged arrays stable", () => {
     const rows = Array.from({ length: 45 }, (_, index) =>
       child(`task-${index}`, { createdAt: `2026-09-29T00:00:${String(index).padStart(2, "0")}Z` }),
