@@ -2,6 +2,7 @@ import {
   createSidebarTaskGrouper,
   isSidebarTaskThread,
 } from "@t3tools/client-runtime/state/sidebar-task-subthreads";
+import { threadKey as delegatedThreadKey } from "@t3tools/client-runtime/state/entities";
 import { threadPrimaryPath } from "@t3tools/shared/workspaceFolders";
 import { EMPTY_SIDEBAR_TASKS } from "./SidebarTaskGroup";
 import { closeSidebarTaskPeek, SidebarTaskPeek } from "./SidebarTaskPeek";
@@ -652,7 +653,12 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = input.visibleThreads
-    ? input.visibleThreads.filter((thread) => !delegatedUnderParent.has(threadShellKey(thread)))
+    ? input.visibleThreads.filter(
+        (thread) =>
+          !delegatedUnderParent.has(
+            delegatedThreadKey({ environmentId: thread.environmentId, threadId: thread.id }),
+          ),
+      )
     : filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
