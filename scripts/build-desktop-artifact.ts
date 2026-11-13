@@ -1074,6 +1074,8 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
 }
 
 export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
+// The limit keeps NSIS installs fast. Local-identity builds are copied as a folder, and the fork's server splits into more cached chunks.
+const LOCAL_IDENTITY_WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 110;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
@@ -4138,6 +4140,9 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         runtimeArchivePath: options.wslRuntime,
       }),
       verbose: options.verbose,
+      ...(options.localIdentity
+        ? { fileLimit: LOCAL_IDENTITY_WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT }
+        : {}),
     });
   }
   // The probe runs on the host Node, so a cross-arch build skips it.
