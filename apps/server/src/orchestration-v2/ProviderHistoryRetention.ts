@@ -34,8 +34,11 @@ export function retainProviderHistoryGraph(
     if (active(request.status) && request.nodeId !== null) nodeIds.add(request.nodeId);
   for (const turn of projection.providerTurns)
     if (active(turn.status) && turn.nodeId !== null) nodeIds.add(turn.nodeId);
+  const activeRunIds = new Set(
+    projection.runs.filter((run) => active(run.status)).map((run) => run.id),
+  );
   for (const subagent of projection.subagents)
-    if (active(subagent.status)) {
+    if (active(subagent.status) || (subagent.runId !== null && activeRunIds.has(subagent.runId))) {
       nodeIds.add(subagent.id);
       nodeIds.add(subagent.parentNodeId);
     }
