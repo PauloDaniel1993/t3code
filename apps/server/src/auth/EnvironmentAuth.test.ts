@@ -205,6 +205,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
 
         expect(exchanged.access_token).not.toBe(token);
         expect(exchanged.scope).toBe("orchestration:read");
+        expect(exchanged.expires_in).toBe(30 * 24 * 60 * 60);
+        const issuedAt = (yield* DateTime.now).epochMilliseconds;
         const dpop = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
           token,
           ["orchestration:read"],
@@ -215,14 +217,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         expect(dpop.access_token).not.toBe(exchanged.access_token);
         expect(dpop.token_type).toBe("DPoP");
         expect(dpop.scope).toBe("orchestration:read");
-        expect(dpop.expires_in).toBeGreaterThanOrEqual(7 * 24 * 60 * 60 - 1);
-        expect(dpop.expires_in).toBeLessThanOrEqual(7 * 24 * 60 * 60);
+        const renewalError = yield* serverAuth
+          .renewAccessToken(
+            dpop.access_token,
+            "test-proof-key",
+            Effect.die("Nonrenewable credentials cannot consume a proof."),
+          )
+          .pipe(Effect.flip);
+        expect(renewalError._tag).toBe("ServerAuthInvalidCredentialError");
+
+        yield* TestClock.adjust("61 minutes");
         expect(yield* sessions.verify(dpop.access_token)).toMatchObject({
           method: "dpop-access-token",
           proofKeyThumbprint: "test-proof-key",
           scopes: ["orchestration:read"],
           subject: "reusable-dev-token-child",
         });
+        expect(dpop.expires_in).toBe(7 * 24 * 60 * 60);
         const bearerError = yield* serverAuth
           .authenticateHttpRequest(makeBearerRequest(dpop.access_token))
           .pipe(Effect.flip);
@@ -255,6 +266,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
           .pipe(Effect.flip);
         expect(empty._tag).toBe("ServerAuthScopeNotGrantedError");
         expect(yield* serverAuth.listClientSessions(firstSession.sessionId)).toEqual(before);
+
+        yield* TestClock.setTime(issuedAt + 7 * 24 * 60 * 60 * 1000);
+        const expired = yield* sessions.verify(dpop.access_token).pipe(Effect.flip);
+        expect(expired._tag).toBe("SessionTokenExpiredError");
       }).pipe(
         Effect.provide(
           layerEnvironmentAuth({
@@ -525,6 +540,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
           requestMetadata,
           { proofKeyThumbprint: key.thumbprint },
         );
+        expect(connected.expires_in).toBe(60 * 60);
         expect(yield* refused(connected.access_token, key.thumbprint)).toBe(
           "ServerAuthInvalidCredentialError",
         );

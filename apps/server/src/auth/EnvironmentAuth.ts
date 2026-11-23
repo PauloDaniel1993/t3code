@@ -91,7 +91,9 @@ const PEER_LINK_RENEWAL_STEP = Duration.days(1);
 
 // A device pairing with its DPoP key renews the session itself, so the token can be short and
 // the device stays signed in while used. One idle for the whole window pairs again.
-const RENEWABLE_ACCESS_TOKEN_TTL = Duration.hours(1);
+const DPOP_ACCESS_TOKEN_TTL = Duration.hours(1);
+// The reusable dev child cannot self-renew. See openspec/changes/add-oauth-refresh-token.
+const REUSABLE_DEV_DPOP_ACCESS_TOKEN_TTL = Duration.days(7);
 const RENEWABLE_SESSION_WINDOW = Duration.days(30);
 const PAIRING_LINK_SUBJECT = "one-time-token";
 
@@ -1090,7 +1092,7 @@ export const make = Effect.gen(function* () {
     const session = yield* sessions
       .renew(accessToken, {
         proofKeyThumbprint,
-        ttl: RENEWABLE_ACCESS_TOKEN_TTL,
+        ttl: DPOP_ACCESS_TOKEN_TTL,
         renewalWindow: RENEWABLE_SESSION_WINDOW,
         consumeProof,
       })
@@ -1143,7 +1145,10 @@ export const make = Effect.gen(function* () {
                 ...(input?.proofKeyThumbprint
                   ? {
                       proofKeyThumbprint: input.proofKeyThumbprint,
-                      ttl: renewable ? RENEWABLE_ACCESS_TOKEN_TTL : Duration.hours(1),
+                      ttl:
+                        grant.method === "reusable-dev-token"
+                          ? REUSABLE_DEV_DPOP_ACCESS_TOKEN_TTL
+                          : DPOP_ACCESS_TOKEN_TTL,
                     }
                   : {}),
                 ...(renewable ? { renewalWindow: RENEWABLE_SESSION_WINDOW } : {}),

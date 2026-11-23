@@ -1,3 +1,10 @@
+## Current behavior
+
+Plain pairing DPoP sessions renew in place through access-token exchange. The same proof key is
+required and the session remains subject to revocation and a 30-day idle window. DPoP tokens
+issued from the reusable dev credential have a fixed seven-day lifetime. The refresh-token
+requirements below describe the proposed flow.
+
 ## ADDED Requirements
 
 ### Requirement: A DPoP access token is issued with a refresh token

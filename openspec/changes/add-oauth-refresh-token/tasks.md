@@ -32,7 +32,7 @@
 
 ## 5. Remove the stopgap
 
-- [ ] 5.1 Restore the DPoP access-token TTL to a short lifetime
+- [ ] 5.1 Restore the reusable dev DPoP access-token lifetime to one hour once renewal works
 - [ ] 5.2 Remove the stopgap comment in `EnvironmentAuth.ts` pointing at this change
 - [ ] 5.3 Verify a long-running MCP client survives well past the access-token lifetime without a
       human

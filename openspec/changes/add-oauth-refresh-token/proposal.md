@@ -1,32 +1,21 @@
-> **Priority: 1 (highest).** Accepted in principle, to be refined before implementation. A stopgap
-> shipped separately raises the DPoP access-token lifetime so the interruptions stop today; that
-> stopgap is what this change removes.
+> **Priority: 1 (highest).** Accepted in principle, to be refined before implementation. A
+> seven-day stopgap applies to DPoP access tokens exchanged from the reusable dev credential.
 
 ## Why
 
-A DPoP-bound access token is issued with a one-hour lifetime, and nothing can renew it:
+An unattended MCP client using an environment access token can lose access when the token expires.
+Reconnecting with the same nonrenewable credential still fails. The fork originally raised the
+DPoP token lifetime from one hour to seven days to reduce these interruptions.
 
-```ts
-// apps/server/src/auth/EnvironmentAuth.ts
-...(input?.proofKeyThumbprint
-  ? { proofKeyThumbprint: input.proofKeyThumbprint, ttl: Duration.hours(1) }
-  : {}),
-```
+Plain pairing links now issue one-hour DPoP tokens with a 30-day idle renewal window. The client
+uses its access token and the matching proof key in a token exchange at `/oauth/token`. The reusable
+dev exchange still issues a fixed-lifetime child token. A client holding only that child token
+cannot self-renew and needs the reusable dev credential again when the token expires. Its
+seven-day lifetime reduces interruptions at the cost of a longer validity window for a
+compromised token and proof key.
 
-`grep -rn "refresh_token\|refreshToken" apps/server/src/auth/` returns nothing. The token response
-carries `access_token`, `token_type`, `expires_in` and `scope`, and `/oauth/token` has no
-`grant_type=refresh_token` branch. So when the hour is up a client's only recovery is the full
-pairing flow, which needs a human at the keyboard.
-
-The observed cost is an MCP client that dies roughly hourly with
-`requires re-authorization (token expired)`. Reconnecting does not help: the transport reopens
-against a credential that is already dead. In a headless or long-running session there is no human
-to re-pair, so the capability is simply lost for the rest of the run.
-
-The shape of the bug is worth stating plainly: the same endpoint gives a plain bearer token
-`DEFAULT_SESSION_TTL` — thirty days — while the DPoP-bound token, which is the _more_ secure of the
-two because it is proof-of-possession, gets one hour. The stricter mechanism ends up the less usable
-one. That asymmetry reads like a short TTL chosen with a refresh flow in mind that was never built.
+The environment token exchange has no `refresh_token` grant and issues no refresh token. The
+separate MCP authorization-code flow issues a bearer token.
 
 ## What Changes
 
@@ -37,7 +26,7 @@ one. That asymmetry reads like a short TTL chosen with a refresh flow in mind th
   DPoP; the defect is the missing renewal, not the hour.
 - Revoke a refresh token's whole lineage when a rotated token is replayed, so a stolen token is
   detectable rather than silently useful.
-- Restore the DPoP access-token TTL to a short value once refresh works, undoing the stopgap.
+- Restore the reusable dev DPoP access-token lifetime to one hour once its clients can renew.
 
 ## Non-goals
 
