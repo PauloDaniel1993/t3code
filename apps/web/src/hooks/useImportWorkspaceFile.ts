@@ -1,3 +1,5 @@
+import { msg } from "gt-react";
+import { m } from "../i18n/messages";
 import { ProjectMutationError, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import {
@@ -17,9 +19,13 @@ const isProjectMutationError = Schema.is(ProjectMutationError);
 export function workspaceFileErrorMessage(error: unknown): string {
   if (isProjectMutationError(error) && error.diagnostic) {
     const diagnostic = error.diagnostic;
-    return `${diagnostic.message}${diagnostic.line === undefined ? "" : ` (line ${diagnostic.line}${diagnostic.column === undefined ? "" : `, column ${diagnostic.column}`})`}`;
+    if (diagnostic.line === undefined) return diagnostic.message;
+    const { message, line, column } = diagnostic;
+    return column === undefined
+      ? m(msg("{message} (line {line})", { message, line }))
+      : m(msg("{message} (line {line}, column {column})", { message, line, column }));
   }
-  return error instanceof Error ? error.message : "Could not use the workspace file.";
+  return error instanceof Error ? error.message : m(msg("Could not use the workspace file."));
 }
 
 export function useImportWorkspaceFile() {
@@ -48,8 +54,8 @@ export function useImportWorkspaceFile() {
     const project = await waitForProject(scopeProjectRef(environmentId, projectId)).catch(() => {
       toastManager.add({
         type: "info",
-        title: "The project is ready on the environment",
-        description: "It will appear in the sidebar once this client catches up.",
+        title: m(msg("The project is ready on the environment")),
+        description: m(msg("It will appear in the sidebar once this client catches up.")),
       });
       return null;
     });
@@ -60,7 +66,11 @@ export function useImportWorkspaceFile() {
     for (const overlapping of listProjectFolderOverlaps(others, project)) {
       toastManager.add({
         type: "info",
-        title: `This folder is also used by ${overlapping.projects.map((candidate) => candidate.title).join(", ")}`,
+        title: m(
+          msg("This folder is also used by {projects}", {
+            projects: overlapping.projects.map((candidate) => candidate.title).join(", "),
+          }),
+        ),
         description: overlapping.path,
       });
     }

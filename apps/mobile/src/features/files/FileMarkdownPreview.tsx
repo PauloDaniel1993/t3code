@@ -8,9 +8,17 @@ import type {
 import { resolveMobileMarkdownMediaSource } from "../../lib/markdownMediaSource";
 import { getBrowseDirectoryPath } from "@t3tools/client-runtime/state/projects";
 import { maskMarkdownFrontmatter } from "@t3tools/shared/markdownFrontmatter";
+import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
+import { LegendList } from "@legendapp/list/react-native";
+import {
+  LARGE_MARKDOWN_CHUNK_MAX_CHARS,
+  splitMarkdown,
+  withMarkdownDefinitions,
+} from "@t3tools/shared/markdownChunks";
+import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { RefreshControl } from "../../components/ui/RefreshControl";
 
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
@@ -39,11 +47,11 @@ import {
   type NativeMarkdownTextStyle,
 } from "../../native/SelectableMarkdownText";
 import { fileRoutePathSegments, resolveWorkspaceFilePath } from "./filePath";
-import { parseMarkdownFileLink } from "@t3tools/shared/markdownLinks";
 import {
   workspaceMarkdownResource,
   workspaceRelativeMarkdownPath,
 } from "../../lib/workspaceMarkdownResource";
+import { SourceFileSurface } from "./SourceFileSurface";
 
 interface MarkdownPreviewStyles {
   readonly nativeTextStyle: NativeMarkdownTextStyle;
@@ -98,6 +106,7 @@ export function FileMarkdownPreview(props: {
   readonly onRefresh?: () => Promise<void> | void;
 }) {
   const navigation = useNavigation();
+  const gt = useGT();
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [expandedFile, setExpandedFile] = useState<FilePreviewSource | null>(null);
   const [expandedVideo, setExpandedVideo] = useState<VideoPreviewSource | null>(null);
@@ -138,11 +147,11 @@ export function FileMarkdownPreview(props: {
       (!props.captured && fileLink.kind === "file" && fileLink.line !== undefined)
     ) {
       const name =
-        preview?.source.name ?? (fileLink.kind === "file" ? fileLink.label : "Open file");
+        preview?.source.name ?? (fileLink.kind === "file" ? fileLink.label : gt("Open file"));
       return (
         <Text
           accessibilityRole="link"
-          accessibilityLabel={`Open ${name}`}
+          accessibilityLabel={gt("Open {name}", { name })}
           onPress={() => openMedia(image.href, true)}
           style={{ color: styles.nativeTextStyle.linkColor }}
         >
@@ -219,101 +228,125 @@ export function FileMarkdownPreview(props: {
       captured: props.captured,
       imageEmbed,
     });
-    if (!media || media.kind === "file") {
-      const fileLink = resolveMarkdownLinkPresentation(href);
-      if (props.captured || fileLink.kind !== "file") return false;
-      const params = {
-        environmentId: String(props.environmentId),
-        path: fileRoutePathSegments(resolveWorkspaceFilePath(markdownDirectory, fileLink.path)),
-        ...(fileLink.line ? { line: String(fileLink.line) } : {}),
-      };
-      if (props.threadId) {
-        navigation.navigate("ThreadFile", { ...params, threadId: String(props.threadId) });
-      } else {
-        navigation.dispatch(StackActions.push("NewTaskFile", { ...params, cwd: props.cwd }));
-      }
-      return true;
-    }
+    if (media === null || media.kind === "file") return false;
     if (media.kind === "video") setExpandedVideo(media.source);
     else setExpandedFile(media.source);
     return true;
   };
+  const openLink = (href: string, imageEmbed = false) => {
+    if (openMedia(href, imageEmbed)) return true;
+    const fileLink = resolveMarkdownLinkPresentation(href);
+    if (props.captured || fileLink.kind !== "file") return false;
+    const resource = workspaceMarkdownResource(
+      props.scope ?? null,
+      props.folders ?? [],
+      href,
+      props.relativePath,
+    );
+    if (props.scope && workspaceRelativeMarkdownPath(href) !== null && resource === null)
+      return true;
+    const params = {
+      environmentId: String(props.environmentId),
+      path: fileRoutePathSegments(
+        resource?.path ?? resolveWorkspaceFilePath(markdownDirectory, fileLink.path),
+      ),
+      ...(resource ? { folderPath: resource.scope.folderPath } : {}),
+      ...(fileLink.line ? { line: String(fileLink.line) } : {}),
+    };
+    if (props.threadId !== null) {
+      navigation.navigate("ThreadFile", { ...params, threadId: String(props.threadId) });
+    } else {
+      navigation.dispatch(
+        StackActions.push("NewTaskFile", {
+          ...params,
+          ...(props.scope ? { projectId: String(props.scope.projectId) } : {}),
+          cwd: props.cwd,
+        }),
+      );
+    }
+    return true;
+  };
   const onImagePress = (href: string) => {
-    openMedia(href, true);
+    openLink(href, true);
   };
   const onLinkPress = (href: string) => {
-    if (openMedia(href)) return;
-    if (!props.captured && resolveMarkdownLinkPresentation(href).kind === "file") {
-      const resource = workspaceMarkdownResource(
-        props.scope ?? null,
-        props.folders ?? [],
-        href,
-        props.relativePath,
-      );
-      if (resource !== null) {
-        const line = parseMarkdownFileLink(href)?.line;
-        const params = {
-          environmentId: String(props.environmentId),
-          path: fileRoutePathSegments(resource.path),
-          folderPath: resource.scope.folderPath,
-          ...(line ? { line: String(line) } : {}),
-        };
-        if (props.threadId === null) {
-          navigation.dispatch(
-            StackActions.push("NewTaskFile", {
-              ...params,
-              projectId: String(resource.scope.projectId),
-              cwd: props.cwd,
-            }),
-          );
-        } else {
-          navigation.navigate("ThreadFile", { ...params, threadId: String(props.threadId) });
-        }
-        return;
-      }
-      if (props.scope && workspaceRelativeMarkdownPath(href) !== null) return;
-    }
-    void tryOpenExternalUrl(href, "markdown-link");
+    if (!openLink(href)) void tryOpenExternalUrl(href, "markdown-link");
   };
 
-  return (
-    <ScrollView
-      className="flex-1 bg-sheet"
-      contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ padding: 18 }}
-      refreshControl={
-        props.onRefresh ? (
-          <RefreshControl
-            refreshing={isPullRefreshing}
-            onRefresh={() => void handlePullToRefresh()}
-          />
-        ) : undefined
+  const refreshControl = props.onRefresh ? (
+    <RefreshControl refreshing={isPullRefreshing} onRefresh={() => void handlePullToRefresh()} />
+  ) : undefined;
+  const renderMarkdown = (markdown: string) => (
+    <SelectableMarkdownText
+      markdown={markdown}
+      fileEmbedLabel={(href) =>
+        markdownFileEmbedLabel(
+          href,
+          {
+            environmentId: props.environmentId,
+            threadId: props.threadId ?? undefined,
+            workspaceRoot: markdownDirectory,
+            scope: props.scope ?? null,
+            folders: props.folders ?? [],
+            documentPath: props.relativePath,
+            captured: props.captured,
+          },
+          false,
+        )
       }
-    >
-      <View className="mx-auto w-full max-w-[760px]">
-        <SelectableMarkdownText
-          markdown={maskMarkdownFrontmatter(props.markdown)}
-          fileEmbedLabel={(href) =>
-            markdownFileEmbedLabel(
-              href,
-              {
-                environmentId: props.environmentId,
-                threadId: props.threadId ?? undefined,
-                workspaceRoot: markdownDirectory,
-                captured: props.captured,
-              },
-              false,
-            )
-          }
-          onLinkPress={onLinkPress}
-          renderImage={renderImage}
-          resolveImageSource={resolveImageSource}
-          onImagePress={onImagePress}
-          textStyle={styles.nativeTextStyle}
-        />
-        <FilePreviewModal source={expandedFile} onRequestClose={() => setExpandedFile(null)} />
-        <VideoPreviewModal source={expandedVideo} onRequestClose={() => setExpandedVideo(null)} />
-      </View>
-    </ScrollView>
+      onLinkPress={onLinkPress}
+      renderImage={renderImage}
+      resolveImageSource={resolveImageSource}
+      onImagePress={onImagePress}
+      textStyle={styles.nativeTextStyle}
+    />
   );
+  const modals = (
+    <>
+      <FilePreviewModal source={expandedFile} onRequestClose={() => setExpandedFile(null)} />
+      <VideoPreviewModal source={expandedVideo} onRequestClose={() => setExpandedVideo(null)} />
+    </>
+  );
+  const markdown = maskMarkdownFrontmatter(props.markdown);
+
+  // Only chunks near the viewport mount, so only they pay for the JS rewrites and native parse.
+  const { chunks, definitions } = splitMarkdown(markdown);
+  if (chunks.some((chunk) => chunk.text.length > LARGE_MARKDOWN_CHUNK_MAX_CHARS)) {
+    return (
+      <SourceFileSurface
+        contents={props.markdown}
+        path={props.relativePath}
+        onRefresh={props.onRefresh}
+      />
+    );
+  }
+  return (
+    <View className="flex-1 bg-sheet">
+      <LegendList
+        renderScrollComponent={NativeScrollView}
+        contentInsetAdjustmentBehavior="automatic"
+        refreshControl={refreshControl}
+        data={chunks}
+        keyExtractor={(_chunk, index) => String(index)}
+        estimatedItemSize={
+          (styles.nativeTextStyle.lineHeight *
+            chunks.reduce((lines, chunk) => lines + chunk.lines, 0)) /
+          chunks.length
+        }
+        recycleItems={false}
+        contentContainerStyle={{ paddingHorizontal: 18, paddingVertical: 18 }}
+        ItemSeparatorComponent={ChunkSeparator}
+        renderItem={({ item }) => (
+          <View className="mx-auto w-full max-w-[760px]">
+            {renderMarkdown(withMarkdownDefinitions(item.text, definitions))}
+          </View>
+        )}
+      />
+      {modals}
+    </View>
+  );
+}
+
+function ChunkSeparator() {
+  return <View className="h-5" />;
 }

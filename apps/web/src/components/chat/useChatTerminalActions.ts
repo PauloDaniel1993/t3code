@@ -1,5 +1,12 @@
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
+import {
+  projectScriptCwd,
+  projectScriptRuntimeEnv,
+  projectScriptTerminalInput,
+} from "@t3tools/shared/projectScripts";
+import { msg } from "gt-react";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { m } from "~/i18n/messages";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -9,7 +16,7 @@ import type { ComposerHandleRef } from "../../composerHandleContext";
 import type { selectThreadTerminalUiState } from "../../terminalUiStateStore";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { useThreadTerminalActions } from "../terminal/useThreadTerminalActions";
-import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
+import { getTerminalLabel } from "@t3tools/shared/terminalLabelsCopy";
 import {
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
@@ -18,7 +25,6 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
-import { projectScriptTerminalInput } from "@t3tools/shared/projectScripts";
 import { type SetStateAction } from "react";
 import {
   isAtomCommandInterrupted,
@@ -35,6 +41,8 @@ import { isPreviewAvailableFor } from "../../browser/previewRuntime";
 import { resolveDiscoveredServerUrl } from "../../browser/browserTargetResolver";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { confirmTerminalClose } from "../../lib/terminalCloseConfirm";
+import { findReusableProjectScriptTerminal } from "../../lib/projectScriptTerminal";
+import { closingTerminalIds } from "../terminal/closingTerminals";
 import { type TerminalContextSelection } from "../../lib/terminalContext";
 import {
   focusActiveDrawerTerminal,
@@ -85,7 +93,7 @@ interface ChatTerminalActionsInput {
 
 /**
  * The thread's terminals: the drawer's and the right panel's, and project scripts and chat
- * code blocks, which each launch a dedicated drawer terminal.
+ * code blocks.
  */
 export function useChatTerminalActions(input: ChatTerminalActionsInput) {
   const {
@@ -100,6 +108,8 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     activeRightPanelSurface,
     runningTerminalIds,
     activeServerOrderedTerminalIds,
+    canReuseTerminal,
+    gitCwd,
     activeTerminalLabelsById,
     panelTerminalIds,
     setTerminalUiLaunchContext,
@@ -139,10 +149,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
         }),
       });
     } catch (error) {
-      setThreadError(
-        activeThreadId,
-        error instanceof Error ? error.message : "Folder unavailable.",
-      );
+      setThreadError(activeThreadId, thrownErrorMessage(error, m) ?? m(msg("Folder unavailable.")));
       return null;
     }
   };
@@ -157,7 +164,6 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     null;
   const hasReachedSplitLimit =
     (activeTerminalGroup?.terminalIds.length ?? 0) >= MAX_TERMINALS_PER_GROUP;
-  /*__HOOK__*/
   const addTerminalContextToDraft = (selection: TerminalContextSelection) => {
     composerRef.current?.addTerminalContext(selection);
   };
@@ -180,9 +186,11 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     if (nextOpen && hasTerminalWriteAccess() && terminalUiState.terminalIds.length === 0) {
       // Server-created setup terminals exist before this client's drawer mounts.
       // Reuse them before allocating a shell from the still-empty UI state.
+      // The server lists a closing terminal until its close finishes, which would end the reopen.
+      const closingIds = new Set(closingTerminalIds(activeThreadRef));
+      const isReusable = (id: string) => !panelTerminalIds.has(id) && !closingIds.has(id);
       const existingTerminalId =
-        runningTerminalIds.find((id) => !panelTerminalIds.has(id)) ??
-        activeServerOrderedTerminalIds.find((id) => !panelTerminalIds.has(id));
+        runningTerminalIds.find(isReusable) ?? activeServerOrderedTerminalIds.find(isReusable);
       if (existingTerminalId !== undefined) {
         storeEnsureTerminal(activeThreadRef, existingTerminalId, { open: true, active: true });
         focusActiveDrawerTerminal(activeThreadRef);
@@ -238,10 +246,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
       focusTerminal(activeThreadRef, launched.terminalId);
       void launched.result;
     } catch (error) {
-      setThreadError(
-        activeThreadId,
-        error instanceof Error ? error.message : "Folder unavailable.",
-      );
+      setThreadError(activeThreadId, thrownErrorMessage(error, m) ?? m(msg("Folder unavailable.")));
     }
   };
   const openTerminalInFolderStable = useStableCallback(openTerminalInFolder);
@@ -264,7 +269,14 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
       shellHistory?: "preserve" | "suppress";
     },
   ) => {
-    if (!hasTerminalWriteAccess() || !activeThreadId || !activeProject || !activeThread) return;
+    if (
+      !hasTerminalWriteAccess() ||
+      !activeThreadRef ||
+      !activeThreadId ||
+      !activeProject ||
+      !activeThread
+    )
+      return;
     if (options?.rememberAsLastInvoked !== false) {
       setLastInvokedScriptByProjectId((current) => {
         if (current[activeProject.id] === script.id) return current;
@@ -277,34 +289,61 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
       worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
       folderPath: script.runOnWorktreeCreate ? undefined : script.folderPath,
     };
+    const hasWorkspaceFolders =
+      (workspaceThread?.workspaceFolders?.length ?? activeProject.folders?.length ?? 0) > 1;
     let targetCwd: string;
     let runtimeEnv: Record<string, string>;
     try {
-      targetCwd = options?.cwd ?? projectScriptCwd(location);
+      targetCwd =
+        options?.cwd ??
+        (!hasWorkspaceFolders &&
+        location.folderPath === undefined &&
+        options?.worktreePath === undefined
+          ? (gitCwd ?? projectScriptCwd(location))
+          : projectScriptCwd(location));
       runtimeEnv = projectScriptRuntimeEnv({
         ...location,
         ...(options?.env ? { extraEnv: options.env } : {}),
       });
     } catch (error) {
-      setThreadError(
-        activeThreadId,
-        error instanceof Error ? error.message : "Folder unavailable.",
-      );
+      setThreadError(activeThreadId, thrownErrorMessage(error, m) ?? m(msg("Folder unavailable.")));
       return;
     }
     const targetWorktreePath =
       location.folderPath !== undefined && location.worktreePath !== null
         ? targetCwd
         : location.worktreePath;
-
-    if (!activeThreadRef) {
-      return;
-    }
+    const reusableTerminalId =
+      hasWorkspaceFolders ||
+      script.folderPath !== undefined ||
+      options?.cwd !== undefined ||
+      options?.env !== undefined ||
+      options?.worktreePath !== undefined ||
+      script.stopOnSettle ||
+      options?.preferNewTerminal ||
+      !canReuseTerminal ||
+      !readEnvironmentScope(environmentId, AuthTerminalReadScope)
+        ? null
+        : findReusableProjectScriptTerminal({
+            // Server sessions cover drawer terminals this client has not opened yet, such as a
+            // worktree setup shell; the helper drops the panel-owned ones.
+            drawerTerminalIds: [
+              ...new Set([...terminalUiState.terminalIds, ...activeServerOrderedTerminalIds]),
+            ],
+            activeTerminalId: terminalUiState.activeTerminalId,
+            panelTerminalIds,
+            runningTerminalIds,
+            closingTerminalIds: closingTerminalIds(activeThreadRef),
+          });
 
     const launched = launchTerminal({
-      // Actions own a fresh terminal so a script cannot overwrite an interactive shell.
-      place: (terminalId) => storeNewTerminal(activeThreadRef, terminalId),
-      size: { cols: SCRIPT_TERMINAL_COLS, rows: SCRIPT_TERMINAL_ROWS },
+      place: (terminalId) =>
+        reusableTerminalId === null
+          ? storeNewTerminal(activeThreadRef, terminalId)
+          : storeEnsureTerminal(activeThreadRef, terminalId, { open: true }),
+      ...(reusableTerminalId === null
+        ? { size: { cols: SCRIPT_TERMINAL_COLS, rows: SCRIPT_TERMINAL_ROWS } }
+        : { terminalId: reusableTerminalId }),
       location: { cwd: targetCwd, worktreePath: targetWorktreePath },
       stopOnSettle: script.stopOnSettle ?? false,
       extraEnv: runtimeEnv,
@@ -325,7 +364,8 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
         const error = squashAtomCommandFailure(openResult);
         setThreadError(
           activeThreadId,
-          error instanceof Error ? error.message : `Failed to run script "${script.name}".`,
+          thrownErrorMessage(error, m) ??
+            m(msg('Failed to run script "{name}".', { name: script.name })),
         );
       }
       return;
@@ -343,7 +383,8 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
         const error = squashAtomCommandFailure(writeResult);
         setThreadError(
           activeThreadId,
-          error instanceof Error ? error.message : `Failed to run script "${script.name}".`,
+          thrownErrorMessage(error, m) ??
+            m(msg('Failed to run script "{name}".', { name: script.name })),
         );
       }
       return;
@@ -363,8 +404,8 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Could not open preview",
-            description: error instanceof Error ? error.message : "An unexpected error occurred.",
+            title: m(msg("Could not open preview")),
+            description: thrownErrorMessage(error, m) ?? m(msg("An unexpected error occurred.")),
           }),
         );
       }
@@ -376,7 +417,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     void runProjectScript(
       {
         id: "chat-code-block",
-        name: "Chat code block",
+        name: m(msg("Chat code block")),
         command,
         icon: "play",
         runOnWorktreeCreate: false,
@@ -443,7 +484,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
   const closePanelTerminalStable = useStableCallback(closePanelTerminal);
   const requestCloseTerminal = (terminalId: string) => {
     if (!hasTerminalWriteAccess()) return;
-    const label = activeTerminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId);
+    const label = activeTerminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId, m);
     void confirmTerminalClose([label]).then((confirmed) => {
       if (confirmed && readEnvironmentScope(environmentId, AuthTerminalOperateScope)) {
         closeTerminal(terminalId);
@@ -453,7 +494,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
   const requestCloseTerminalStable = useStableCallback(requestCloseTerminal);
   const requestClosePanelTerminal = (terminalId: string) => {
     if (!hasTerminalWriteAccess()) return;
-    const label = activeTerminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId);
+    const label = activeTerminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId, m);
     void confirmTerminalClose([label]).then((confirmed) => {
       if (confirmed && readEnvironmentScope(environmentId, AuthTerminalOperateScope)) {
         closePanelTerminal(terminalId);

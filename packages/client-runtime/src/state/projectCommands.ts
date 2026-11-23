@@ -1,3 +1,5 @@
+import { msg } from "gt-i18n";
+import { type MarkedText, markedTextEnglish } from "../errors/translatable.ts";
 import {
   type EnvironmentId,
   type ProjectEntry,
@@ -33,6 +35,7 @@ import {
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentQueryAtomFamily,
   provideCommandPermissionGuard,
+  type QueryAnswerHandler,
 } from "./runtime.ts";
 import {
   type ImportWorkspaceFileProjectInput,
@@ -61,10 +64,16 @@ export type {
   UpdateProjectInput,
 } from "../operations/commands.ts";
 
-export interface OptimisticProjectFile {
+export type OptimisticProjectFile = {
   readonly data: ProjectReadFileResult;
-  readonly confirmedAgainst: object | null | undefined;
-}
+} & (
+  | { readonly saved: false }
+  | {
+      readonly saved: true;
+      /** Only this query's next successful answer can replace the saved contents. */
+      readonly confirmingQuery: Atom.Atom<unknown>;
+    }
+);
 
 export interface OptimisticProjectFileTarget {
   readonly environmentId: EnvironmentId;
@@ -124,6 +133,11 @@ type ProjectFileQueryTag =
   | typeof WS_METHODS.projectsListEntries
   | typeof WS_METHODS.projectsReadFile;
 
+type ProjectFileQueryInput<TTag extends ProjectFileQueryTag> = {
+  readonly request: EnvironmentRpcInput<TTag>;
+  readonly bindingKey?: string;
+};
+
 /** A caller's binding key selects a fresh query without sending client cache identity over RPC. */
 function createProjectFileQuery<R, E, TTag extends ProjectFileQueryTag>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -132,6 +146,10 @@ function createProjectFileQuery<R, E, TTag extends ProjectFileQueryTag>(
     readonly label: string;
     readonly staleTimeMs: number;
     readonly idleTtlMs?: number;
+    readonly onAnswer?: QueryAnswerHandler<
+      ProjectFileQueryInput<TTag>,
+      EnvironmentRpcSuccess<TTag>
+    >;
     readonly execute: (
       input: EnvironmentRpcInput<TTag>,
     ) => Effect.Effect<
@@ -143,10 +161,7 @@ function createProjectFileQuery<R, E, TTag extends ProjectFileQueryTag>(
 ) {
   const query = createEnvironmentQueryAtomFamily(runtime, {
     ...options,
-    execute: (input: {
-      readonly request: EnvironmentRpcInput<TTag>;
-      readonly bindingKey?: string;
-    }) => options.execute(input.request),
+    execute: (input: ProjectFileQueryInput<TTag>) => options.execute(input.request),
   });
   return (target: {
     readonly environmentId: EnvironmentId;
@@ -167,7 +182,13 @@ export class ScratchProjectNotLoadedError extends Schema.TaggedError<ScratchProj
   { projectId: ProjectId },
 ) {
   override get message(): string {
-    return "The folder for threads without a project has not reached this device yet. Try again.";
+    return markedTextEnglish(this.i18nMessage);
+  }
+
+  get i18nMessage(): MarkedText {
+    return [
+      msg("The folder for threads without a project has not reached this device yet. Try again."),
+    ];
   }
 }
 
@@ -238,6 +259,61 @@ export function createProjectEnvironmentAtoms<R, E>(
       folders,
       isCurrent: () => workspaceBindingKey(scopeFolders(registry, environmentId, scope)) === key,
     };
+  });
+  const readFile = createProjectFileQuery(runtime, {
+    tag: WS_METHODS.projectsReadFile,
+    label: "environment-data:projects:read-file",
+    staleTimeMs: 30_000,
+    idleTtlMs: 5 * 60_000,
+    onAnswer: (
+      { environmentId, input: { request: input, bindingKey } },
+      _value,
+      registry,
+    ): Effect.Effect<void> => {
+      const target =
+        "scope" in input
+          ? {
+              environmentId,
+              cwd: JSON.stringify([
+                input.scope.projectId,
+                input.scope.threadId ?? null,
+                input.scope.folderPath ?? null,
+              ]),
+              relativePath: input.path,
+            }
+          : { environmentId, cwd: input.cwd, relativePath: input.relativePath };
+      const atom = optimisticFileFamily(optimisticProjectFileKey(target));
+      return Effect.sync(() => {
+        const overlay = registry.get(atom);
+        if (
+          overlay?.saved &&
+          overlay.confirmingQuery ===
+            readFile({ environmentId, input, ...(bindingKey === undefined ? {} : { bindingKey }) })
+        ) {
+          registry.set(atom, null);
+        }
+      });
+    },
+    execute: Effect.fn("ProjectCommands.readFile")(function* (
+      input: EnvironmentRpcInput<typeof WS_METHODS.projectsReadFile>,
+    ) {
+      const captured = "scope" in input ? yield* captureScope(input.scope) : null;
+      return yield* fileMetadata.seedAfterRead(
+        request(WS_METHODS.projectsReadFile, input),
+        (result, isCurrent) => {
+          if (result.exists === false) return Effect.void;
+          if ("cwd" in input) return fileMetadata.rememberFile(input.cwd, result, isCurrent);
+          const located = scopedFileLocation(result.relativePath, captured?.folders ?? null);
+          return located === null
+            ? Effect.void
+            : fileMetadata.rememberFile(
+                located.cwd,
+                { ...result, relativePath: located.relativePath },
+                (session) => isCurrent(session) && (captured?.isCurrent() ?? false),
+              );
+        },
+      );
+    }),
   });
   const seedEntries = (
     cwd: string | null,
@@ -331,32 +407,7 @@ export function createProjectEnvironmentAtoms<R, E>(
       tag: WS_METHODS.projectsListIgnoredFiles,
       staleTimeMs: 15_000,
     }),
-    readFile: createProjectFileQuery(runtime, {
-      tag: WS_METHODS.projectsReadFile,
-      label: "environment-data:projects:read-file",
-      staleTimeMs: 30_000,
-      idleTtlMs: 5 * 60_000,
-      execute: Effect.fn("ProjectCommands.readFile")(function* (
-        input: EnvironmentRpcInput<typeof WS_METHODS.projectsReadFile>,
-      ) {
-        const captured = "scope" in input ? yield* captureScope(input.scope) : null;
-        return yield* fileMetadata.seedAfterRead(
-          request(WS_METHODS.projectsReadFile, input),
-          (result, isCurrent) => {
-            if (result.exists === false) return Effect.void;
-            if ("cwd" in input) return fileMetadata.rememberFile(input.cwd, result, isCurrent);
-            const located = scopedFileLocation(result.relativePath, captured?.folders ?? null);
-            return located === null
-              ? Effect.void
-              : fileMetadata.rememberFile(
-                  located.cwd,
-                  { ...result, relativePath: located.relativePath },
-                  (session) => isCurrent(session) && (captured?.isCurrent() ?? false),
-                );
-          },
-        );
-      }),
-    }),
+    readFile,
     optimisticFile: (target: OptimisticProjectFileTarget) =>
       optimisticFileFamily(optimisticProjectFileKey(target)),
     create: createEnvironmentCommand(runtime, {

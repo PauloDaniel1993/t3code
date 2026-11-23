@@ -1,3 +1,4 @@
+import { T, Var, msg, useGT, useMessages } from "gt-react";
 import { cn } from "../../lib/utils";
 import { CalendarClock } from "lucide-react";
 import {
@@ -49,6 +50,7 @@ import {
   type FlowRunId,
   type FlowEdge,
   type FlowRunsPage,
+  type FlowRunSummary,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import {
@@ -82,6 +84,7 @@ import { FlowModelContext } from "./FlowModelPicker";
 import { FlowCanvas } from "./FlowCanvas";
 import { editLevel, findStep, removeStep, renameStep, updateStep, stepIdAtPath } from "./flowGraph";
 import { FlowRunActions, FlowRunTimeline, StepRunInspector } from "./FlowRunView";
+import { flowInputTypeHint } from "./flowCopy";
 import { flowDrafts, useFlowPanelRequest } from "./flowPanelState";
 const isFlowId = Schema.is(FlowId);
 export default function FlowPanel(props: {
@@ -96,6 +99,7 @@ export default function FlowPanel(props: {
   );
 }
 function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof FlowPanel>[0]) {
+  const gt = useGT();
   const list = useEnvironmentQuery(flowEnvironment.list({ environmentId, input: { projectId } }));
   const request = useFlowPanelRequest((state) => state.requests[scopedThreadKey(threadRef)]);
   const [selected, setSelected] = useState<FlowId | null>(request?.flowId ?? null);
@@ -143,7 +147,12 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
                 setSelected(FlowId.make(id));
               }}
             >
-              <SelectTrigger variant="ghost" size="xs" aria-label="Flow" className="max-w-full">
+              <SelectTrigger
+                variant="ghost"
+                size="xs"
+                aria-label={gt("Flow", { $context: "noun, project automation" })}
+                className="max-w-full"
+              >
                 <SelectValue>{entry.definition?.title ?? entry.flowId}</SelectValue>
               </SelectTrigger>
               <SelectPopup>
@@ -153,7 +162,7 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
                       {flow.definition?.title ?? flow.flowId}
                       {!flow.validation.valid && (
                         <Badge variant="error" size="sm">
-                          Invalid
+                          <T>Invalid</T>
                         </Badge>
                       )}
                     </SelectItem>
@@ -170,7 +179,7 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
                 <Button
                   size="icon-xs"
                   variant="ghost"
-                  aria-label="New flow"
+                  aria-label={gt("New flow")}
                   disabled={!canSave}
                   onClick={() => setNewId("")}
                 />
@@ -178,7 +187,9 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
             >
               <Plus />
             </TooltipTrigger>
-            <TooltipPopup>New flow</TooltipPopup>
+            <TooltipPopup>
+              <T>New flow</T>
+            </TooltipPopup>
           </Tooltip>
         </div>
       </header>
@@ -196,15 +207,17 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
         >
           <DialogPopup>
             <DialogHeader>
-              <DialogTitle>New flow</DialogTitle>
+              <DialogTitle>
+                <T>New flow</T>
+              </DialogTitle>
             </DialogHeader>
             <DialogPanel>
-              <TextField label="New flow id" value={newId} onChange={setNewId} />
+              <TextField label={gt("New flow id")} value={newId} onChange={setNewId} />
             </DialogPanel>
             <DialogFooter>
               {" "}
               <Button size="xs" variant="ghost" onClick={() => setNewId(null)}>
-                Cancel
+                <T>Cancel</T>
               </Button>{" "}
               <Button
                 size="xs"
@@ -235,11 +248,11 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
                     setSelected(result.value.flowId);
                     setNewId(null);
                   }
-                  reportFlowFailure(result, "Could not create flow");
+                  reportFlowFailure(result, msg("Could not create flow"));
                   setBusy(false);
                 }}
               >
-                Create flow
+                <T>Create flow</T>
               </Button>
             </DialogFooter>
           </DialogPopup>
@@ -247,7 +260,9 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
       )}
       {entry?.validation.valid === false && !entry.definition && (
         <Alert variant="error">
-          <AlertTitle>Invalid flow</AlertTitle>
+          <AlertTitle>
+            <T>Invalid flow</T>
+          </AlertTitle>
           <AlertDescription>
             {entry.validation.errors.map((error) => (
               <p key={`${error.path}:${error.message}`}>
@@ -276,16 +291,18 @@ function ProjectFlows({ environmentId, projectId, threadRef }: Parameters<typeof
             <EmptyMedia variant="icon">
               <Workflow />
             </EmptyMedia>
-            <EmptyTitle>{entry ? "Unable to edit this flow" : "Create your first flow"}</EmptyTitle>
+            <EmptyTitle>
+              {entry ? gt("Unable to edit this flow") : gt("Create your first flow")}
+            </EmptyTitle>
             <EmptyDescription>
               {entry
-                ? "Fix this flow file in the project to edit it."
-                : "Connect agent, command and approval steps on the canvas."}
+                ? gt("Fix this flow file in the project to edit it.")
+                : gt("Connect agent, command and approval steps on the canvas.")}
             </EmptyDescription>
             {!entry && (
               <EmptyContent>
                 <Button size="xs" disabled={!canSave} onClick={() => setNewId("")}>
-                  New flow
+                  <T>New flow</T>
                 </Button>
               </EmptyContent>
             )}
@@ -317,6 +334,8 @@ function FlowEditor({
   onRenamed: (flowId: FlowId) => void;
   request: ReturnType<typeof useFlowPanelRequest.getState>["requests"][string] | undefined;
 }) {
+  const gt = useGT();
+  const resolve = useMessages();
   const canSchedule = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
@@ -391,7 +410,7 @@ function FlowEditor({
     await draftStore.save(
       async (input) => {
         const result = await save({ environmentId, input: { projectId, flowId, ...input } });
-        reportFlowFailure(result, "Could not save flow");
+        reportFlowFailure(result, msg("Could not save flow"));
         return result;
       },
       overwrite
@@ -477,7 +496,7 @@ function FlowEditor({
       setStepRunId(null);
       setShowStart(false);
     }
-    reportFlowFailure(result, "Could not start flow");
+    reportFlowFailure(result, msg("Could not start flow"));
     setStarting(false);
   };
   const startFromRequest = useEffectEvent(requestStart);
@@ -500,9 +519,16 @@ function FlowEditor({
             if (value[0] === "design" || value[0] === "runs") setTab(value[0]);
           }}
         >
-          <Toggle value="design">Design</Toggle>
+          <Toggle value="design">
+            <T context="noun, the flow editor tab">Design</T>
+          </Toggle>
           <Toggle value="runs">
-            Runs <span className="text-muted-foreground">{runs.length}</span>
+            <T context="noun, flow executions">
+              Runs{" "}
+              <span className="text-muted-foreground">
+                <Var>{runs.length}</Var>
+              </span>
+            </T>
           </Toggle>
         </ToggleGroup>
         <div className="ml-auto flex min-w-0 items-center gap-1">
@@ -514,7 +540,7 @@ function FlowEditor({
                 saveError && "text-destructive",
               )}
             >
-              {saving ? "Saving…" : saveError ? "Save failed" : "Unsaved"}
+              {saving ? gt("Saving…") : saveError ? gt("Save failed") : gt("Unsaved")}
             </span>
           )}
           {dirty && (
@@ -524,7 +550,7 @@ function FlowEditor({
               disabled={!canSave || saving}
               onClick={() => void persist()}
             >
-              Save
+              <T context="verb, saves a flow">Save</T>
             </Button>
           )}
           {problems.length > 0 && (
@@ -534,7 +560,7 @@ function FlowEditor({
                   <Button
                     size="xs"
                     variant="ghost"
-                    aria-label={`${problems.length} problems`}
+                    aria-label={gt("{count} problems", { count: problems.length })}
                     onClick={() => {
                       const id = problems
                         .map((problem) => stepIdAtPath(draft, problem.path))
@@ -547,8 +573,10 @@ function FlowEditor({
               >
                 <Badge variant="error" size="sm">
                   <TriangleAlert />
-                  {problems.length}
-                  <span className="@max-[28rem]:hidden"> problems</span>
+                  <T>
+                    <Var>{problems.length}</Var>
+                    <span className="@max-[28rem]:hidden"> problems</span>
+                  </T>
                 </Badge>
               </PopoverTrigger>
               <PopoverPopup width="md">
@@ -573,19 +601,19 @@ function FlowEditor({
           )}
           <Menu>
             <MenuTrigger
-              render={<Button size="icon-xs" variant="ghost" aria-label="Flow actions" />}
+              render={<Button size="icon-xs" variant="ghost" aria-label={gt("Flow actions")} />}
             >
               <MoreHorizontal />
             </MenuTrigger>
             <MenuPopup align="end">
               <MenuItem onClick={() => setSelection({ kind: "flow", id: "" })}>
-                Flow settings
+                <T>Flow settings</T>
               </MenuItem>
               <MenuItem
                 disabled={!canSchedule || dirty || saving || !validation.valid}
                 onClick={() => setScheduleOpen(true)}
               >
-                Schedule…
+                <T context="verb, creates a schedule">Schedule…</T>
               </MenuItem>
               <MenuItem
                 disabled={!canValidate}
@@ -595,17 +623,17 @@ function FlowEditor({
                     input: { projectId, definition: draft },
                   });
                   if (result._tag === "Success") setServerErrors(result.value.errors);
-                  reportFlowFailure(result, "Could not validate flow");
+                  reportFlowFailure(result, msg("Could not validate flow"));
                 }}
               >
-                Validate with environment
+                <T>Validate with environment</T>
               </MenuItem>
               <MenuSeparator />
               <MenuItem disabled={!canRename || dirty} onClick={() => setRenameId(flowId)}>
-                Rename flow file
+                <T>Rename flow file</T>
               </MenuItem>
               <MenuItem disabled={!canDelete || dirty} onClick={() => setDeleteOpen(true)}>
-                Delete flow
+                <T>Delete flow</T>
               </MenuItem>
             </MenuPopup>
           </Menu>
@@ -615,7 +643,7 @@ function FlowEditor({
             disabled={!canStart || dirty || saving || !validation.valid || starting}
             onClick={() => void requestStart()}
           >
-            Start
+            <T context="verb, starts a flow">Start</T>
           </Button>
         </div>
       </div>
@@ -632,7 +660,7 @@ function FlowEditor({
             >
               <CalendarClock />
               {task.title}
-              {!task.enabled && <span className="text-muted-foreground"> · disabled</span>}
+              {!task.enabled && <span className="text-muted-foreground">{gt(" · disabled")}</span>}
             </Badge>
           ))}
         </div>
@@ -650,13 +678,15 @@ function FlowEditor({
       )}
       {(conflict || (dirty && revision !== draftState.revision)) && (
         <Alert variant="warning">
-          <AlertTitle>File changed on disk</AlertTitle>
+          <AlertTitle>
+            <T>File changed on disk</T>
+          </AlertTitle>
           <AlertDescription>
-            Reload to discard this draft, or overwrite the current file.
+            <T>Reload to discard this draft, or overwrite the current file.</T>
           </AlertDescription>
           <AlertAction>
             <Button size="xs" variant="outline" disabled={saving} onClick={discard}>
-              Reload
+              <T context="verb, reloads the flow file">Reload</T>
             </Button>
             <Button
               size="xs"
@@ -666,14 +696,16 @@ function FlowEditor({
                 void persist(true);
               }}
             >
-              Overwrite
+              <T context="verb, overwrites the flow file">Overwrite</T>
             </Button>
           </AlertAction>
         </Alert>
       )}
       {showStart && (dirty || !validation.valid) && (
         <Alert variant="warning">
-          <AlertDescription>Save a valid flow before starting it.</AlertDescription>
+          <AlertDescription>
+            <T>Save a valid flow before starting it.</T>
+          </AlertDescription>
         </Alert>
       )}
       {showStart &&
@@ -689,7 +721,9 @@ function FlowEditor({
           >
             <DialogPopup>
               <DialogHeader>
-                <DialogTitle>Start flow</DialogTitle>
+                <DialogTitle>
+                  <T>Start flow</T>
+                </DialogTitle>
               </DialogHeader>
               <DialogPanel>
                 <FlowStartForm
@@ -734,10 +768,12 @@ function FlowEditor({
         <Alert variant="info" controlAlignment="center">
           <AlertTitle>
             <span>
-              Viewing run{" "}
-              {snapshot?.summary.runNumber ??
-                runs.find((run) => run.id === flowRunId)?.runNumber ??
-                "..."}
+              {gt("Viewing run {runNumber}", {
+                runNumber:
+                  snapshot?.summary.runNumber ??
+                  runs.find((run) => run.id === flowRunId)?.runNumber ??
+                  "...",
+              })}
             </span>
           </AlertTitle>
           <AlertDescription>
@@ -750,7 +786,7 @@ function FlowEditor({
                   setStepRunId(null);
                 }}
               >
-                Back to editing
+                <T>Back to editing</T>
               </Button>
               {snapshot && (
                 <FlowRunActions environmentId={environmentId} summary={snapshot.summary} />
@@ -777,15 +813,19 @@ function FlowEditor({
                 <EmptyMedia variant="icon">
                   <Workflow />
                 </EmptyMedia>
-                <EmptyTitle>No flow runs yet</EmptyTitle>
-                <EmptyDescription>Start runs this flow in a fresh worktree.</EmptyDescription>
+                <EmptyTitle>
+                  <T>No flow runs yet</T>
+                </EmptyTitle>
+                <EmptyDescription>
+                  <T>Start runs this flow in a fresh worktree.</T>
+                </EmptyDescription>
                 <EmptyContent>
                   <Button
                     size="xs"
                     disabled={!canStart || dirty || !validation.valid}
                     onClick={() => void requestStart()}
                   >
-                    Start
+                    <T context="verb, starts a flow">Start</T>
                   </Button>
                 </EmptyContent>
               </Empty>
@@ -804,18 +844,19 @@ function FlowEditor({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium">Flow run {run.runNumber}</span>
+                      <span className="text-xs font-medium">
+                        <T>
+                          Flow run <Var>{run.runNumber}</Var>
+                        </T>
+                      </span>
                       <span className="truncate text-2xs text-muted-foreground">
-                        {formatRelativeTimeLabel(run.createdAt)}
+                        {formatRelativeTimeLabel(run.createdAt, undefined, resolve)}
                       </span>
                     </div>
                     <div className="mt-1 flex items-center gap-2">
                       <FlowStepStatus status={run.status} />
                       <span className="text-2xs text-muted-foreground">
-                        {run.startedAt && run.finishedAt
-                          ? formatDuration(Date.parse(run.finishedAt) - Date.parse(run.startedAt))
-                          : ""}
-                        {run.scheduledTaskId ? " · via schedule" : ""}
+                        {runDurationLabel(run, resolve)}
                       </span>
                     </div>
                   </div>
@@ -844,10 +885,14 @@ function FlowEditor({
                   setLoadingOlder(false);
                 }}
               >
-                Load older flow runs
+                <T>Load older flow runs</T>
               </Button>
             )}
-            {pageError && <p role="alert">Could not load older flow runs.</p>}
+            {pageError && (
+              <p role="alert">
+                <T>Could not load older flow runs.</T>
+              </p>
+            )}
             {snapshot && (
               <>
                 <div className="mb-3 flex items-center justify-between gap-2">
@@ -861,11 +906,15 @@ function FlowEditor({
                     }}
                   >
                     <ArrowLeft />
-                    All flow runs
+                    <T>All flow runs</T>
                   </Button>
-                  <span className="text-xs font-medium">Flow run {snapshot.summary.runNumber}</span>
+                  <span className="text-xs font-medium">
+                    <T>
+                      Flow run <Var>{snapshot.summary.runNumber}</Var>
+                    </T>
+                  </span>
                   <Button size="xs" variant="outline" onClick={() => setTab("design")}>
-                    View on canvas
+                    <T>View on canvas</T>
                   </Button>
                 </div>
                 <FlowRunTimeline
@@ -879,7 +928,9 @@ function FlowEditor({
         ) : (
           <div className="relative min-h-0 flex-1">
             {flowRunId && !snapshot ? (
-              <p className="p-3 text-xs text-muted-foreground">Loading flow run…</p>
+              <p className="p-3 text-xs text-muted-foreground">
+                <T>Loading flow run…</T>
+              </p>
             ) : (
               <FlowCanvas
                 definition={displayed}
@@ -908,7 +959,7 @@ function FlowEditor({
         )}
         {(tab === "runs" ? stepRunId !== null && selectedRun : selection || selectedRun) && (
           <section
-            aria-label="Flow inspector"
+            aria-label={gt("Flow inspector")}
             className="absolute inset-x-0 bottom-0 z-10 max-h-[55%] overflow-auto scrollbar-gutter-both rounded-t-2xl border-t border-border bg-popover p-3 text-xs shadow-xl"
             onKeyDown={(event) => {
               if (event.key === "Escape") {
@@ -923,17 +974,17 @@ function FlowEditor({
               <h3 className="flex min-w-0 items-center gap-2 text-sm font-medium">
                 {step && <FlowKindIcon kind={step.kind} />}
                 {flowRunId
-                  ? (selectedRun?.stepPath.at(-1) ?? "Step run")
+                  ? (selectedRun?.stepPath.at(-1) ?? gt("Step run"))
                   : selection?.kind === "flow"
-                    ? "Flow settings"
+                    ? gt("Flow settings")
                     : step
                       ? step.id
-                      : "Edge"}
+                      : gt("Edge", { $context: "noun, a connection between flow steps" })}
               </h3>
               <Button
                 size="icon-xs"
                 variant="ghost"
-                aria-label="Close inspector"
+                aria-label={gt("Close inspector")}
                 onClick={() => {
                   setSelection(null);
                   setStepRunId(null);
@@ -951,7 +1002,9 @@ function FlowEditor({
                   stepRun={selectedRun}
                 />
               ) : (
-                <p>No step run recorded for this step.</p>
+                <p>
+                  <T>No step run recorded for this step.</T>
+                </p>
               )
             ) : (
               <fieldset disabled={locked} className="flex flex-col gap-3">
@@ -990,7 +1043,7 @@ function FlowEditor({
                         setSelection(null);
                       }}
                     >
-                      <Trash2 /> Remove step
+                      <Trash2 /> <T>Remove step</T>
                     </Button>
                   </>
                 )}
@@ -1012,10 +1065,14 @@ function FlowEditor({
                             on: values[0] === "failure" ? "failure" : undefined,
                           });
                       }}
-                      aria-label="Follow on"
+                      aria-label={gt("Follow on", { $context: "condition for following an edge" })}
                     >
-                      <Toggle value="success">Success</Toggle>
-                      <Toggle value="failure">Failure</Toggle>
+                      <Toggle value="success">
+                        <T context="edge followed upon step success">Success</T>
+                      </Toggle>
+                      <Toggle value="failure">
+                        <T context="edge followed upon step failure">Failure</T>
+                      </Toggle>
                     </ToggleGroup>
                     <label className="flex items-center gap-2">
                       <Checkbox
@@ -1027,7 +1084,7 @@ function FlowEditor({
                           })
                         }
                       />
-                      Only when…
+                      <T>Only when…</T>
                     </label>
                     {edge.when && (
                       <ConditionForm
@@ -1043,20 +1100,22 @@ function FlowEditor({
                         setSelection(null);
                       }}
                     >
-                      <Trash2 /> Remove edge
+                      <Trash2 /> <T>Remove edge</T>
                     </Button>
                   </>
                 )}
                 {selection?.kind === "flow" && (
                   <>
-                    <FlowSection>General</FlowSection>
+                    <FlowSection>
+                      <T context="general flow settings">General</T>
+                    </FlowSection>
                     <TextField
-                      label="Title"
+                      label={gt("Title", { $context: "noun, flow title" })}
                       value={draft.title}
                       onChange={(title) => change({ ...draft, title })}
                     />
                     <TextField
-                      label="Description"
+                      label={gt("Description", { $context: "noun, flow description" })}
                       value={draft.description ?? ""}
                       multiline
                       onChange={(description) =>
@@ -1064,7 +1123,7 @@ function FlowEditor({
                       }
                     />
                     <Choice
-                      label="Workspace"
+                      label={gt("Workspace", { $context: "noun, flow workspace" })}
                       value={draft.workspace ?? "worktree"}
                       values={["worktree", "root"]}
                       onChange={(workspace) =>
@@ -1074,8 +1133,10 @@ function FlowEditor({
                     {draft.workspace === "root" && (
                       <Alert variant="warning">
                         <AlertDescription>
-                          Flow runs share the project folder. Concurrent flow runs can change the
-                          same files.
+                          <T>
+                            Flow runs share the project folder. Concurrent flow runs can change the
+                            same files.
+                          </T>
                         </AlertDescription>
                       </Alert>
                     )}
@@ -1095,14 +1156,16 @@ function FlowEditor({
                         change({ ...draft, defaults: { ...draft.defaults, ...modes } })
                       }
                     />
-                    <FlowSection>Danger zone</FlowSection>
+                    <FlowSection>
+                      <T>Danger zone</T>
+                    </FlowSection>
                     <Button
                       size="xs"
                       variant="ghost"
                       disabled={!canRename || dirty}
                       onClick={() => setRenameId(flowId)}
                     >
-                      Rename flow file
+                      <T>Rename flow file</T>
                     </Button>
                     <Button
                       size="xs"
@@ -1110,7 +1173,7 @@ function FlowEditor({
                       disabled={!canDelete || dirty}
                       onClick={() => setDeleteOpen(true)}
                     >
-                      Delete flow
+                      <T>Delete flow</T>
                     </Button>
                   </>
                 )}
@@ -1128,15 +1191,17 @@ function FlowEditor({
         >
           <DialogPopup>
             <DialogHeader>
-              <DialogTitle>Rename flow file</DialogTitle>
+              <DialogTitle>
+                <T>Rename flow file</T>
+              </DialogTitle>
             </DialogHeader>
             <DialogPanel>
-              <TextField label="New flow id" value={renameId} onChange={setRenameId} />
+              <TextField label={gt("New flow id")} value={renameId} onChange={setRenameId} />
             </DialogPanel>
             <DialogFooter>
               {" "}
               <Button size="xs" variant="ghost" onClick={() => setRenameId(null)}>
-                Cancel
+                <T>Cancel</T>
               </Button>{" "}
               <Button
                 size="xs"
@@ -1154,10 +1219,10 @@ function FlowEditor({
                     setRenameId(null);
                     onRenamed(result.value.flowId);
                   }
-                  reportFlowFailure(result, "Could not rename flow");
+                  reportFlowFailure(result, msg("Could not rename flow"));
                 }}
               >
-                Rename
+                <T context="verb, renames a flow">Rename</T>
               </Button>
             </DialogFooter>
           </DialogPopup>
@@ -1167,9 +1232,13 @@ function FlowEditor({
         <AlertDialog open onOpenChange={setDeleteOpen}>
           <AlertDialogPopup>
             <AlertDialogHeader>
-              <AlertDialogTitle>Delete flow</AlertDialogTitle>
+              <AlertDialogTitle>
+                <T>Delete flow</T>
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                Delete {flowId}? Existing flow runs remain available in their threads.
+                <T>
+                  Delete <Var>{flowId}</Var>? Existing flow runs remain available in their threads.
+                </T>
               </AlertDialogDescription>
             </AlertDialogHeader>
             {targetedSchedules.length > 0 && (
@@ -1178,13 +1247,13 @@ function FlowEditor({
                   checked={disableSchedules}
                   onCheckedChange={(checked) => setDisableSchedules(checked === true)}
                 />
-                Disable schedules targeting this flow
+                <T>Disable schedules targeting this flow</T>
               </label>
             )}
             <AlertDialogFooter>
               {" "}
               <Button size="xs" variant="ghost" onClick={() => setDeleteOpen(false)}>
-                Cancel
+                <T>Cancel</T>
               </Button>{" "}
               <Button
                 variant="destructive"
@@ -1201,7 +1270,7 @@ function FlowEditor({
                         input: { id: task.id, enabled: false },
                       });
                       if (
-                        reportFlowFailure(result, "Could not disable schedule") ||
+                        reportFlowFailure(result, msg("Could not disable schedule")) ||
                         result._tag !== "Success"
                       )
                         return;
@@ -1209,10 +1278,10 @@ function FlowEditor({
                   }
                   const result = await remove({ environmentId, input: { projectId, flowId } });
                   if (result._tag === "Success") setDeleteOpen(false);
-                  reportFlowFailure(result, "Could not delete flow");
+                  reportFlowFailure(result, msg("Could not delete flow"));
                 }}
               >
-                Confirm delete
+                <T>Confirm delete</T>
               </Button>
             </AlertDialogFooter>
           </AlertDialogPopup>
@@ -1220,6 +1289,14 @@ function FlowEditor({
       )}
     </div>
   );
+}
+
+function runDurationLabel(run: FlowRunSummary, resolve: ReturnType<typeof useMessages>) {
+  const duration =
+    run.startedAt && run.finishedAt
+      ? formatDuration(Date.parse(run.finishedAt) - Date.parse(run.startedAt))
+      : "";
+  return run.scheduledTaskId ? resolve(msg("{duration} · via schedule"), { duration }) : duration;
 }
 
 function FlowStartForm({
@@ -1237,6 +1314,8 @@ function FlowStartForm({
   onStarted: (id: FlowRunId) => void;
   onClose: () => void;
 }) {
+  const resolve = useMessages();
+  const gt = useGT();
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       (definition.inputs ?? [])
@@ -1270,25 +1349,27 @@ function FlowStartForm({
           input: { projectId, flowId, inputs, ...(baseRef ? { baseRef } : {}) },
         });
         if (result._tag === "Success") onStarted(result.value.id);
-        else setError(reportFlowFailure(result, "Could not start flow"));
+        else setError(reportFlowFailure(result, msg("Could not start flow")));
         setBusy(false);
       }}
     >
-      <h3 className="text-sm font-medium">Start flow</h3>
+      <h3 className="text-sm font-medium">
+        <T>Start flow</T>
+      </h3>
       {(definition.inputs ?? []).map((field) => (
         <div key={field.name}>
           {field.type === "boolean" ? (
             <Choice
-              label={`${field.name}${field.required ? " (required)" : ""}`}
+              label={field.required ? gt("{name} (required)", { name: field.name }) : field.name}
               value={values[field.name] ?? ""}
               values={["", "true", "false"]}
-              labels={{ "": "Not set", true: "True", false: "False" }}
+              labels={{ "": gt("Not set"), true: gt("True"), false: gt("False") }}
               onChange={(value) => setValues({ ...values, [field.name]: value })}
             />
           ) : (
             <TextField
               label={field.name}
-              hint={`${field.type} · ${field.required ? "required" : "optional"}`}
+              hint={flowInputTypeHint(field, resolve)}
               value={values[field.name] ?? ""}
               multiline={field.type === "string[]"}
               onChange={(value) => setValues({ ...values, [field.name]: value })}
@@ -1299,19 +1380,24 @@ function FlowStartForm({
       ))}
       <Collapsible>
         <CollapsibleTrigger render={<Button size="xs" variant="ghost" />}>
-          Advanced
+          <T context="advanced start options">Advanced</T>
         </CollapsibleTrigger>
         <CollapsiblePanel>
-          <TextField label="Base branch" hint="optional" value={baseRef} onChange={setBaseRef} />
+          <TextField
+            label={gt("Base branch")}
+            hint={gt("optional", { $context: "input is not mandatory" })}
+            value={baseRef}
+            onChange={setBaseRef}
+          />
         </CollapsiblePanel>
       </Collapsible>
       {error && <p role="alert">{error}</p>}
       <div className="flex justify-end gap-2">
         <Button size="xs" variant="ghost" onClick={onClose}>
-          Cancel
+          <T>Cancel</T>
         </Button>
         <Button size="xs" type="submit" disabled={!allowed || busy}>
-          Start flow
+          <T>Start flow</T>
         </Button>
       </div>
     </form>

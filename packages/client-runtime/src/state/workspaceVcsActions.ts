@@ -8,6 +8,8 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as Persistence from "../platform/persistence.ts";
@@ -23,9 +25,12 @@ import {
 import { scheduleWorkspaceVcsCommand } from "./vcsCommandScheduler.ts";
 import { invalidateCachedVcsRefs } from "./vcsRefInvalidation.ts";
 
-export function workspaceActionOutcomeSummary(result: VcsRunWorkspaceActionResult) {
+export function workspaceActionOutcomeSummary(
+  result: VcsRunWorkspaceActionResult,
+  resolve: MFunctionType = mFallback,
+) {
   return result.results
-    .map((member) => `${member.label}: ${workspaceActionOutcomeText(member)}`)
+    .map((member) => `${member.label}: ${workspaceActionOutcomeText(member, resolve)}`)
     .join("\n");
 }
 
@@ -36,13 +41,11 @@ function withCheckoutLanes<W extends { readonly environmentId: EnvironmentId }, 
   return {
     label: command.label,
     run: (registry, target) =>
-      Effect.runPromise(
-        scheduleWorkspaceVcsCommand(
-          registry,
-          target.environmentId,
-          target.cwds,
-          Effect.promise(() => command.run(registry, target)),
-        ),
+      scheduleWorkspaceVcsCommand(
+        registry,
+        target.environmentId,
+        target.cwds,
+        command.run(registry, target),
       ),
   };
 }
@@ -93,17 +96,11 @@ export function createWorkspaceVcsAtoms<R, E>(
     },
     runAction: {
       ...withCheckoutLanes(
-        createRuntimeCommand<
-          EnvironmentRegistry | Persistence.EnvironmentCacheStore | R,
-          E,
-          Target,
-          VcsRunWorkspaceActionResult,
-          unknown
-        >(runtime, {
+        createRuntimeCommand(runtime, {
           label: "vcs-action:workspace",
           concurrency: {
             mode: "serial",
-            key: (target) => JSON.stringify([target.environmentId, target.input.threadId]),
+            key: (target: Target) => JSON.stringify([target.environmentId, target.input.threadId]),
           },
           execute: Effect.fn("WorkspaceVcsActions.runAction")(function* (
             target: Target,
@@ -116,7 +113,7 @@ export function createWorkspaceVcsAtoms<R, E>(
             });
             registry.set(atom, {
               isRunning: true,
-              currentLabel: "Starting workspace action…",
+              currentLabel: mFallback(msg("Starting workspace action…")),
               result: null,
             });
             return yield* consumeWorkspaceActionProgress(

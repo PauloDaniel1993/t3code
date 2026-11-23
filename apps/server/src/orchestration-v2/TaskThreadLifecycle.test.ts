@@ -33,6 +33,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { ProjectEnrichmentService } from "../project/ProjectEnrichmentService.ts";
 import { ProjectService } from "../project/ProjectService.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ModelManifest from "../provider/ModelManifest.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -149,6 +150,7 @@ const TestLayer = Layer.mergeAll(RuntimeLayer.layer, RuntimeLayer.layerEventSink
   Layer.provide(ServerConfigLayer),
   Layer.provide(ServerSettings.layerTest()),
   Layer.provide(TestProviderInstanceRegistry),
+  Layer.provide(ModelManifest.layerTest),
   Layer.provide(PlatformTestLayer),
 );
 

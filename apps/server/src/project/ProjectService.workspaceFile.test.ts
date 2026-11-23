@@ -51,6 +51,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as TaskFolderStore from "../workspace/TaskFolderStore.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { subscribeOrchestrationV2Shell } from "../ws.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
@@ -138,6 +139,7 @@ const dependencies = Layer.mergeAll(
   IdAllocator.layer,
   ThreadCommandExecutor.layer,
   drivenWorkspaceFiles,
+  TaskFolderStore.layer,
 ).pipe(
   Layer.provideMerge(LegacyV1ThreadImporter.layer.pipe(Layer.provide(RuntimeLayer.layerEventSink))),
   Layer.provideMerge(ProjectEnrichmentService.layer),
@@ -578,7 +580,7 @@ it.layer(dependencies)("ProjectService workspace files", (it) => {
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
-      const dir = yield* workspace(["app", "lib"]);
+      const dir = yield* workspace(["app", "lib", "task"]);
       const projectId = ProjectId.make("project:link-interrupted");
       yield* (yield* ProjectService.make).create({
         commandId: commandId("link-interrupted-create"),
@@ -588,6 +590,24 @@ it.layer(dependencies)("ProjectService workspace files", (it) => {
       });
       const threadId = ThreadId.make("thread:link-interrupted");
       yield* seedThread({ projectId, threadId });
+      const taskThreadId = ThreadId.make("thread:link-existing-task-folder");
+      const taskPath = dir.at("task");
+      yield* seedThread({
+        projectId,
+        threadId: taskThreadId,
+        worktreePath: taskPath,
+        branch: "task",
+      });
+      const taskFolders = yield* TaskFolderStore.TaskFolderStore;
+      yield* taskFolders.put({
+        root: taskPath,
+        projectId,
+        projectRoot: dir.at("app"),
+        projectPath: taskPath,
+        anchor: dir.root,
+        projectIsWorktree: true,
+        repositories: [],
+      });
       const filePath = yield* dir.writeFile("team.code-workspace", ["app", "lib"]);
       const link = {
         commandId: commandId("link-interrupted"),
@@ -630,6 +650,10 @@ it.layer(dependencies)("ProjectService workspace files", (it) => {
         (yield* projections.getThread(threadId)).workspaceFolders?.map((folder) => folder.path),
         [dir.at("app")],
       );
+      const taskThread = yield* projections.getThread(taskThreadId);
+      assert.isUndefined(taskThread.workspaceFolders);
+      assert.isUndefined(taskThread.worktrees);
+      assert.equal(taskThread.worktreePath, taskPath);
       assert.equal(
         Option.getOrThrow(yield* service.getById(projectId)).workspaceRoot,
         dir.at("lib"),

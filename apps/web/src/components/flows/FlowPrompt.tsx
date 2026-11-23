@@ -1,11 +1,14 @@
 import { randomUUID } from "../../lib/utils";
 import { useContext, useEffect, useRef, useState, type ContextType } from "react";
 import { useAtomValue } from "@effect/atom-react";
+import * as Effect from "effect/Effect";
+import { T, msg, useGT } from "gt-react";
 import { Paperclip, X } from "lucide-react";
 import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
 } from "@t3tools/contracts";
+import { attachmentUploadError } from "@t3tools/client-runtime/state/attachment-uploads";
 import { imageMimeType } from "@t3tools/shared/image";
 import {
   runAttachmentUploadCycle,
@@ -14,6 +17,7 @@ import {
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAssetUrls, resolveAssetUrl } from "../../assets/assetUrls";
 import { useStableCallback } from "../../hooks/useStableCallback";
+import { m } from "../../i18n/messages";
 import { isHeicImageFile, prepareImageForAttachment } from "../../lib/imageCompression";
 import { uploadBytes } from "../../lib/attachmentByteUpload";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -39,71 +43,97 @@ interface Props {
 interface ImageJob {
   readonly name: string;
   readonly url: string;
-  abort?: (() => void) | undefined;
-  attachmentId?: string | undefined;
+  readonly controller: AbortController;
 }
 
 // Outside the component: React Compiler cannot lower try/finally or a throw inside try.
 async function uploadPromptImage(input: {
   readonly source: File;
   readonly environmentId: NonNullable<ContextType<typeof FlowModelContext>>["environmentId"];
-  readonly job: ImageJob;
-  readonly live: () => boolean;
+  readonly signal: AbortSignal;
   readonly importUploaded: (attachmentId: string) => Promise<string>;
 }): Promise<{ readonly path: string } | { readonly error: string } | null> {
-  const { source, environmentId, job, live } = input;
+  const { source, environmentId, signal } = input;
+  let attachmentId: string | null = null;
   try {
-    const prepared = await prepareImageForAttachment(source, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES);
-    if (!live()) return null;
-    if (!prepared.ok)
-      return {
-        error:
-          prepared.reason === "too-large"
-            ? "Image exceeds the attachment size limit."
-            : "Could not read this image.",
-      };
-    const file = prepared.file;
+    let file = source;
+    // Flow images are stored by content hash. Preserve supported originals within the byte limit.
+    if (isHeicImageFile(source) || source.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+      const prepared = await prepareImageForAttachment(source, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES);
+      if (!prepared.ok)
+        return {
+          error:
+            prepared.reason === "too-large"
+              ? m(msg("Image exceeds the attachment size limit."))
+              : m(msg("Could not read this image.")),
+        };
+      file = prepared.file;
+    }
+    if (signal.aborted) return null;
     const inferredMimeType = imageMimeType({ name: file.name, mimeType: file.type });
     const mimeType = PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
       (type) => type === inferredMimeType,
     );
-    if (!mimeType) return { error: "Unsupported image type." };
-    const uploaded = await runAttachmentUploadCycle({
-      registry: appAtomRegistry,
-      createUploadUrl: attachmentEnvironment.createUploadUrl,
-      remove: attachmentEnvironment.remove,
-      environmentId,
-      upload: { name: file.name, mimeType, sizeBytes: file.size },
-      resolveUploadUrl: (relativeUrl) => {
-        const connection = readPreparedConnection(environmentId);
-        return connection ? resolveAssetUrl(connection.httpBaseUrl, relativeUrl) : null;
-      },
-      transport: (url) => uploadBytes({ url, file, mimeType, onProgress: () => {} }),
-      onMinted: (attachmentId) => {
-        job.attachmentId = attachmentId;
-        return live() ? "continue" : "cancel";
-      },
-      onTransferStart: (abort) => {
-        job.abort = abort;
-        if (!live()) abort();
-      },
-    });
-    if (!live() || uploaded.status === "cancelled") return null;
+    if (!mimeType) return { error: m(msg("Unsupported image type.")) };
+    const uploadFile = file;
+    const uploaded = await Effect.runPromise(
+      runAttachmentUploadCycle({
+        registry: appAtomRegistry,
+        createUploadUrl: attachmentEnvironment.createUploadUrl,
+        remove: attachmentEnvironment.remove,
+        environmentId,
+        upload: { name: uploadFile.name, mimeType, sizeBytes: uploadFile.size },
+        resolveUploadUrl: (relativeUrl) => {
+          const connection = readPreparedConnection(environmentId);
+          return connection ? resolveAssetUrl(connection.httpBaseUrl, relativeUrl) : null;
+        },
+        transport: (url) =>
+          Effect.tryPromise({
+            try: (transferSignal) =>
+              uploadBytes({
+                url,
+                file: uploadFile,
+                mimeType,
+                signal: transferSignal,
+                onProgress: () => {},
+              }),
+            catch: attachmentUploadError,
+          }),
+      }),
+      { signal },
+    );
+    attachmentId = uploaded.attachmentId;
+    if (signal.aborted) return null;
     if (uploaded.status === "failed") throw uploaded.error;
     return { path: await input.importUploaded(uploaded.attachmentId) };
   } catch (error) {
+    if (signal.aborted) return null;
     return { error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    // The cycle cleans up on interruption. A returned id belongs to this job through import.
+    if (attachmentId !== null)
+      deletePendingAttachmentUpload({
+        registry: appAtomRegistry,
+        remove: attachmentEnvironment.remove,
+        environmentId,
+        attachmentId,
+      });
   }
 }
 
 export function FlowPrompt(props: Props) {
+  const gt = useGT();
   const context = useContext(FlowModelContext);
   return context ? (
-    <ImagePrompt {...props} {...context} />
+    <ImagePrompt
+      key={JSON.stringify([context.environmentId, context.projectId])}
+      {...props}
+      {...context}
+    />
   ) : (
     <Textarea
       size="sm"
-      aria-label="Prompt"
+      aria-label={gt("Prompt", { $context: "noun, instruction sent to the agent" })}
       value={props.prompt}
       onChange={(event) => props.onPrompt(event.target.value)}
     />
@@ -118,6 +148,7 @@ function ImagePrompt({
   environmentId,
   projectId,
 }: Props & NonNullable<ContextType<typeof FlowModelContext>>) {
+  const gt = useGT();
   const project = useAtomValue(environmentProjects.projectAtom({ environmentId, projectId }));
   const canImport = useAtomValue(flowEnvironment.importImage.permissionAtom(environmentId));
   const canUpload = useAtomValue(
@@ -147,15 +178,8 @@ function ImagePrompt({
     const job = jobs.get(id);
     if (!job) return;
     jobs.delete(id);
-    job.abort?.();
+    job.controller.abort();
     URL.revokeObjectURL(job.url);
-    if (job.attachmentId)
-      deletePendingAttachmentUpload({
-        registry: appAtomRegistry,
-        remove: attachmentEnvironment.remove,
-        environmentId,
-        attachmentId: job.attachmentId,
-      });
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Cancel uploads and release owned object URLs when the step editor unmounts.
   useEffect(() => {
@@ -182,20 +206,23 @@ function ImagePrompt({
       ) {
         toastManager.add({
           type: "error",
-          title: "Unsupported image type",
+          title: m(msg("Unsupported image type")),
           description: source.name,
         });
         continue;
       }
       const id = randomUUID();
-      const job: ImageJob = { name: source.name, url: URL.createObjectURL(source) };
+      const job: ImageJob = {
+        name: source.name,
+        url: URL.createObjectURL(source),
+        controller: new AbortController(),
+      };
       jobs.set(id, job);
       setPending((previous) => [...previous, { id, name: job.name, url: job.url, file: source }]);
       const outcome = await uploadPromptImage({
         source,
         environmentId,
-        job,
-        live: () => jobs.has(id),
+        signal: job.controller.signal,
         importUploaded,
       });
       if (outcome && jobs.has(id)) {
@@ -203,7 +230,7 @@ function ImagePrompt({
         else
           toastManager.add({
             type: "error",
-            title: `Could not attach ${source.name}`,
+            title: m(msg("Could not attach {name}", { name: source.name })),
             description: outcome.error,
           });
       }
@@ -225,7 +252,7 @@ function ImagePrompt({
     <>
       <Textarea
         size="sm"
-        aria-label="Prompt"
+        aria-label={gt("Prompt", { $context: "noun, instruction sent to the agent" })}
         value={prompt}
         onChange={(event) => onPrompt(event.target.value)}
         onPaste={(event) => {
@@ -255,7 +282,7 @@ function ImagePrompt({
               <button
                 type="button"
                 className="h-full w-full cursor-zoom-in"
-                aria-label={`Preview ${image.name}`}
+                aria-label={gt("Preview {name}", { name: image.name })}
                 disabled={!image.src}
                 onClick={() =>
                   setPreview(
@@ -273,14 +300,14 @@ function ImagePrompt({
               </button>
               {image.uploading && (
                 <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-background/85 text-center text-3xs">
-                  Uploading…
+                  <T>Uploading…</T>
                 </span>
               )}
               <span className="absolute right-1 top-1">
                 <Button
                   variant="media-close"
                   size="icon-xs"
-                  aria-label={`Remove ${image.name}`}
+                  aria-label={gt("Remove {name}", { name: image.name })}
                   disabled={!canImport}
                   onClick={() => {
                     if (image.uploading) {
@@ -303,7 +330,7 @@ function ImagePrompt({
           disabled={!allowed}
           onClick={() => picker.current?.click()}
         >
-          <Paperclip /> Attach images
+          <Paperclip /> <T>Attach images</T>
         </Button>
       </div>
       <input

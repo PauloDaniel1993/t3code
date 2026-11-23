@@ -4,6 +4,8 @@ import { isProviderEligibleForScope, workspaceFolderScope } from "./workspaceFol
 
 const linkedProject = {
   workspaceRoot: "/work/app",
+  workspaceFile: "/work/app.code-workspace",
+  trackedFolders: [{ path: "/elsewhere/tracked", name: "tracked" }],
   folders: [
     { path: "/work/app", name: "app", label: "app", availability: "available" as const },
     { path: "/work/app/web", name: "web", label: "web", availability: "available" as const },
@@ -30,6 +32,34 @@ describe("workspaceFolderScope", () => {
         project: linkedProject,
       }),
     ).toEqual({ additionalDirectories: [] });
+  });
+
+  it("checks a plain project's tracked folders for local runs", () => {
+    const project = {
+      workspaceRoot: "C:\\Projects\\App",
+      trackedFolders: [
+        { path: "c:/projects/app/web", name: "web", discovered: true },
+        { path: "C:/Projects/Application", name: "other repo" },
+        { path: "c:\\projects\\application", name: "alias" },
+      ],
+    };
+    for (const thread of [null, { worktreePath: null }]) {
+      const scope = workspaceFolderScope({ thread, project });
+      expect(scope).toEqual({ additionalDirectories: ["C:/Projects/Application"] });
+      expect(isProviderEligibleForScope({ workspaceFolderAccess: "unsupported" }, scope)).toBe(
+        false,
+      );
+    }
+    const singleWorktree = workspaceFolderScope({
+      thread: { worktreePath: "C:/Worktrees/App" },
+      project,
+    });
+    const nestedOnly = workspaceFolderScope({
+      thread: null,
+      project: { ...project, trackedFolders: project.trackedFolders.slice(0, 1) },
+    });
+    expect(isProviderEligibleForScope({}, singleWorktree)).toBe(true);
+    expect(isProviderEligibleForScope({}, nestedOnly)).toBe(true);
   });
 
   it("reads a bound thread's frozen snapshot, mapped into its worktree set", () => {

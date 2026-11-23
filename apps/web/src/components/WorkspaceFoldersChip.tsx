@@ -1,3 +1,4 @@
+import { T, useGT, Var } from "gt-react";
 import type { ScopedProjectRef, ScopedThreadRef } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
@@ -22,7 +23,11 @@ function WorkspaceFoldersChipContents(props: WorkspaceFoldersChipProps) {
   const detail = useThreadProjection(props.threadRef ?? null)?.projection;
   const config = useAtomValue(serverEnvironment.configValueAtom(props.projectRef.environmentId));
   if (!project || (props.threadRef && !detail))
-    return <p className="px-2 py-3 text-xs text-muted-foreground">Loading workspace folders…</p>;
+    return (
+      <p className="px-2 py-3 text-xs text-muted-foreground">
+        <T>Loading workspace folders…</T>
+      </p>
+    );
   const rows = workspaceFolderRows(
     project,
     detail?.thread ?? null,
@@ -30,9 +35,13 @@ function WorkspaceFoldersChipContents(props: WorkspaceFoldersChipProps) {
   );
   return (
     <>
-      <PopoverTitle>Workspace folders</PopoverTitle>
+      <PopoverTitle>
+        <T>Workspace folders</T>
+      </PopoverTitle>
       <p className="mt-1 text-2xs text-muted-foreground">
-        {rows.length} folders · primary folder starts the thread
+        <T>
+          <Var>{rows.length}</Var> folders · primary folder starts the thread
+        </T>
       </p>
       <WorkspaceFolderGroups
         environmentId={props.projectRef.environmentId}
@@ -58,6 +67,7 @@ function WorkspaceFoldersChipContents(props: WorkspaceFoldersChipProps) {
 }
 
 export function WorkspaceFoldersChip(props: WorkspaceFoldersChipProps) {
+  const gt = useGT();
   const [open, setOpen] = useState(false);
   const project = useProject(props.threadRef ? null : props.projectRef);
   const config = useAtomValue(serverEnvironment.configValueAtom(props.projectRef.environmentId));
@@ -76,7 +86,7 @@ export function WorkspaceFoldersChip(props: WorkspaceFoldersChipProps) {
           render={
             <button
               type="button"
-              aria-label={`Workspace folders (${count})`}
+              aria-label={gt("Workspace folders ({count})", { count })}
               className="inline-flex cursor-pointer items-center gap-0.5 rounded px-1 py-0.5 text-2xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
             />
           }

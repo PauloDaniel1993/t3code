@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { ListPlusIcon } from "lucide-react";
@@ -11,6 +12,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 /** Header entry point; the app-level host owns the dialog and its parent identity. */
 export function NewThreadTaskAction({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
+  const gt = useGT();
   const { problem } = useNewThreadTaskAvailability(threadRef);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const descriptionId = useId();
@@ -25,7 +27,7 @@ export function NewThreadTaskAction({ threadRef }: { readonly threadRef: ScopedT
       onClick={() => openNewThreadTaskDialog({ threadRef })}
     >
       <ListPlusIcon data-icon="inline-start" />
-      New task
+      <T>New task</T>
     </Button>
   );
   return (
@@ -38,7 +40,9 @@ export function NewThreadTaskAction({ threadRef }: { readonly threadRef: ScopedT
         ) : (
           <TooltipTrigger render={button} />
         )}
-        <TooltipPopup>{problem ?? (shortcut ? `New task (${shortcut})` : "New task")}</TooltipPopup>
+        <TooltipPopup>
+          {problem ?? (shortcut ? gt("New task ({shortcut})", { shortcut }) : gt("New task"))}
+        </TooltipPopup>
       </Tooltip>
       {problem ? (
         <span id={descriptionId} className="sr-only">

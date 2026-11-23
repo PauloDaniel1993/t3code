@@ -4,6 +4,8 @@ import {
   CheckpointScopeId,
   CommandId,
   NodeId,
+  ProjectId,
+  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -12,23 +14,28 @@ import {
   RuntimeRequestId,
   ThreadId,
   VcsProcessExitError,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Queue from "effect/Queue";
-import * as TestClock from "effect/testing/TestClock";
+import * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -97,6 +104,7 @@ function layerExecutorFor(input: {
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
   readonly outbox?: EffectOutbox.EffectOutboxV2["Service"];
+  readonly getThreadAttachmentIds?: ProjectionStore.ProjectionStoreV2["Service"]["getThreadAttachmentIds"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
 }) {
@@ -114,6 +122,7 @@ function layerExecutorFor(input: {
         interrupt: input.interrupt ?? (() => Effect.void),
         steer: () => Effect.void,
         applyModelSelection: () => Effect.void,
+        applyThreadTitle: () => Effect.void,
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -135,12 +144,14 @@ function layerExecutorFor(input: {
         detach: () => record("detach"),
         otherWorkingThreads: () => Effect.succeed([]),
         releaseUnlessBusy: () => Effect.succeed(true),
+        forgetLoadedProviderThread: () => Effect.void,
         subscribePromptSuggestion: () => Stream.empty,
       }),
     ),
     Layer.succeed(
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
+        failStartingRun: () => Effect.void,
         start: () =>
           Effect.gen(function* () {
             yield* record("start");
@@ -184,6 +195,11 @@ function layerExecutorFor(input: {
       Layer.mergeAll(
         layerDependencies,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)(
+          input.getThreadAttachmentIds === undefined
+            ? {}
+            : { getThreadAttachmentIds: input.getThreadAttachmentIds },
+        ),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},
         ),
@@ -424,6 +440,138 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
     assert.equal(retry.workerId, workerId);
     assert.equal(retry.delayMs, 0);
     assert.include(retry.error, "simulated cancellation-state read failure");
+  }),
+);
+
+it.effect("keeps requeueing a failed claim while the database is locked", () =>
+  Effect.gen(function* () {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    const effectId = "effect:worker-requeue-lock-timeout";
+    const workerId = "worker-requeue-lock-timeout";
+    const claimedEffect: EffectOutbox.OrchestrationEffectV2 = {
+      id: effectId,
+      commandId: CommandId.make("command:worker-requeue-lock-timeout"),
+      threadId,
+      request: { type: "provider-runtime.continue", sourceRunId: runId },
+      status: "running",
+      attemptCount: 1,
+      availableAt: now,
+      leaseOwner: workerId,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: null,
+      lastError: null,
+    };
+    const lockedWrites = yield* Ref.make(3);
+    const requeued = yield* Ref.make(false);
+    const firstLockTimeout = yield* Deferred.make<void>();
+    const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+      claimNext: () => Effect.succeedSome(claimedEffect),
+      get: () => Effect.succeedSome(claimedEffect),
+      awaitCancellation: () => Effect.never,
+      clearCancellation: () => Effect.void,
+      retry: () =>
+        Effect.gen(function* () {
+          if ((yield* Ref.getAndUpdate(lockedWrites, (count) => count - 1)) > 0) {
+            yield* Deferred.succeed(firstLockTimeout, undefined);
+            return yield* new EffectOutbox.EffectOutboxError({
+              operation: "retry",
+              effectId,
+              cause: new SqlError.SqlError({
+                reason: new SqlError.LockTimeoutError({ cause: null }),
+              }),
+            });
+          }
+          yield* Ref.set(requeued, true);
+          return true;
+        }),
+    });
+    const layerExecutor = Layer.succeed(
+      EffectWorker.OrchestrationEffectExecutorV2,
+      EffectWorker.OrchestrationEffectExecutorV2.of({
+        execute: () =>
+          Effect.fail(
+            new EffectWorker.OrchestrationEffectExecutionError({
+              effectId,
+              effectType: "provider-runtime.continue",
+              cause: "simulated database is locked",
+            }),
+          ),
+      }),
+    );
+    const layerWorker = EffectWorker.layerWithOptions({ workerId }).pipe(
+      Layer.provide(Layer.merge(layerOutbox, layerExecutor)),
+    );
+
+    const workerFiber = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+      Effect.flatMap((worker) => worker.runOnce()),
+      Effect.provide(layerWorker),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(firstLockTimeout);
+    yield* TestClock.adjust(Duration.millis(99));
+    assert.isFalse(yield* Ref.get(requeued));
+    yield* TestClock.adjust(Duration.seconds(1));
+    yield* Effect.exit(Fiber.join(workerFiber));
+
+    assert.isTrue(yield* Ref.get(requeued));
+  }),
+);
+
+it.effect.each([
+  { name: "requeue", request: { type: "provider-runtime.continue", sourceRunId: runId } },
+  { name: "terminalize", request: { type: "provider-turn.start", runId } },
+] as const)("interrupts $name settlement retries when the worker shuts down", ({ request }) =>
+  Effect.gen(function* () {
+    const claimedEffect: EffectOutbox.OrchestrationEffectV2 = {
+      ...restartEffect(yield* DateTime.now, { type: "detach" }),
+      request,
+    };
+    const settlementStarted = yield* Deferred.make<void>();
+    const releaseLock = yield* Ref.make(false);
+    const lockedWrite = Effect.gen(function* () {
+      yield* Deferred.succeed(settlementStarted, undefined);
+      // An in-flight database write can finish its own wait before noticing shutdown.
+      yield* Effect.sleep(Duration.millis(1));
+      if (yield* Ref.get(releaseLock)) return true;
+      return yield* new EffectOutbox.EffectOutboxError({
+        operation: "settlement",
+        effectId: claimedEffect.id,
+        cause: new SqlError.SqlError({ reason: new SqlError.LockTimeoutError({ cause: null }) }),
+      });
+    });
+    const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+      claimNext: () => Effect.succeedSome(claimedEffect),
+      get: () => Effect.succeedSome(claimedEffect),
+      awaitCancellation: () => Effect.never,
+      clearCancellation: () => Effect.void,
+      succeed: () => Effect.fail(new EffectOutbox.EffectOutboxError({ operation: "succeed" })),
+      retry: () => lockedWrite,
+      fail: () => lockedWrite,
+    });
+    const layerExecutor = Layer.succeed(
+      EffectWorker.OrchestrationEffectExecutorV2,
+      EffectWorker.OrchestrationEffectExecutorV2.of({ execute: () => Effect.void }),
+    );
+    const layerWorker = EffectWorker.layerWithOptions({ workerId: "test-worker" }).pipe(
+      Layer.provide(Layer.merge(layerOutbox, layerExecutor)),
+    );
+
+    const daemon = yield* EffectWorker.runDaemonWithOptions({ concurrency: 1 }).pipe(
+      Effect.provide(layerWorker),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(settlementStarted);
+    const shutdown = yield* Fiber.interrupt(daemon).pipe(
+      Effect.timeoutOption(Duration.millis(100)),
+      Effect.forkChild,
+    );
+    yield* TestClock.adjust(Duration.millis(100));
+    const stopped = yield* Fiber.join(shutdown);
+    yield* Ref.set(releaseLock, true);
+    yield* TestClock.adjust(Duration.seconds(1));
+    yield* Fiber.await(daemon);
+    assert.isTrue(Option.isSome(stopped));
   }),
 );
 
@@ -921,22 +1069,12 @@ it.effect("safely retries after replacement cleanup succeeds and start fails", (
 );
 
 it.effect(
-  "persists a replay-safe continuation before completing a bounded attachment cleanup pass",
+  "persists a replay-safe attachment cleanup continuation that still protects live fork references",
   () =>
     Effect.gen(function* () {
       const events = yield* Ref.make<ReadonlyArray<string>>([]);
       const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
-        Effect.provide(layerExecutorFor({ events, outbox })),
-        Effect.provideService(ResourceCleanupService, {
-          cleanupScheduledTasks: () => Effect.void,
-          cleanupTerminals: () => Effect.void,
-          cleanupPreviews: () => Effect.void,
-          cleanupDevices: () => Effect.void,
-          cleanupAttachments: () =>
-            Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
-        }),
-      );
+      const cleaned = yield* Ref.make<ReadonlyArray<ReadonlyArray<string>>>([]);
       const now = yield* DateTime.now;
       const effect = {
         ...restartEffect(now, {
@@ -944,18 +1082,36 @@ it.effect(
           replacementProviderSessionId: replacementSessionId,
         }),
         id: "cleanup:large",
-        request: { type: "attachment.cleanup" as const, attachmentIds: ["first", "second"] },
+        request: {
+          type: "attachment.cleanup" as const,
+          attachmentIds: ["first", "second", "referenced"],
+          skipReferenced: true,
+        },
       };
-      yield* executor.execute(effect, { willRetry: false }).pipe(
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
+        Effect.provide(
+          layerExecutorFor({
+            events,
+            outbox,
+            getThreadAttachmentIds: (owner, options) => {
+              assert.strictEqual(owner, effect.threadId);
+              assert.isTrue(options?.includeShownByLiveFork);
+              return Effect.succeed(["referenced"]);
+            },
+          }),
+        ),
         Effect.provideService(ResourceCleanupService, {
           cleanupScheduledTasks: () => Effect.void,
           cleanupTerminals: () => Effect.void,
           cleanupPreviews: () => Effect.void,
           cleanupDevices: () => Effect.void,
-          cleanupAttachments: () =>
-            Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
+          cleanupAttachments: (ids) =>
+            Ref.update(cleaned, (calls) => [...calls, ids]).pipe(
+              Effect.as({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
+            ),
         }),
       );
+      yield* executor.execute(effect, { willRetry: false });
       const next = yield* outbox.get("cleanup:large:next");
       assert.isTrue(Option.isSome(next));
       if (Option.isSome(next))
@@ -963,18 +1119,14 @@ it.effect(
           type: "attachment.cleanup",
           attachmentIds: ["second"],
           relativePaths: ["second.png"],
+          skipReferenced: true,
         });
       // Retrying the original pass uses the same continuation identity.
-      yield* executor.execute(effect, { willRetry: false }).pipe(
-        Effect.provideService(ResourceCleanupService, {
-          cleanupScheduledTasks: () => Effect.void,
-          cleanupTerminals: () => Effect.void,
-          cleanupPreviews: () => Effect.void,
-          cleanupDevices: () => Effect.void,
-          cleanupAttachments: () =>
-            Effect.succeed({ attachmentIds: ["second"], relativePaths: ["second.png"] }),
-        }),
-      );
+      yield* executor.execute(effect, { willRetry: false });
+      assert.deepStrictEqual(yield* Ref.get(cleaned), [
+        ["first", "second"],
+        ["first", "second"],
+      ]);
       assert.strictEqual((yield* outbox.listByCommandId(effect.commandId)).length, 1);
     }).pipe(Effect.provide(attachmentOutboxTestLayer)),
 );
@@ -1086,6 +1238,63 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
       assert.deepEqual(
         yield* Ref.get(events),
         outcome === "confirmed" ? ["stop-child", "settle-child"] : ["stop-child"],
+      );
+    }),
+);
+
+it.effect.each([3, 4])(
+  "enforces process-loss count %s after 22 minutes through the executor",
+  (processLossCount) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const instanceId = ProviderInstanceId.make("codex");
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layer = layerExecutorFor({
+        events,
+        continueAfterRestart: true,
+        threads: {
+          getThreadRecords: () =>
+            Effect.succeed({
+              thread: {
+                id: threadId,
+                projectId: ProjectId.make("project:executor-recovery"),
+                providerInstanceId: instanceId,
+                archivedAt: null,
+                deletedAt: null,
+                lineage: { parentThreadId: null, relationshipToParent: null },
+              },
+              runs: [
+                {
+                  id: runId,
+                  providerInstanceId: instanceId,
+                  status: "cancelled",
+                  requestedAt: DateTime.subtract(now, { minutes: 22 }),
+                  completedAt: now,
+                  ordinal: 1,
+                },
+              ],
+              messages: [],
+              providerTurns: [],
+              runtimeRequests: [],
+              turnItems: [],
+              attempts: [],
+            } as unknown as OrchestrationV2ThreadProjection),
+          dispatch: () =>
+            Ref.update(events, (entries) => [...entries, "dispatch"]).pipe(Effect.as({} as never)),
+          recoverDelegatedTask: () =>
+            Ref.update(events, (entries) => [...entries, "recover-child"]),
+        },
+      });
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute({
+          ...restartEffect(now, { type: "detach" }),
+          request: { type: "provider-runtime.continue", sourceRunId: runId, processLossCount },
+        });
+      }).pipe(Effect.provide(layer));
+      assert.deepEqual(
+        yield* Ref.get(events),
+        processLossCount > 3 ? ["recover-child"] : ["dispatch", "recover-child"],
       );
     }),
 );

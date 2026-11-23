@@ -18,6 +18,7 @@ describe("openDiffFilePrimaryAction", () => {
       activeCwd: "/set-api",
       repositoryRoot: "/set-api",
       folderPath: "/api",
+      folderLabel: "api",
       openInEditor: vi.fn(),
     });
     const panel = selectThreadRightPanelState(
@@ -25,7 +26,11 @@ describe("openDiffFilePrimaryAction", () => {
       THREAD_REF,
     );
     expect(panel.surfaces).toContainEqual(
-      expect.objectContaining({ kind: "file", relativePath: "src/index.ts", folderPath: "/api" }),
+      expect.objectContaining({
+        kind: "file",
+        relativePath: "api/src/index.ts",
+        folderPath: "/api",
+      }),
     );
   });
   beforeEach(() => {
@@ -62,15 +67,39 @@ describe("openDiffFilePrimaryAction", () => {
     ).toBe("frontend/Dockerfile");
   });
 
-  it("handles Windows roots and mixed diff separators", () => {
-    expect(
-      resolveDiffPathForWorkspace({
-        filePath: "Frontend/src\\index.ts",
-        workspaceRoot: "C:\\repo\\frontend",
-        repositoryRoot: "C:\\repo",
-      }),
-    ).toBe("src/index.ts");
-  });
+  it.each([
+    {
+      filePath: "Frontend/src\\index.ts",
+      workspaceRoot: "C:\\repo\\frontend",
+      repositoryRoot: "C:\\repo",
+      expected: "src/index.ts",
+    },
+    {
+      filePath: "Frontend\\src\\index.ts",
+      workspaceRoot: "C:\\repo\\frontend",
+      repositoryRoot: "C:\\repo",
+      expected: "src/index.ts",
+    },
+    {
+      filePath: "frontend/back\\slash.txt",
+      workspaceRoot: "/repo/frontend",
+      repositoryRoot: "/repo",
+      expected: "back\\slash.txt",
+    },
+    {
+      filePath: "back/slash/a.ts",
+      workspaceRoot: "/repo/back\\slash",
+      repositoryRoot: "/repo",
+      expected: null,
+    },
+  ])(
+    "resolves $filePath in $workspaceRoot",
+    ({ filePath, workspaceRoot, repositoryRoot, expected }) => {
+      expect(resolveDiffPathForWorkspace({ filePath, workspaceRoot, repositoryRoot })).toBe(
+        expected,
+      );
+    },
+  );
 
   // regression: #6174 opening diff files broke for repositories at a filesystem root
   it.each([
@@ -106,6 +135,7 @@ describe("openDiffFilePrimaryAction", () => {
     "backend/server.ts",
     "frontend2/app.ts",
     "frontend/../secret.ts",
+    "frontend/..\\secret.ts",
     "C:secret.ts",
     "/repo/backend/server.ts",
     "/repo/frontend/../backend/server.ts",

@@ -1,3 +1,4 @@
+import { T, useGT, useMessages } from "gt-react";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { withAsyncCleanup } from "../lib/withAsyncCleanup";
 import {
@@ -107,6 +108,7 @@ function NativePeek({
   entry: Peek;
   agent: OrchestrationV2Subagent;
 }) {
+  const gt = useGT();
   const ready = usePeekDetailDwell(
     `${entry.thread.environmentId}:${entry.thread.id}:${initialAgent.id}`,
   );
@@ -176,7 +178,7 @@ function NativePeek({
     <div
       ref={frame}
       role="dialog"
-      aria-label={`Agent: ${agent.title ?? "Agent"}`}
+      aria-label={gt("Agent: {title}", { title: agent.title ?? gt("Agent") })}
       style={position}
       onPointerEnter={keepSidebarTaskPeekOpen}
       onPointerLeave={leaveSidebarTaskPeek}
@@ -187,11 +189,11 @@ function NativePeek({
       className="fixed z-50 w-[22rem] rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-xl"
     >
       <div className="flex items-center gap-2">
-        <h2 className="flex-1 text-sm font-semibold">{agent.title ?? "Agent"}</h2>
+        <h2 className="flex-1 text-sm font-semibold">{agent.title ?? gt("Agent")}</h2>
         <Button
           size="xs"
           variant="ghost"
-          aria-label="Close agent details"
+          aria-label={gt("Close agent details")}
           onClick={closeSidebarTaskPeek}
         >
           ×
@@ -199,18 +201,18 @@ function NativePeek({
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
         {agent.status === "completed"
-          ? "Done"
+          ? gt("Done")
           : agent.status === "cancelled" || agent.status === "interrupted"
-            ? "Cancelled"
+            ? gt("Cancelled")
             : agent.status === "failed"
-              ? "Failed"
+              ? gt("Failed")
               : agent.status === "idle"
-                ? "Idle"
-                : "Working"}
+                ? gt("Idle")
+                : gt("Working")}
         {elapsed === null ? "" : ` · ${formatDuration(elapsed)}`}
       </p>
       <p className="mt-2 text-xs text-muted-foreground">
-        Provider-owned agent · All active agents plus the newest 12 inactive agents
+        <T>Provider-owned agent · All active agents plus the newest 12 inactive agents</T>
       </p>
       <p className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap text-xs">{agent.prompt}</p>
       <p className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
@@ -228,6 +230,8 @@ function TaskPeek({
   entry: Peek;
   onOpenThread: (ref: ScopedThreadRef) => void;
 }) {
+  const gt = useGT();
+  const resolveMessage = useMessages();
   const ref = scopeThreadRef(entry.thread.environmentId, entry.thread.id);
   const shell = useThreadShell(ref) ?? entry.thread;
   const ready = usePeekDetailDwell(`${ref.environmentId}:${ref.threadId}`);
@@ -320,7 +324,7 @@ function TaskPeek({
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       toastManager.add({
         type: "error",
-        title: "Task action failed",
+        title: gt("Task action failed"),
         description: String(squashAtomCommandFailure(result)),
       });
     }
@@ -357,7 +361,7 @@ function TaskPeek({
     <div
       ref={frame}
       role="dialog"
-      aria-label={`Task: ${shell.title}`}
+      aria-label={gt("Task: {title}", { title: shell.title })}
       style={position}
       onPointerEnter={keepSidebarTaskPeekOpen}
       onPointerLeave={leaveSidebarTaskPeek}
@@ -369,11 +373,13 @@ function TaskPeek({
     >
       <div className="flex items-center gap-2">
         <SidebarTaskMark state={state} />
-        <span className="flex-1 text-sm">{formatSidebarTaskStatus(shell, task, now)}</span>
+        <span className="flex-1 text-sm">
+          {formatSidebarTaskStatus(shell, task, now, resolveMessage)}
+        </span>
         <Button
           variant="ghost"
           size="xs"
-          aria-label="Close task details"
+          aria-label={gt("Close task details")}
           onClick={closeSidebarTaskPeek}
         >
           ×
@@ -383,9 +389,15 @@ function TaskPeek({
       {task ? (
         <div className="mt-2 flex gap-2 text-xs text-muted-foreground">
           <span>
-            {task.createdBy === "agent" ? "✦ agent" : task.createdBy === "user" ? "you" : "system"}
+            {task.createdBy === "agent"
+              ? gt("✦ agent")
+              : task.createdBy === "user"
+                ? gt("you")
+                : gt("system")}
           </span>
-          <span>prompt-only context</span>
+          <span>
+            <T>prompt-only context</T>
+          </span>
         </div>
       ) : null}
       {prompt ? (
@@ -399,12 +411,12 @@ function TaskPeek({
       {task?.completionDelivery ? (
         <p className="mt-3 text-xs text-muted-foreground">
           {sidebarTaskWasReturned(task)
-            ? "↩ Returned results to the parent thread"
+            ? gt("↩ Returned results to the parent thread")
             : task.completionDelivery.state === "disposed"
-              ? "Result delivery stopped"
+              ? gt("Result delivery stopped")
               : task.completionDelivery.state === "acknowledged"
-                ? "Result read by the parent agent"
-                : "Result delivery pending"}
+                ? gt("Result read by the parent agent")
+                : gt("Result delivery pending")}
         </p>
       ) : null}
       <div className="mt-3 flex gap-2">
@@ -416,7 +428,7 @@ function TaskPeek({
             onOpenThread(ref);
           }}
         >
-          Open thread
+          <T>Open thread</T>
         </Button>
         {!native && (state === "running" || state === "queued") ? (
           <Button
@@ -452,12 +464,14 @@ function TaskPeek({
               );
             }}
           >
-            Cancel task
+            <T>Cancel task</T>
           </Button>
         ) : null}
       </div>
       {blocked ? (
-        <p className="mt-3 text-xs">This task is waiting on you. Open the thread to respond.</p>
+        <p className="mt-3 text-xs">
+          <T>This task is waiting on you. Open the thread to respond.</T>
+        </p>
       ) : native ? null : (
         <form
           className="mt-3 flex items-end gap-2"
@@ -467,7 +481,7 @@ function TaskPeek({
           }}
         >
           <textarea
-            aria-label="Steer task"
+            aria-label={gt("Steer task")}
             value={text}
             onChange={(event) => setText(event.target.value)}
             className="min-w-0 flex-1 rounded-md border border-input bg-background p-2 text-xs"
@@ -476,9 +490,9 @@ function TaskPeek({
             type="submit"
             size="xs"
             disabled={busy || text.trim() === ""}
-            aria-label="Send task steering"
+            aria-label={gt("Send task steering")}
           >
-            Send
+            <T>Send</T>
           </Button>
         </form>
       )}

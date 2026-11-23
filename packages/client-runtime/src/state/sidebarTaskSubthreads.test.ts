@@ -269,29 +269,35 @@ describe("sidebar delegated task grouping", () => {
       projectId: ProjectId.make("worker-project"),
       delegatedFrom,
     });
+    const nestedRemote = thread("nested-remote-task", {
+      environmentId: EnvironmentId.make("next-worker"),
+      delegatedFrom: { environmentId: worker, threadId: remote.id, title: "Remote task" },
+    });
     const orphan = thread("orphan", {
       environmentId: worker,
       delegatedFrom: { ...delegatedFrom, threadId: ThreadId.make("missing") },
     });
     const group = createSidebarTaskGrouper();
     const all = group({
-      threads: [parent, localTask, remote, orphan],
+      threads: [parent, localTask, remote, nestedRemote, orphan],
       scopedProjectKeys: null,
       supportsTasks: () => true,
     });
     expect(all.tasksByParent.get("local:parent")?.map((row) => row.id)).toEqual([
       "local-task",
       "remote-task",
+      "nested-remote-task",
     ]);
     expect(all.topLevel.map((row) => row.id)).toEqual(["parent", "orphan"]);
     const scoped = group({
-      threads: [parent, localTask, remote],
+      threads: [parent, localTask, remote, nestedRemote],
       scopedProjectKeys: new Set([`local:${parent.projectId}`]),
       supportsTasks: () => true,
     });
     expect(scoped.tasksByParent.get("local:parent")?.map((row) => row.id)).toEqual([
       "local-task",
       "remote-task",
+      "nested-remote-task",
     ]);
     const disabled = group({
       threads: [parent, remote],

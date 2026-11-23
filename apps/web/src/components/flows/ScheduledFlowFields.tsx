@@ -1,3 +1,5 @@
+import { T, Var, useGT, useMessages } from "gt-react";
+import { flowInputTypeHint } from "./flowCopy";
 import type { FlowDefinitionEntry, ScheduledTask } from "@t3tools/contracts";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
@@ -26,6 +28,8 @@ export function ScheduledFlowFields({
   error: string | null;
   onChange: (value: NonNullable<ScheduledTask["flow"]>) => void;
 }) {
+  const gt = useGT();
+  const resolve = useMessages();
   const selected = entries.find((entry) => entry.flowId === value?.flowId);
   const updateInput = (name: string, text: string) => {
     if (value)
@@ -38,7 +42,7 @@ export function ScheduledFlowFields({
   };
   return (
     <div className="flex flex-col gap-3">
-      <Field label="Flow">
+      <Field label={gt("Flow", { $context: "noun, project automation" })}>
         <Select
           value={value?.flowId ?? ""}
           onValueChange={(id) => {
@@ -46,9 +50,9 @@ export function ScheduledFlowFields({
             if (entry?.validation.valid) onChange({ flowId: entry.flowId, inputs: {} });
           }}
         >
-          <SelectTrigger aria-label="Flow">
+          <SelectTrigger aria-label={gt("Flow", { $context: "noun, project automation" })}>
             <SelectValue>
-              {selected?.definition?.title ?? value?.flowId ?? "Select a flow"}
+              {selected?.definition?.title ?? value?.flowId ?? gt("Select a flow")}
             </SelectValue>
           </SelectTrigger>
           <SelectPopup>
@@ -62,7 +66,7 @@ export function ScheduledFlowFields({
                   {entry.definition?.title ?? entry.flowId}
                   {!entry.validation.valid && (
                     <Badge variant="error" size="sm">
-                      Invalid
+                      <T>Invalid</T>
                     </Badge>
                   )}
                 </SelectItem>
@@ -78,7 +82,7 @@ export function ScheduledFlowFields({
       )}
       {value && !selected && (
         <Badge variant="error" size="sm">
-          Flow not found
+          <T>Flow not found</T>
         </Badge>
       )}
       {(selected?.definition?.inputs ?? []).map((field) => {
@@ -94,7 +98,7 @@ export function ScheduledFlowFields({
             key={field.name}
             label={field.name}
             htmlFor={`flow-input-${field.name}`}
-            hint={`${field.type} · ${field.required ? "required" : "optional"}`}
+            hint={flowInputTypeHint(field, resolve)}
           >
             {field.type === "boolean" ? (
               <div className="flex flex-col gap-1">
@@ -105,12 +109,12 @@ export function ScheduledFlowFields({
                 />
                 <Collapsible>
                   <CollapsibleTrigger render={<Button size="xs" variant="ghost" />}>
-                    Template or default
+                    <T>Template or default</T>
                   </CollapsibleTrigger>
                   <CollapsiblePanel>
                     <Input
                       size="sm"
-                      aria-label={`${field.name} template`}
+                      aria-label={gt("{name} template", { name: field.name })}
                       value={current}
                       placeholder={placeholder}
                       onChange={(event) => updateInput(field.name, event.target.value)}
@@ -142,10 +146,13 @@ export function ScheduledFlowFields({
         );
       })}
       <p className="text-2xs text-muted-foreground">
-        Inputs accept templates such as {"{{body.path}}"}, {"{{headers.name}}"} and{" "}
-        {"{{query.name}}"}. Lists accept JSON or one item per line. Blank inputs use their defaults.
+        <T>
+          Inputs accept templates such as <Var>{"{{body.path}}"}</Var>,{" "}
+          <Var>{"{{headers.name}}"}</Var> and <Var>{"{{query.name}}"}</Var>. Lists accept JSON or
+          one item per line. Blank inputs use their defaults.
+        </T>
       </p>
-      <Field label="Base ref" hint="optional" htmlFor="flow-base-ref">
+      <Field label={gt("Base ref")} hint={gt("optional")} htmlFor="flow-base-ref">
         <Input
           size="sm"
           id="flow-base-ref"

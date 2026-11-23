@@ -11,7 +11,7 @@ import {
   FlowReportMcpOutput,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as FlowService from "./FlowService.ts";
@@ -61,7 +61,7 @@ export const FlowToolkit = Toolkit.make(
     failure: OrchestratorMcpFailure,
     failureMode: "return",
     dependencies,
-  }),
+  }).annotate(McpSchema.EnabledWhen, Invocation.hiddenFromOutsideClients),
 );
 const failure = (error: { readonly message: string }) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message: error.message });

@@ -40,6 +40,7 @@ function forkTaskStatus(status: OrchestratorMcpDelegateTaskResult["status"]): Fo
       return "finished";
     case "interrupted":
       return "cancelled";
+    case "starting":
     case "waiting":
       return "running";
     default:

@@ -5,13 +5,15 @@ import {
   THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
 } from "./chat/threadDetailsPanelStyles";
 import { cn } from "../lib/utils";
-import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { ComposerSelectControl } from "./chat/ComposerControl";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { FolderGit2Icon, FolderGitIcon, FolderIcon } from "lucide-react";
 import { memo, type MouseEvent as ReactMouseEvent } from "react";
+import { T, msg, useGT, useMessages } from "gt-react";
+import { m as resolveMessage } from "../i18n/messages";
 
 import {
   resolveCurrentWorkspaceLabel,
@@ -67,17 +69,24 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   repositoryCount,
   worktreeDisabledReason,
 }: BranchToolbarEnvModeSelectorProps) {
+  const gt = useGT();
+  const m = useMessages();
   const workspacePath = displayMode === "panel" ? (activeWorktreePath ?? workspaceRoot) : null;
   const workspaceDisplayName = workspacePath ? fileBasename(workspacePath) : null;
-  const workspaceKind = activeWorktreePath ? "Worktree" : "Project folder";
+  const workspaceKind = activeWorktreePath ? gt("Worktree") : gt("Project folder");
   const groupedLabel =
     repositoryCount === undefined
       ? undefined
       : worktreeDisabledReason &&
           !activeWorktreePath &&
           (effectiveEnvMode === "worktree" || forceNewWorktree)
-        ? "Worktree unavailable"
-        : `${activeWorktreePath ? "Worktree" : effectiveEnvMode === "worktree" || forceNewWorktree ? "New worktree" : "Current checkout"} · ${repositoryCount} ${repositoryCount === 1 ? "repo" : "repos"}`;
+        ? gt("Worktree unavailable")
+        : gt("{workspace} · {count, plural, one {# repo} other {# repos}}", {
+            workspace: activeWorktreePath
+              ? gt("Worktree")
+              : resolveEnvModeLabel(forceNewWorktree ? "worktree" : effectiveEnvMode, m),
+            count: repositoryCount,
+          });
   const composerFloatingLayerProps = useComposerMenuProps();
   const shortcutLabel = shortcutLabelForCommand(
     useAtomValue(primaryServerKeybindingsAtom),
@@ -90,14 +99,14 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
       label:
         groupedLabel && effectiveEnvMode === "local"
           ? groupedLabel
-          : (workspaceDisplayName ?? resolveCurrentWorkspaceLabel(activeWorktreePath)),
+          : (workspaceDisplayName ?? resolveCurrentWorkspaceLabel(activeWorktreePath, m)),
     },
     {
       value: "worktree",
       label:
         groupedLabel && effectiveEnvMode === "worktree"
           ? groupedLabel
-          : resolveEnvModeLabel("worktree"),
+          : resolveEnvModeLabel("worktree", m),
     },
     ...(showPreviousWorktree && previousWorktreeLabel
       ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
@@ -111,18 +120,18 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
     event.preventDefault();
     event.stopPropagation();
     void api.contextMenu
-      .show([{ id: "copy-path", label: "Copy full path", icon: "copy" }], {
+      .show([{ id: "copy-path", label: resolveMessage(msg("Copy full path")), icon: "copy" }], {
         x: event.clientX,
         y: event.clientY,
       })
       .then((action) => {
         if (action !== "copy-path") return;
-        void writeTextToClipboard(workspacePath, "workspace path").then(
+        void writeTextToClipboard(workspacePath, namedClipboardTarget("workspace path")).then(
           (didCopy) => {
             if (didCopy) {
               toastManager.add({
                 type: "success",
-                title: "Path copied",
+                title: resolveMessage(msg("Path copied")),
                 description: workspacePath,
               });
             }
@@ -131,8 +140,11 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
             toastManager.add(
               stackedThreadToast({
                 type: "error",
-                title: "Failed to copy path",
-                description: error instanceof Error ? error.message : "An error occurred.",
+                title: resolveMessage(msg("Failed to copy path")),
+                description:
+                  error instanceof Error
+                    ? error.message
+                    : resolveMessage(msg("An error occurred.")),
               }),
             );
           },
@@ -172,13 +184,13 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         <ComposerContextLabel displayMode={displayMode}>
           {groupedLabel ??
             (forceNewWorktree
-              ? resolveEnvModeLabel("worktree")
+              ? resolveEnvModeLabel("worktree", m)
               : (workspaceDisplayName ??
-                resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)))}
+                resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode, m)))}
         </ComposerContextLabel>
         {displayMode === "panel" && repositoryCount === undefined ? (
           <span className="shrink-0 text-3xs font-normal text-muted-foreground/70">
-            {forceNewWorktree ? "Worktree" : workspaceKind}
+            {forceNewWorktree ? gt("Worktree") : workspaceKind}
           </span>
         ) : null}
       </span>
@@ -189,10 +201,10 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         <TooltipTrigger render={lockedRow} />
         <TooltipPopup side={displayMode === "panel" ? "left" : undefined}>
           {forceNewWorktree
-            ? "Each model starts in its own worktree."
+            ? gt("Each model starts in its own worktree.")
             : (workspacePath ??
               activeWorktreePath ??
-              resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode))}
+              resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode, m))}
         </TooltipPopup>
       </Tooltip>
     );
@@ -219,7 +231,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
               <ThreadDetailsControl
                 part="select"
                 render={<SelectPrimitive.Trigger />}
-                aria-label="Workspace"
+                aria-label={gt("Workspace")}
                 onMouseDownCapture={stopContextMenuMouseDown}
                 onContextMenu={handleWorkspaceContextMenu}
               />
@@ -227,7 +239,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
               <ComposerSelectControl
                 size="xs"
                 className="min-w-0 shrink"
-                aria-label="Workspace"
+                aria-label={gt("Workspace")}
                 data-composer-shortcut="composer.workspace"
                 data-composer-context-control
                 onMouseDownCapture={stopContextMenuMouseDown}
@@ -253,7 +265,9 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
           </ComposerContextLabel>
           {displayMode === "panel" && repositoryCount === undefined ? (
             <span className="shrink-0 text-3xs font-normal text-muted-foreground/70">
-              {effectiveEnvMode === "worktree" && !activeWorktreePath ? "Create" : workspaceKind}
+              {effectiveEnvMode === "worktree" && !activeWorktreePath
+                ? gt("Create")
+                : workspaceKind}
             </span>
           ) : null}
         </TooltipTrigger>
@@ -261,8 +275,8 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
           {worktreeDisabledReason ??
             workspacePath ??
             (effectiveEnvMode === "worktree"
-              ? resolveEnvModeLabel("worktree")
-              : resolveCurrentWorkspaceLabel(activeWorktreePath))}
+              ? resolveEnvModeLabel("worktree", m)
+              : resolveCurrentWorkspaceLabel(activeWorktreePath, m))}
           {shortcutLabel ? ` · ${shortcutLabel}` : null}
         </TooltipPopup>
       </Tooltip>
@@ -272,7 +286,9 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         className={showPreviousWorktree ? "w-[min(21rem,calc(100vw-2rem))]" : undefined}
       >
         <SelectGroup>
-          <SelectGroupLabel>Workspace</SelectGroupLabel>
+          <SelectGroupLabel>
+            <T>Workspace</T>
+          </SelectGroupLabel>
           <SelectItem value="local">
             <span className="inline-flex items-center gap-1.5">
               {activeWorktreePath ? (
@@ -284,7 +300,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
                   className={displayMode === "panel" ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3"}
                 />
               )}
-              {resolveCurrentWorkspaceLabel(activeWorktreePath)}
+              {resolveCurrentWorkspaceLabel(activeWorktreePath, m)}
             </span>
           </SelectItem>
           <SelectItem value="worktree" disabled={worktreeDisabledReason !== undefined}>
@@ -292,7 +308,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
               <FolderGit2Icon
                 className={displayMode === "panel" ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3"}
               />
-              {resolveEnvModeLabel("worktree")}
+              {resolveEnvModeLabel("worktree", m)}
             </span>
           </SelectItem>
           {worktreeDisabledReason ? (

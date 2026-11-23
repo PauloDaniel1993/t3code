@@ -1,19 +1,20 @@
+import { msg, useMessages } from "gt-react";
 import type { FlowStepRunStatus, FlowRunSummary, FlowStep } from "@t3tools/contracts";
 import { Bot, Terminal, CheckCheck, Repeat2, Layers } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 type Status = FlowStepRunStatus | FlowRunSummary["status"];
 const labels: Record<Status, string> = {
-  pending: "Queued",
-  starting: "Starting",
-  running: "Running",
-  waiting_report: "Waiting for report",
-  waiting_approval: "Waiting for approval",
-  succeeded: "Succeeded",
-  failed: "Failed",
-  interrupted: "Interrupted",
-  skipped: "Skipped",
-  cancelled: "Cancelled",
+  pending: msg("Queued"),
+  starting: msg("Starting"),
+  running: msg("Running"),
+  waiting_report: msg("Waiting for report"),
+  waiting_approval: msg("Waiting for approval"),
+  succeeded: msg("Succeeded"),
+  failed: msg("Failed"),
+  interrupted: msg("Interrupted"),
+  skipped: msg("Skipped"),
+  cancelled: msg("Cancelled"),
 };
 function flowStatusTone(status: Status) {
   if (status === "succeeded") return "text-success-foreground";
@@ -24,6 +25,7 @@ function flowStatusTone(status: Status) {
   return "text-muted-foreground";
 }
 export function FlowStepStatus({ status }: { status: Status }) {
+  const resolve = useMessages();
   return (
     <span
       className={cn(
@@ -32,7 +34,7 @@ export function FlowStepStatus({ status }: { status: Status }) {
       )}
     >
       <span className="size-1.5 shrink-0 rounded-full bg-current" />
-      {labels[status]}
+      {resolve(labels[status])}
     </span>
   );
 }

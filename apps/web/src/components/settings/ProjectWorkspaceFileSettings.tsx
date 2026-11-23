@@ -1,3 +1,5 @@
+import { msg, T, useGT } from "gt-react";
+import { m } from "../../i18n/messages";
 import { listProjectsUsingFolder } from "@t3tools/client-runtime/operations/projects";
 import {
   isAtomCommandInterrupted,
@@ -22,6 +24,7 @@ export function ProjectWorkspaceFileSettings({
 }: {
   readonly project: SidebarProjectGroupMember;
 }) {
+  const gt = useGT();
   const { environments } = useEnvironments();
   const environment = environments.find(
     (candidate) => candidate.environmentId === project.environmentId,
@@ -47,7 +50,7 @@ export function ProjectWorkspaceFileSettings({
         });
         if (result._tag === "Failure") {
           if (isAtomCommandInterrupted(result))
-            throw new Error("The workspace file update was interrupted. Try again.");
+            throw new Error(m(msg("The workspace file update was interrupted. Try again.")));
           throw squashAtomCommandFailure(result);
         }
       },
@@ -69,7 +72,11 @@ export function ProjectWorkspaceFileSettings({
       if (
         !api ||
         !(await api.dialogs.confirm(
-          "Unlink workspace file?\nFuture threads use only the primary folder. Existing threads keep their folders, and conversation history is kept.",
+          m(
+            msg(
+              "Unlink workspace file?\nFuture threads use only the primary folder. Existing threads keep their folders, and conversation history is kept.",
+            ),
+          ),
         ))
       )
         return;
@@ -82,10 +89,14 @@ export function ProjectWorkspaceFileSettings({
   return (
     <>
       <SettingsSection
-        title={`Workspace${project.environmentLabel ? ` · ${project.environmentLabel}` : ""}`}
+        title={
+          project.environmentLabel
+            ? gt("Workspace · {environment}", { environment: project.environmentLabel })
+            : gt("Workspace")
+        }
       >
         <SettingsRow
-          title={linked ? "Workspace file" : "Workspace folder"}
+          title={linked ? gt("Workspace file") : gt("Workspace folder")}
           description={project.workspaceFile ?? project.workspaceRoot}
           control={
             <div className="flex flex-wrap gap-2">
@@ -97,7 +108,7 @@ export function ProjectWorkspaceFileSettings({
                     disabled={busy || !connected || !enabled}
                     onClick={() => void runChange(project.workspaceFile!)}
                   >
-                    Refresh
+                    <T>Refresh</T>
                   </Button>
                   {enabled ? (
                     <Button
@@ -106,7 +117,7 @@ export function ProjectWorkspaceFileSettings({
                       disabled={busy || !connected}
                       onClick={() => setPickerOpen(true)}
                     >
-                      Relink…
+                      <T>Relink…</T>
                     </Button>
                   ) : null}
                   <Button
@@ -115,7 +126,7 @@ export function ProjectWorkspaceFileSettings({
                     disabled={busy || !connected}
                     onClick={() => void unlink()}
                   >
-                    Unlink workspace file
+                    <T>Unlink workspace file</T>
                   </Button>
                 </>
               ) : (
@@ -125,7 +136,7 @@ export function ProjectWorkspaceFileSettings({
                   disabled={busy || !connected}
                   onClick={() => setPickerOpen(true)}
                 >
-                  Link workspace file…
+                  <T>Link workspace file…</T>
                 </Button>
               )}
             </div>
@@ -135,14 +146,14 @@ export function ProjectWorkspaceFileSettings({
           <div className="space-y-3 px-4 pb-4 text-sm">
             <p role="status">
               {!enabled
-                ? "Workspace-file support is disabled on this environment."
+                ? gt("Workspace-file support is disabled on this environment.")
                 : status
                   ? status.state === "ok"
-                    ? "Up to date"
-                    : `Workspace file ${status.state}`
-                  : "Checking workspace file…"}
+                    ? gt("Up to date")
+                    : gt("Workspace file {state}", { state: status.state })
+                  : gt("Checking workspace file…")}
               {status?.liveDetection === false
-                ? " · Live detection unavailable. Refresh to check for changes."
+                ? gt(" · Live detection unavailable. Refresh to check for changes.")
                 : ""}
             </p>
             {status?.diagnostics.map((diagnostic) => (
@@ -156,8 +167,10 @@ export function ProjectWorkspaceFileSettings({
             ))}
             {status && status.state !== "ok" ? (
               <p className="text-muted-foreground">
-                New threads are blocked until the file recovers. Refresh, relink, or unlink to
-                recover.
+                <T>
+                  New threads are blocked until the file recovers. Refresh, relink, or unlink to
+                  recover.
+                </T>
               </p>
             ) : null}
             <ul className="space-y-2">
@@ -176,31 +189,35 @@ export function ProjectWorkspaceFileSettings({
                   <li key={folder.path ?? folder.uri}>
                     <span className="font-medium">
                       {folder.name}
-                      {index === 0 ? " · Primary" : ""}
+                      {index === 0 ? gt(" · Primary") : ""}
                     </span>
                     <p className="break-all text-xs text-muted-foreground">
                       {folder.path ?? folder.uri}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {!enabled
-                        ? "Availability checks are disabled"
+                        ? gt("Availability checks are disabled")
                         : folder.uri
-                          ? `Remote (${folder.remoteDescription ?? "remote folder"}), not available here`
+                          ? gt("Remote ({description}), not available here", {
+                              description: folder.remoteDescription ?? gt("remote folder"),
+                            })
                           : folder.availability === "unavailable"
                             ? index === 0
-                              ? "Primary folder unavailable"
+                              ? gt("Primary folder unavailable")
                               : folder.unavailableReason === "missing"
-                                ? "Missing on disk"
+                                ? gt("Missing on disk")
                                 : folder.unavailableReason === "not-directory"
-                                  ? "Not a folder on disk"
-                                  : "Unavailable"
+                                  ? gt("Not a folder on disk")
+                                  : gt("Unavailable")
                             : folder.availability === "available"
-                              ? "Available"
-                              : "Checking availability…"}
+                              ? gt("Available")
+                              : gt("Checking availability…")}
                     </p>
                     {others.length ? (
                       <p className="text-xs text-muted-foreground">
-                        This folder is also used by {others.map((other) => other.title).join(", ")}
+                        {gt("This folder is also used by {projects}", {
+                          projects: others.map((other) => other.title).join(", "),
+                        })}
                       </p>
                     ) : null}
                   </li>
@@ -220,7 +237,7 @@ export function ProjectWorkspaceFileSettings({
           environmentId={project.environmentId}
           initialPath={project.workspaceFile ?? ensureBrowseDirectoryPath(project.workspaceRoot)}
           cwd={project.workspaceRoot}
-          title={linked ? "Relink workspace file" : "Link workspace file"}
+          title={linked ? gt("Relink workspace file") : gt("Link workspace file")}
           onOpenChange={setPickerOpen}
           onSelect={changeLink}
         />

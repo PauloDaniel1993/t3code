@@ -3,6 +3,7 @@ import {
   AuthFilesystemWriteScope,
   EnvironmentId,
   ProjectId,
+  ProjectReadFileError,
   ProjectReadFileInput,
   ProjectReadFileResult,
   ThreadId,
@@ -82,7 +83,10 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
 ) {
   const metadataRequests: string[][] = [];
   const file = { byteLength: 5 };
-  const readResponse = { wait: Effect.void as Effect.Effect<void>, missing: false };
+  const readResponse = {
+    wait: Effect.void as Effect.Effect<void, ProjectReadFileError>,
+    missing: false,
+  };
   const entryResponse: ProjectListEntriesResult = listing ?? {
     entries: [{ path: "api/folder.ts", kind: "directory" }],
     truncated: false,
@@ -201,7 +205,7 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
       permissions: [AuthFilesystemWriteScope],
     }),
   );
-  const openScratch = Effect.promise(() =>
+  const openScratch = Effect.exit(
     commands.openScratch.run(registry, { environmentId: ENVIRONMENT_ID, input: {} }),
   );
   return {
@@ -219,6 +223,110 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
 });
 
 describe("writeFile metadata", () => {
+  it.effect("retires a saved overlay after an equal read succeeds, preserving newer drafts", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const target = { environmentId: ENVIRONMENT_ID, cwd: "/repo", relativePath: "foo" };
+      const query = h.commands.readFile({
+        environmentId: ENVIRONMENT_ID,
+        input: { cwd: target.cwd, relativePath: target.relativePath },
+      });
+      h.registry.mount(query);
+      const read = () => AtomRegistry.getResult(h.registry, query, { suspendOnWaiting: true });
+      const original = yield* read();
+      const overlay = h.commands.optimisticFile(target);
+      h.registry.mount(overlay);
+      const saved = { ...original, contents: "saved" };
+      h.registry.set(overlay, { data: saved, saved: true, confirmingQuery: query });
+      h.readResponse.wait = Effect.fail(
+        new ProjectReadFileError({
+          cwd: "/repo",
+          relativePath: "foo",
+          failure: "operation_failed",
+        }),
+      );
+      h.registry.refresh(query);
+      yield* Effect.exit(read());
+      expect(h.registry.get(overlay)?.data.contents).toBe("saved");
+
+      h.readResponse.wait = Effect.void;
+      h.registry.refresh(query);
+      const refreshed = yield* read();
+      // The production query shares equal file values across this failed confirmation.
+      expect(refreshed).toBe(original);
+      expect(h.registry.get(overlay)).toBeNull();
+
+      h.registry.set(overlay, { data: { ...saved, contents: "newer draft" }, saved: false });
+      h.registry.refresh(query);
+      yield* read();
+      expect(h.registry.get(overlay)?.data.contents).toBe("newer draft");
+    }),
+  );
+
+  it.effect.each([true, false])(
+    "keeps a saved overlay when an older read uses different allowMissing options (confirmation: %s)",
+    (allowMissing) =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const target = { environmentId: ENVIRONMENT_ID, cwd: "/repo", relativePath: "foo" };
+        const query = h.commands.readFile({
+          environmentId: ENVIRONMENT_ID,
+          input: {
+            cwd: target.cwd,
+            relativePath: target.relativePath,
+            ...(allowMissing ? { allowMissing: true } : {}),
+          },
+        });
+        const otherQuery = h.commands.readFile({
+          environmentId: ENVIRONMENT_ID,
+          input: {
+            cwd: target.cwd,
+            relativePath: target.relativePath,
+            ...(!allowMissing ? { allowMissing: true } : {}),
+          },
+        });
+        const read = (atom: typeof query) =>
+          AtomRegistry.getResult(h.registry, atom, { suspendOnWaiting: true });
+        h.registry.mount(query);
+        const original = yield* read(query);
+        const overlay = h.commands.optimisticFile(target);
+        h.registry.mount(overlay);
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        h.readResponse.wait = Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        h.registry.mount(otherQuery);
+        const olderRead = yield* read(otherQuery).pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        h.registry.set(overlay, {
+          data: { ...original, contents: "saved" },
+          saved: true,
+          confirmingQuery: query,
+        });
+        h.readResponse.wait = Effect.fail(
+          new ProjectReadFileError({
+            cwd: target.cwd,
+            relativePath: target.relativePath,
+            failure: "operation_failed",
+          }),
+        );
+        h.registry.refresh(query);
+        yield* Effect.exit(read(query));
+        expect(h.registry.get(overlay)?.data.contents).toBe("saved");
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(olderRead);
+        expect(h.registry.get(overlay)?.data.contents).toBe("saved");
+        expect(Option.getOrNull(AsyncResult.value(h.registry.get(query)))).toBe(original);
+
+        h.readResponse.wait = Effect.void;
+        h.registry.refresh(query);
+        expect(yield* read(query)).toBe(original);
+        expect(h.registry.get(overlay)).toBeNull();
+      }),
+  );
+
   it.effect("preserves optional read results without seeding metadata for an absent file", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
@@ -275,7 +383,7 @@ describe("writeFile metadata", () => {
         { suspendOnWaiting: true },
       ).pipe(Effect.forkChild);
       yield* Deferred.await(started);
-      const write = yield* Effect.promise(() =>
+      const write = yield* Effect.exit(
         h.commands.writeFile.run(h.registry, {
           environmentId: ENVIRONMENT_ID,
           input: { cwd: "/repo", relativePath: "foo", contents: "new" },
@@ -310,7 +418,7 @@ describe("writeFile metadata", () => {
         { kind: "file", byteLength: 5 },
         { kind: "file", byteLength: 5 },
       ]);
-      const result = yield* Effect.promise(() =>
+      const result = yield* Effect.exit(
         h.commands.writeFile.run(h.registry, {
           environmentId: ENVIRONMENT_ID,
           input: { cwd: "/repo", relativePath: "./foo", contents: "new" },
@@ -416,23 +524,39 @@ describe("scoped file metadata", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("selects a fresh scoped query when the caller's binding key changes", () =>
+  it.effect("keeps scoped queries and optimistic save confirmation bound to one workspace", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
-      const input = {
-        scope: { projectId: FILE_PROJECT_ID, threadId: FILE_THREAD_ID },
-        path: "api/foo",
-      };
-      const read = (bindingKey: string) =>
-        AtomRegistry.getResult(
-          h.registry,
-          h.commands.readFile({ environmentId: ENVIRONMENT_ID, input, bindingKey }),
-          { suspendOnWaiting: true },
-        );
-      expect((yield* read("first")).byteLength).toBe(5);
+      const scope = { projectId: FILE_PROJECT_ID, threadId: FILE_THREAD_ID };
+      const input = { scope, path: "api/foo" };
+      const query = (bindingKey: string) =>
+        h.commands.readFile({ environmentId: ENVIRONMENT_ID, input, bindingKey });
+      const firstQuery = query("first");
+      h.registry.mount(firstQuery);
+      const read = (atom: typeof firstQuery) =>
+        AtomRegistry.getResult(h.registry, atom, { suspendOnWaiting: true });
+      const original = yield* read(firstQuery);
+      expect(original.byteLength).toBe(5);
+      const overlay = h.commands.optimisticFile({
+        environmentId: ENVIRONMENT_ID,
+        cwd: JSON.stringify([scope.projectId, scope.threadId, null]),
+        relativePath: input.path,
+      });
+      h.registry.mount(overlay);
+      h.registry.set(overlay, {
+        data: { ...original, contents: "saved" },
+        saved: true,
+        confirmingQuery: firstQuery,
+      });
+
       h.file.byteLength = 10;
-      expect((yield* read("second")).byteLength).toBe(10);
-      expect((yield* read("first")).byteLength).toBe(5);
+      expect((yield* read(query("second"))).byteLength).toBe(10);
+      expect(h.registry.get(overlay)?.data.contents).toBe("saved");
+      expect((yield* read(firstQuery)).byteLength).toBe(5);
+
+      h.registry.refresh(firstQuery);
+      expect((yield* read(firstQuery)).byteLength).toBe(10);
+      expect(h.registry.get(overlay)).toBeNull();
     }).pipe(Effect.scoped),
   );
 
@@ -603,13 +727,11 @@ describe("scoped file metadata", () => {
           { suspendOnWaiting: true },
         ).pipe(Effect.forkChild);
         yield* Deferred.await(started);
-        const written = yield* Effect.promise(() =>
-          h.commands.writeFile.run(h.registry, {
-            environmentId: ENVIRONMENT_ID,
-            input: { scope, path: "api/./foo", contents: "new" },
-          }),
-        );
-        expect(written).toMatchObject({ _tag: "Success", value: { relativePath: "api/foo" } });
+        const written = yield* h.commands.writeFile.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: { scope, path: "api/./foo", contents: "new" },
+        });
+        expect(written).toMatchObject({ relativePath: "api/foo" });
         expect(yield* readMetadata()).toEqual([
           { kind: "file", byteLength: 10 },
           { kind: "file", byteLength: 10 },

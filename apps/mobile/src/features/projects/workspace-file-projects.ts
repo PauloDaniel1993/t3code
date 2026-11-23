@@ -19,6 +19,9 @@ import {
   type Project,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { msg } from "gt-react-native";
+
+import { m } from "../../i18n/messages";
 
 const isProjectMutationError = Schema.is(ProjectMutationError);
 
@@ -29,7 +32,7 @@ export function resolveMobileAddProjectTarget(input: {
   readonly workspaceFileProjects: boolean;
   readonly browse: FilesystemBrowseResult | null;
 }) {
-  const resolved = resolveAddProjectPath({ rawPath: input.path, platform: input.platform });
+  const resolved = resolveAddProjectPath({ rawPath: input.path, platform: input.platform }, m);
   if (!resolved.ok) throw new Error(resolved.error);
   const entry = filterFilesystemBrowseEntries(
     input.browse?.entries ?? [],
@@ -42,7 +45,7 @@ export function resolveMobileAddProjectTarget(input: {
     input.browse !== null && hasTrailingPathSeparator(input.path.trim()),
   );
   if (kind === "workspace-file" && !input.workspaceFileProjects) {
-    throw new Error("Workspace-file projects are not enabled on this environment.");
+    throw new Error(m(msg("Workspace-file projects are not enabled on this environment.")));
   }
   return { kind, path: entry?.fullPath ?? resolved.path };
 }
@@ -54,7 +57,7 @@ export function workspaceFileMutationOutcome(
 ) {
   if (result._tag === "Success") return { project: result.value, projectId: result.value.id };
   if (isAtomCommandInterrupted(result))
-    throw new Error("The workspace file operation was interrupted. Try again.");
+    throw new Error(m(msg("The workspace file operation was interrupted. Try again.")));
   const error = squashAtomCommandFailure(result);
   if (
     importing &&
@@ -70,9 +73,13 @@ export function workspaceFileMutationOutcome(
 export function workspaceFileErrorMessage(error: unknown): string {
   if (isProjectMutationError(error) && error.diagnostic) {
     const diagnostic = error.diagnostic;
-    return `${diagnostic.message}${diagnostic.line === undefined ? "" : ` (line ${diagnostic.line}${diagnostic.column === undefined ? "" : `, column ${diagnostic.column}`})`}`;
+    const { message, line, column } = diagnostic;
+    if (line === undefined) return message;
+    return column === undefined
+      ? m(msg("{message} (line {line})"), { message, line })
+      : m(msg("{message} (line {line}, column {column})"), { message, line, column });
   }
-  return error instanceof Error ? error.message : "Could not use the workspace file.";
+  return error instanceof Error ? error.message : m(msg("Could not use the workspace file."));
 }
 
 export async function workspaceFileActionError(

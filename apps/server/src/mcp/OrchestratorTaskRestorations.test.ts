@@ -228,7 +228,7 @@ function makeLayer(
   return OrchestratorMcp.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
-        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
         Layer.mock(SecretRequests.SecretRequests)({}),
         ServerSettings.layerTest({
           providerInstances: Object.fromEntries(
@@ -1112,7 +1112,7 @@ it.effect("bounds child reads for 120 tasks, filtered discovery, and complete pa
       firstPageReads: 1 + 2 * (first.tasks.length + 1),
       pages,
       totalReads: reads.length,
-    }).toEqual({ firstPageTasks: 24, firstPageReads: 51, pages: 6, totalReads: 256 });
+    }).toEqual({ firstPageTasks: 23, firstPageReads: 49, pages: 6, totalReads: 256 });
     expect(reads.filter((id) => id === parentId)).toHaveLength(pages);
     reads.length = 0;
     const limited = yield* service.listTasks(scope, { limit: 1 });
@@ -1775,15 +1775,14 @@ it.effect("task aliases refuse external callers without changing owned tasks", (
       ["task_create", { title: "Review", prompt: "Review the module.", context: "none" }],
       ["task_cancel", { threadId: "child:external-check" }],
     ] as const) {
-      const response = yield* server
+      const denied = yield* server
         .callTool({ name, arguments: args })
         .pipe(
           Effect.provideService(McpInvocationContext, externalScope),
           Effect.provideService(McpSchema.McpServerClient, client),
+          Effect.flip,
         );
-      expect(declaredResult(response).structuredContent).toMatchObject({
-        code: "thread_credential_required",
-      });
+      expect(denied).toMatchObject({ _tag: "InvalidParams", message: `Tool '${name}' not found` });
     }
     expect(records.get(parentId)!.subagents[0]!.completionDelivery?.state).toBe("pending");
   }).pipe(Effect.provide(makeMcpLayer(records)));

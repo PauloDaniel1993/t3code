@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   type ManagedPolicySummary,
@@ -14,8 +15,10 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -26,6 +29,9 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
+import * as TaskFolderStore from "../workspace/TaskFolderStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 
 const projectId = ProjectId.make("project:runtime-policy");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -102,9 +108,27 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
       } as ProviderInstance);
 
 let projectReads = 0;
-const layerWithPolicy = (policy?: ManagedPolicySummary) =>
+const noWorkspace = { folders: [], extraRoots: [] };
+const trackedWorkspace = {
+  folders: [
+    { name: "api", path: "/project-root/api", isGitRepository: true },
+    { name: "docs", path: "/elsewhere/docs", isGitRepository: false },
+  ],
+  extraRoots: ["/elsewhere/docs"],
+};
+
+const layerWorkspaceFoldersTest = Layer.mock(WorkspaceFolders.WorkspaceFolders)({
+  forThread: (input) =>
+    Effect.succeed(input.worktreePath === null ? trackedWorkspace : noWorkspace),
+});
+
+const layerWithPolicy = (
+  policy?: ManagedPolicySummary,
+  layerWorkspaceFolders: Layer.Layer<WorkspaceFolders.WorkspaceFolders> = layerWorkspaceFoldersTest,
+) =>
   RuntimePolicy.layerFromProjectStore.pipe(
     Layer.provide(ServerSettings.layerTest({}, policy)),
+    Layer.provide(layerWorkspaceFolders),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
         getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
@@ -129,6 +153,7 @@ const layerWithPolicy = (policy?: ManagedPolicySummary) =>
                     workspaceRoot: "/project-root",
                     workspaceFile: null,
                     folders: null,
+                    trackedFolders: [],
                     defaultModelSelection: null,
                     defaultThreadEnvMode: null,
                     hasCustomTitle: false,
@@ -155,6 +180,32 @@ const folder = (path: string, checkoutRoot: string | null = null) => ({
   label: path.split("/").at(-1)!,
   checkoutRoot,
 });
+
+// The real folder resolution over a recorded task folder, for a project that tracks `/tracked/api`.
+const layerTaskFolderStore = TaskFolderStore.layer.pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provide(NodeServices.layer),
+);
+const layerTaskFolderPolicy = layerWithPolicy(
+  undefined,
+  WorkspaceFolders.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerTaskFolderStore,
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: () =>
+            Effect.succeedSome({
+              projectId,
+              workspaceRoot: "/project-root",
+              trackedFolders: [{ name: "api", path: "/tracked/api" }],
+            } as never),
+        }),
+      ),
+    ),
+    Layer.provide(NodeServices.layer),
+    Layer.orDie,
+  ),
+).pipe(Layer.provideMerge(Layer.mergeAll(layerTaskFolderStore, NodeServices.layer)));
 
 it.layer(layerTest)("RuntimePolicyV2", (it) => {
   it.effect("uses the project root for local-checkout threads", () =>
@@ -198,6 +249,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
         modelSelection,
       });
       assert.equal(resolved.cwd, "/bound-primary");
+      assert.notProperty(resolved, "workspace");
     }),
   );
 
@@ -379,6 +431,83 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "auto"), "auto");
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
+    }),
+  );
+
+  it.effect("carries tracked folders only for a thread in the project's own checkout", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const resolve = (worktreePath: string | null) =>
+        policy.resolve({ thread: makeThread({ now, worktreePath }), modelSelection });
+
+      const resolved = yield* resolve(null);
+      assert.deepEqual(resolved.workspace, trackedWorkspace);
+      assert.deepEqual(resolved.additionalDirectories, []);
+      assert.notProperty(yield* resolve("/work"), "workspace");
+
+      const threadId = makeThread({ now, worktreePath: null }).id;
+      const error = yield* policy
+        .requireWorkspaceFolderAccess({
+          threadId,
+          providerInstanceId: grokInstanceId,
+          scope: resolved,
+        })
+        .pipe(Effect.flip);
+      assert.equal(error.message, PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE);
+      yield* policy.requireWorkspaceFolderAccess({
+        threadId,
+        providerInstanceId: supportedInstanceId,
+        scope: resolved,
+      });
+      yield* policy.requireWorkspaceFolderAccess({
+        threadId,
+        providerInstanceId: grokInstanceId,
+        scope: {
+          ...resolved,
+          workspace: { folders: trackedWorkspace.folders.slice(0, 1), extraRoots: [] },
+        },
+      });
+    }),
+  );
+});
+
+it.layer(layerTaskFolderPolicy)("RuntimePolicyV2 in a task folder", (it) => {
+  it.effect("reaches the task folder's worktrees, never the checkouts they were made from", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const taskFolders = yield* TaskFolderStore.TaskFolderStore;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
+      const worktreePath = path.join(root, "project-root");
+      const sibling = path.join(root, "tracked", "api");
+      yield* fileSystem.makeDirectory(worktreePath);
+      yield* fileSystem.makeDirectory(sibling, { recursive: true });
+      yield* taskFolders.put({
+        root,
+        projectId,
+        projectRoot: "/project-root",
+        anchor: "/",
+        projectPath: worktreePath,
+        projectIsWorktree: true,
+        repositories: [
+          {
+            repositoryPath: "/tracked/api",
+            worktreePath: sibling,
+            name: "api",
+          },
+        ],
+      });
+
+      const thread = makeThread({ now: yield* DateTime.now, worktreePath });
+      const { cwd, workspace } = yield* policy.resolve({ thread, modelSelection });
+      assert.equal(cwd, worktreePath);
+      assert.deepEqual(
+        workspace?.folders.map((folder) => folder.path),
+        [sibling],
+      );
+      assert.deepEqual(workspace?.extraRoots, [sibling]);
     }),
   );
 });

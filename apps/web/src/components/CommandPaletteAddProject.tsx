@@ -9,7 +9,9 @@ import { sourceControlClients } from "@t3tools/client-runtime/source-control-cli
 import type { SourceControlProviderKind } from "@t3tools/contracts";
 import { FolderGit2Icon, LinkIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { msg, T, useGT } from "gt-react";
 
+import { m, type MessageResolver } from "~/i18n/messages";
 import { sourceControlIcon } from "~/sourceControlPresentation";
 import { ITEM_ICON_CLASS } from "./CommandPalette.logic";
 import { CommandPaletteTitleIcon } from "./CommandPaletteResults";
@@ -84,6 +86,7 @@ export function NewProjectPublishHostPicker(props: {
   readonly value: SourceControlProviderKind;
   readonly onValueChange: (kind: SourceControlProviderKind) => void;
 }) {
+  const gt = useGT();
   const [open, setOpen] = useState(false);
   return (
     <span
@@ -105,7 +108,7 @@ export function NewProjectPublishHostPicker(props: {
           if (kind !== null) props.onValueChange(kind);
         }}
       >
-        <SelectTrigger size="xs" variant="ghost" aria-label="Host for the new repository">
+        <SelectTrigger size="xs" variant="ghost" aria-label={gt("Host for the new repository")}>
           <SelectValue>
             {(kind: SourceControlProviderKind) => sourceControlClients.get(kind).label}
           </SelectValue>
@@ -131,6 +134,8 @@ export function NewProjectSummary(props: {
   readonly projectsRoot: string | null;
   readonly environmentLabel: string | null;
 }) {
+  const gt = useGT();
+  const environment = props.environmentLabel;
   return (
     <div className="p-2 pb-0">
       <div className="flex min-h-8 items-center gap-2 rounded-sm px-2 py-1.5">
@@ -139,13 +144,19 @@ export function NewProjectSummary(props: {
         </CommandPaletteTitleIcon>
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-foreground text-sm">
-            {props.name.length > 0 ? props.name : "New project"}
+            {props.name.length > 0 ? props.name : gt("New project")}
           </span>
           <span className="truncate text-muted-foreground/85 text-xs">
             {props.name.length > 0
-              ? `Creates ${props.pathPreview}`
-              : `Goes in ${props.projectsRoot}`}
-            {props.environmentLabel === null ? null : ` on ${props.environmentLabel}`}
+              ? environment === null
+                ? gt("Creates {path}", { path: props.pathPreview })
+                : gt("Creates {path} on {environment}", { path: props.pathPreview, environment })
+              : environment === null
+                ? gt("Goes in {root}", { root: String(props.projectsRoot) })
+                : gt("Goes in {root} on {environment}", {
+                    root: String(props.projectsRoot),
+                    environment,
+                  })}
           </span>
         </span>
       </div>
@@ -160,7 +171,9 @@ export function RemoteRepositorySummary(props: {
 }) {
   return (
     <div className="shrink-0 p-2 pb-0">
-      <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Repository</div>
+      <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+        <T>Repository</T>
+      </div>
       <div className="flex min-h-8 items-center gap-2 rounded-sm px-2 py-1.5">
         <CommandPaletteTitleIcon>
           {remoteProjectSourceIcon(props.source, ITEM_ICON_CLASS)}
@@ -177,12 +190,13 @@ export function RemoteRepositorySummary(props: {
 export function buildWorkspaceFileSourceItem(
   environmentId: EnvironmentId,
   openImport: () => void,
+  resolve: MessageResolver = m,
 ): CommandPaletteActionItem {
   return {
     kind: "action",
     value: `action:import-workspace-file:${environmentId}`,
     searchTerms: ["import", "workspace file"],
-    title: "Import workspace file",
+    title: resolve(msg("Import workspace file")),
     icon: <FileSearchIcon className={ITEM_ICON_CLASS} />,
     keepOpen: true,
     run: async () => {

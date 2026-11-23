@@ -13,9 +13,10 @@ import {
   resolveSubagentMetadata,
   subagentDetailPreview,
 } from "@t3tools/client-runtime/state/subagent-display";
-import { REASONING_EFFORT_OPTION_IDS } from "@t3tools/client-runtime/state/thread-execution";
-import { getModelSelectionStringOptionValue, resolveSelectableModel } from "@t3tools/shared/model";
+import { readSelectedEffortValue } from "@t3tools/client-runtime/state/thread-execution";
+import { resolveSelectableModel } from "@t3tools/shared/model";
 import { getTraitsSpeedDisplay, TraitsSpeedIcon } from "./TraitsSpeed";
+import { useGT, useMessages } from "gt-react";
 import type { ReactNode } from "react";
 import {
   BotIcon,
@@ -42,9 +43,14 @@ export function SubagentTooltipContent(props: {
   providers?: ReadonlyArray<ServerProvider> | undefined;
   driver?: ProviderDriverKind | undefined;
   elapsed?: ReactNode;
-  parentThread?: Pick<OrchestrationV2ThreadShell, "projectId" | "worktreePath"> | undefined;
+  parentThread?:
+    | Pick<OrchestrationV2ThreadShell, "projectId" | "worktreePath" | "workspacePrimaryPath">
+    | undefined;
   childThread?:
-    | Pick<OrchestrationV2ThreadShell, "branch" | "worktreePath" | "modelSelection">
+    | Pick<
+        OrchestrationV2ThreadShell,
+        "branch" | "worktreePath" | "modelSelection" | "workspacePrimaryPath"
+      >
     | undefined;
   parentProject?: Pick<OrchestrationProjectShell, "workspaceRoot"> | undefined;
   childProject?: Pick<OrchestrationProjectShell, "id" | "title" | "workspaceRoot"> | undefined;
@@ -52,30 +58,37 @@ export function SubagentTooltipContent(props: {
   result?: string | null | undefined;
   progress?: string | null | undefined;
 }) {
+  const gt = useGT();
+  const messages = useMessages();
   const childSelection =
     props.modelSelection ??
     (props.origin === "app_owned" ? props.childThread?.modelSelection : undefined);
-  const { modelLabel, modelSlug } = resolveSubagentMetadata({
-    ...props,
-    modelSelection: childSelection,
-  });
+  const { modelLabel, modelSlug } = resolveSubagentMetadata(
+    {
+      ...props,
+      modelSelection: childSelection,
+    },
+    messages,
+  );
   // A bound thread keeps its original primary folder when project membership changes.
   const currentWorkspace = threadPrimaryPath(props.parentThread, props.parentProject);
   const childWorkspace = threadPrimaryPath(props.childThread, props.childProject);
+  const hasProjectRow =
+    props.parentThread !== undefined &&
+    props.childProject !== undefined &&
+    props.childProject.id !== props.parentThread.projectId;
   const metadata = [
-    ...(props.parentThread &&
-    props.childProject &&
-    props.childProject.id !== props.parentThread.projectId
-      ? [{ label: "Project", value: props.childProject.title }]
+    ...(hasProjectRow && props.childProject
+      ? [{ label: gt("Project"), value: props.childProject.title }]
       : []),
     ...(currentWorkspace && childWorkspace && currentWorkspace !== childWorkspace
       ? [
           {
             label: props.childThread?.branch
-              ? "Branch"
+              ? gt("Branch")
               : props.childThread?.worktreePath
-                ? "Worktree"
-                : "Workspace",
+                ? gt("Worktree")
+                : gt("Workspace"),
             value: props.childThread?.branch ?? fileBasename(childWorkspace),
           },
         ]
@@ -95,9 +108,10 @@ export function SubagentTooltipContent(props: {
     childModel === modelSlug && childSelection?.instanceId === props.providerInstanceId
       ? childSelection
       : undefined;
-  const effort = REASONING_EFFORT_OPTION_IDS.map((id) =>
-    getModelSelectionStringOptionValue(matchingSelection, id),
-  ).find(Boolean);
+  const effort = readSelectedEffortValue(
+    matchingSelection,
+    providerModel?.capabilities?.optionDescriptors,
+  );
   const speed = provider
     ? providerModel?.capabilities?.optionDescriptors
         ?.map((descriptor) => {
@@ -107,10 +121,13 @@ export function SubagentTooltipContent(props: {
             descriptor.type === "boolean" &&
             typeof saved?.value === "boolean"
           ) {
-            return getTraitsSpeedDisplay({
-              ...descriptor,
-              currentValue: saved.value,
-            });
+            return getTraitsSpeedDisplay(
+              {
+                ...descriptor,
+                currentValue: saved.value,
+              },
+              messages,
+            );
           }
           if (
             descriptor.id === "serviceTier" &&
@@ -118,10 +135,13 @@ export function SubagentTooltipContent(props: {
             typeof saved?.value === "string" &&
             descriptor.options.some((option) => option.id === saved.value)
           ) {
-            return getTraitsSpeedDisplay({
-              ...descriptor,
-              currentValue: saved.value,
-            });
+            return getTraitsSpeedDisplay(
+              {
+                ...descriptor,
+                currentValue: saved.value,
+              },
+              messages,
+            );
           }
           return null;
         })
@@ -152,7 +172,7 @@ export function SubagentTooltipContent(props: {
             showBadge={showInstanceBadge && entry?.accentColor !== undefined}
             badgeContent="none"
             badgeClassName="h-2 min-w-2 px-0"
-            iconClassName="size-3 shrink-0 grayscale opacity-60"
+            iconClassName="size-3 shrink-0 opacity-60"
           />
         ) : (
           <BotIcon className="size-3 shrink-0" />
@@ -186,12 +206,29 @@ export function SubagentTooltipContent(props: {
           )}
         >
           <StatusIcon aria-hidden className="size-3 shrink-0" />
-          {props.status.replaceAll("_", " ")}
+          {props.status === "idle"
+            ? gt("idle", { $context: "subagent status" })
+            : props.status === "pending"
+              ? gt("pending", { $context: "subagent status" })
+              : props.status === "running"
+                ? gt("running", { $context: "subagent status" })
+                : props.status === "waiting"
+                  ? gt("waiting", { $context: "subagent status" })
+                  : props.status === "completed"
+                    ? gt("completed", { $context: "subagent status" })
+                    : props.status === "failed"
+                      ? gt("failed", { $context: "subagent status" })
+                      : props.status === "cancelled"
+                        ? gt("cancelled", { $context: "subagent status" })
+                        : props.status === "interrupted"
+                          ? gt("interrupted", { $context: "subagent status" })
+                          : (props.status as string).replaceAll("_", " ")}
         </span>
         {props.elapsed}
       </div>
-      {metadata.map(({ label, value }) => {
-        const Icon = label === "Branch" ? GitBranchIcon : FolderIcon;
+      {metadata.map(({ label, value }, index) => {
+        const Icon =
+          props.childThread?.branch && !(hasProjectRow && index === 0) ? GitBranchIcon : FolderIcon;
         return (
           <div key={label} className="flex min-w-0 items-center gap-2">
             <Icon aria-hidden className="size-3 shrink-0" />

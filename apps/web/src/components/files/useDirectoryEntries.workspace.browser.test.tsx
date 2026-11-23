@@ -179,9 +179,8 @@ describe("workspace explorer loading", () => {
       folders: [project.folders[0]!, { path: "/docs", name: "docs", label: "docs" }],
     };
     const nextFolders = [folders[0], { folderPath: "/docs", label: "docs", status: "ok" as const }];
-    mocks.execute.mockResolvedValue(
-      AsyncResult.success({ entries: [], folders: nextFolders, truncated: false }),
-    );
+    const newRoot = Promise.withResolvers<unknown>();
+    mocks.execute.mockReturnValue(newRoot.promise);
     await screen.rerender(
       <Explorer
         onChange={onChange}
@@ -191,6 +190,12 @@ describe("workspace explorer loading", () => {
     await act(async () => {
       release();
       await oldRequest;
+    });
+    expect(state.entries).toEqual([]);
+    expect(state.folders).toEqual([]);
+    expect(state.isPending).toBe(true);
+    await act(() => {
+      newRoot.resolve(AsyncResult.success({ entries: [], folders: nextFolders, truncated: false }));
     });
     expect(state.entries).toEqual([
       { path: "api", kind: "directory" },

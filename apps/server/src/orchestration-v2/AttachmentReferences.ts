@@ -189,6 +189,18 @@ export const applyWithAttachmentPruning = Effect.fnUntraced(function* (
     return 0;
   }
   const sql = yield* SqlClient.SqlClient;
+  const loadCommandId =
+    stored.commandId === null
+      ? sql<{ command_id: string | null }>`
+          SELECT command_id FROM orchestration_events WHERE event_id = ${event.id}
+        `.pipe(Effect.map((rows) => rows[0]?.command_id))
+      : Effect.succeed(stored.commandId);
+  const deletionCommandId = event.type === "thread.deleted" ? yield* loadCommandId : undefined;
+  // The deletion command already queues cleanup and accounts for history shown by live forks.
+  if (deletionCommandId != null) {
+    yield* apply;
+    return 0;
+  }
   const oldPayloads = (yield* isCompleteAttachmentReferenceIndex())
     ? yield* sql<{ payload_json: string }>`
     SELECT reference.attachment_json AS payload_json
@@ -232,20 +244,18 @@ export const applyWithAttachmentPruning = Effect.fnUntraced(function* (
   yield* apply;
   if (removed.size === 0) return 0;
   const outbox = yield* EffectOutboxV2;
-  const persisted = yield* sql<{
-    command_id: string | null;
-  }>`SELECT command_id FROM orchestration_events WHERE event_id = ${event.id}`;
+  const commandId = event.type === "thread.deleted" ? deletionCommandId : yield* loadCommandId;
   yield* outbox.enqueue([
     {
       id: `effect:${event.id}:attachment.prune`,
-      commandId:
-        stored.commandId ??
-        CommandId.make(persisted[0]?.command_id ?? `attachment-prune:${event.id}`),
+      commandId: CommandId.make(commandId ?? `attachment-prune:${event.id}`),
       threadId: event.threadId,
       request: {
         type: "attachment.cleanup",
         attachmentIds: Array.from(new Set(removed.values())),
         relativePaths: Array.from(removed.keys()),
+        // Forks can still show inherited files without their own attachment rows.
+        ...(event.type === "thread.deleted" ? {} : { skipReferenced: true }),
       },
     },
   ]);

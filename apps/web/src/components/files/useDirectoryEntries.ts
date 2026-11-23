@@ -1,10 +1,13 @@
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import type { EnvironmentId, ProjectEntry, WorkspaceScopeFolder } from "@t3tools/contracts";
 import { useAtomMount, useAtomSubscribe } from "@effect/atom-react";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
-import { useEffect, useRef, useState } from "react";
+import { msg } from "gt-react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import { environmentCatalog } from "~/connection/catalog";
+import { m } from "~/i18n/messages";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { projectEnvironment } from "~/state/projects";
 import { useStableCallback } from "~/hooks/useStableCallback";
@@ -28,7 +31,11 @@ export function useDirectoryEntries(
   const [loadingDirectories, setLoadingDirectories] = useState<ReadonlySet<string>>(
     () => new Set([""]),
   );
-  const requests = useRef(new Map<string, Promise<void>>());
+  // Source of truth for `directories`, so a listing can purge folders it no longer holds.
+  const listings = useRef(new Map<string, readonly ProjectEntry[]>());
+  type DirectoryAtom = ReturnType<typeof projectEnvironment.listEntries>;
+  const requests = useRef(new Map<string, { atom: DirectoryAtom; request: Promise<void> }>());
+  const detachedRequests = useRef(new Map<DirectoryAtom, Promise<void>>());
   const followUpRefreshes = useRef(new Map<string, Promise<void>>());
   const loaded = useRef(new Set<string>());
   const requested = useRef(new Set<string>());
@@ -37,7 +44,6 @@ export function useDirectoryEntries(
   const running = useRef(0);
   const waiting = useRef<Array<() => void>>([]);
 
-  // Callers count the request as pending first; the mount load is counted by the initial state.
   const startRequest = useStableCallback(
     (directoryPath: string, refresh: boolean): Promise<void> => {
       const requestGeneration = generation.current;
@@ -49,11 +55,13 @@ export function useDirectoryEntries(
         environmentId,
         input: scope ? { scope, directoryPath } : { cwd, directoryPath },
       });
+      const detached = detachedRequests.current.get(atom);
       const request = (async () => {
+        // A shared query still waiting would join the removed folder's read.
+        if (detached) await detached;
         if (running.current >= 4)
           await new Promise<void>((resolve) => waiting.current.push(resolve));
         else running.current++;
-        // executeAtomQuery settles instead of throwing, so the slot is always released.
         const result =
           active.current && generation.current === requestGeneration
             ? await executeAtomQuery(appAtomRegistry, atom, {
@@ -68,12 +76,19 @@ export function useDirectoryEntries(
         return result;
       })()
         .then((result) => {
-          if (!active.current || generation.current !== requestGeneration || !result) return;
+          // A request is dropped from `requests` when its folder disappears, so its read is stale.
+          if (
+            !active.current ||
+            generation.current !== requestGeneration ||
+            !result ||
+            requests.current.get(directoryPath)?.request !== request
+          )
+            return;
           if (result._tag === "Success") {
-            setFolders(result.value.folders ?? []);
-            const roots =
-              directoryPath === "" && (result.value.folders?.length ?? 0) > 1
-                ? result.value.folders!.map((folder) => ({
+            if (directoryPath === "") setFolders(result.value.folders ?? []);
+            const children =
+              directoryPath === "" && result.value.folders && result.value.folders.length > 1
+                ? result.value.folders.map((folder) => ({
                     path: folder.label,
                     kind: "directory" as const,
                   }))
@@ -82,11 +97,38 @@ export function useDirectoryEntries(
                       entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) ===
                       directoryPath,
                   );
-            setDirectories((previous) => new Map(previous).set(directoryPath, roots));
+            const next = new Map(listings.current).set(directoryPath, children);
+            const childDirectories = new Set(
+              children.filter((entry) => entry.kind === "directory").map((entry) => entry.path),
+            );
+            const prefix = directoryPath === "" ? "" : `${directoryPath}/`;
+            const removed = [...requested.current].filter((path) => {
+              if (path === directoryPath || !path.startsWith(prefix)) return false;
+              const slash = path.indexOf("/", prefix.length);
+              return !childDirectories.has(slash === -1 ? path : path.slice(0, slash));
+            });
+            for (const path of removed) {
+              next.delete(path);
+              loaded.current.delete(path);
+              requested.current.delete(path);
+              const detachedRequest = requests.current.get(path);
+              if (detachedRequest)
+                detachedRequests.current.set(detachedRequest.atom, detachedRequest.request);
+              requests.current.delete(path);
+              followUpRefreshes.current.delete(path);
+            }
+            listings.current = next;
+            setDirectories(next);
+            if (removed.length > 0)
+              setLoadingDirectories((previous) => {
+                const remaining = new Set(previous);
+                for (const path of removed) remaining.delete(path);
+                return remaining;
+              });
             setErrors((previous) => {
-              const next = new Map(previous);
-              next.delete(directoryPath);
-              return next;
+              const remaining = new Map(previous);
+              for (const path of [directoryPath, ...removed]) remaining.delete(path);
+              return remaining;
             });
           } else {
             loaded.current.delete(directoryPath);
@@ -94,39 +136,40 @@ export function useDirectoryEntries(
             setErrors((previous) =>
               new Map(previous).set(
                 directoryPath,
-                cause instanceof Error ? cause.message : "Unable to load folder.",
+                thrownErrorMessage(cause, m) ?? m(msg("Unable to load folder.")),
               ),
             );
           }
         })
         .finally(() => {
-          if (generation.current !== requestGeneration) return;
-          requests.current.delete(directoryPath);
-          if (!active.current) return;
+          if (detachedRequests.current.get(atom) === request) detachedRequests.current.delete(atom);
+          const current = requests.current.get(directoryPath)?.request === request;
+          if (current) requests.current.delete(directoryPath);
+          if (!active.current || generation.current !== requestGeneration) return;
           setPending((count) => count - 1);
-          if (!refresh)
+          if (!refresh && current)
             setLoadingDirectories((previous) => {
               const next = new Set(previous);
               next.delete(directoryPath);
               return next;
             });
         });
-      requests.current.set(directoryPath, request);
+      requests.current.set(directoryPath, { atom, request });
       return request;
     },
   );
 
   const load = function loadDirectory(directoryPath: string, refresh = false): Promise<void> {
-    const requestGeneration = generation.current;
-    const existing = requests.current.get(directoryPath);
+    const existing = requests.current.get(directoryPath)?.request;
     if (existing) {
       if (!refresh) return existing;
       let followUp = followUpRefreshes.current.get(directoryPath);
       if (!followUp) {
         followUp = existing.then(() => {
-          if (!active.current || generation.current !== requestGeneration) return;
+          if (followUpRefreshes.current.get(directoryPath) !== followUp) return;
           followUpRefreshes.current.delete(directoryPath);
-          return loadDirectory(directoryPath, true);
+          if (active.current && requested.current.has(directoryPath))
+            return loadDirectory(directoryPath, true);
         });
         followUpRefreshes.current.set(directoryPath, followUp);
       }
@@ -149,10 +192,13 @@ export function useDirectoryEntries(
     setLoadingDirectories(new Set([""]));
   }
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the root directory read on mount and marks the hook inactive so late reads are ignored
-  useEffect(() => {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Invalidate old reads in the commit, before their promises can update the new scope.
+  useLayoutEffect(() => {
     generation.current++;
     active.current = true;
+    listings.current.clear();
+    for (const { atom, request } of requests.current.values())
+      detachedRequests.current.set(atom, request);
     requests.current.clear();
     followUpRefreshes.current.clear();
     loaded.current.clear();

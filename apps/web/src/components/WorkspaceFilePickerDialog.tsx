@@ -1,3 +1,5 @@
+import { T, useGT } from "gt-react";
+import { m } from "../i18n/messages";
 import {
   filterFilesystemBrowseEntries,
   getFilesystemBrowsePath,
@@ -39,6 +41,7 @@ export function WorkspaceFilePickerDialog(props: {
   readonly onSelect: (path: string) => Promise<void>;
   readonly children?: ReactNode;
 }) {
+  const gt = useGT();
   const { environments } = useEnvironments();
   const environment = environments.find(
     (candidate) => candidate.environmentId === props.environmentId,
@@ -76,11 +79,14 @@ export function WorkspaceFilePickerDialog(props: {
   );
   const submit = async (rawPath: string) => {
     if (pending || !enabled) return;
-    const resolved = resolveAddProjectPath({
-      rawPath,
-      platform,
-      currentProjectCwd: props.cwd ?? null,
-    });
+    const resolved = resolveAddProjectPath(
+      {
+        rawPath,
+        platform,
+        currentProjectCwd: props.cwd ?? null,
+      },
+      m,
+    );
     if (!resolved.ok) {
       setError(resolved.error);
       return;
@@ -134,13 +140,19 @@ export function WorkspaceFilePickerDialog(props: {
         <DialogHeader>
           <DialogTitle>{props.title}</DialogTitle>
           <DialogDescription>
-            Choose a .code-workspace file on {environment?.label ?? "this environment"}. T3 reads
-            its folders without changing the file.
+            {environment?.label == null
+              ? gt(
+                  "Choose a .code-workspace file on this environment. T3 reads its folders without changing the file.",
+                )
+              : gt(
+                  "Choose a .code-workspace file on {environment}. T3 reads its folders without changing the file.",
+                  { environment: environment.label },
+                )}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 px-6 pb-4">
           <Input
-            aria-label="Workspace file path"
+            aria-label={gt("Workspace file path")}
             value={query}
             disabled={pending}
             onChange={(event) => {
@@ -187,7 +199,9 @@ export function WorkspaceFilePickerDialog(props: {
               </div>
             ))}
             {browse.isPending ? (
-              <p className="text-sm text-muted-foreground">Loading folders and workspace files…</p>
+              <p className="text-sm text-muted-foreground">
+                <T>Loading folders and workspace files…</T>
+              </p>
             ) : null}
           </div>
           {props.children ? <fieldset disabled={pending}>{props.children}</fieldset> : null}
@@ -198,24 +212,24 @@ export function WorkspaceFilePickerDialog(props: {
           ) : null}
           {!enabled ? (
             <p role="alert" className="text-sm text-muted-foreground">
-              Connect an environment with workspace-file projects enabled.
+              <T>Connect an environment with workspace-file projects enabled.</T>
             </p>
           ) : null}
         </div>
         <DialogFooter>
           {pickNative && enabled ? (
             <Button variant="outline" disabled={pending} onClick={() => void chooseNative()}>
-              Choose workspace file…
+              <T>Choose workspace file…</T>
             </Button>
           ) : null}
           <Button variant="ghost" disabled={pending} onClick={() => props.onOpenChange(false)}>
-            Cancel
+            <T>Cancel</T>
           </Button>
           <Button
             disabled={pending || !enabled || !query.trim()}
             onClick={() => void submit(selectedPath)}
           >
-            {pending ? "Reading…" : "Use workspace file"}
+            {pending ? gt("Reading…") : gt("Use workspace file")}
           </Button>
         </DialogFooter>
       </DialogPopup>

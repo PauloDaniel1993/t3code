@@ -1,4 +1,8 @@
 import * as NodeModule from "node:module";
+import { msg } from "gt-react";
+import { m } from "../../i18n/messages";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { countPreparingComposerImages, holdComposerSend } from "./preparingComposerImages";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import * as Runtime from "@t3tools/client-runtime/state/runtime";
 import * as ComposerTrigger from "@t3tools/shared/composerTrigger";
@@ -53,7 +57,13 @@ import {
 const handlerStart = composerSendSource.indexOf("  const onSend = async (");
 const handlerEnd = composerSendSource.indexOf("\n  const onSendLatest =", handlerStart);
 if (handlerStart < 0 || handlerEnd < 0) throw new Error("Composer send handler was not found");
-const handler = NodeModule.stripTypeScriptTypes(composerSendSource.slice(handlerStart, handlerEnd));
+const helperStart = composerSendSource.indexOf("function liveAttachmentCapabilities(");
+const helperEnd = composerSendSource.indexOf("interface ComposerSendInput", helperStart);
+if (helperStart < 0 || helperEnd < 0) throw new Error("Composer send helpers were not found");
+const handler = NodeModule.stripTypeScriptTypes(
+  composerSendSource.slice(helperStart, helperEnd) +
+    composerSendSource.slice(handlerStart, handlerEnd),
+);
 
 export function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -117,6 +127,11 @@ export function createSendHarness(
     ...Uploads,
     ...refs,
     appAtomRegistry,
+    msg,
+    m,
+    thrownErrorMessage,
+    countPreparingComposerImages,
+    holdComposerSend,
     toastManager,
     stackedThreadToast,
     scopeThreadRef,
@@ -174,6 +189,9 @@ export function createSendHarness(
       workspaceRoot: "I:/fixture",
     },
     activeProjectDefaultModelSelection: null,
+    activeProjectIsScratch: false,
+    isGitRepo: true,
+    readWorktreeBaseBranch: () => undefined,
     activeThreadBranch: "main",
     activeThreadKey: routeThreadKey,
     isServerThread: typeof target !== "string",
@@ -188,6 +206,7 @@ export function createSendHarness(
     needsLoadBalancing: false,
     activeEnvironmentUnavailable: false,
     activePendingProgress: null,
+    activePendingUserInput: null,
     sideChatDisabledReason: null,
     onSideChat: undefined,
     editingQueuedRun: null,
@@ -247,6 +266,7 @@ export function createSendHarness(
       current: {
         resetCursorState,
         validateProviderInput: () => true,
+        hasPendingAttachments: () => false,
         getSendContext: () => {
           const draft = store.getComposerDraft(target);
           return {

@@ -1,3 +1,4 @@
+import { useGT } from "gt-react";
 import { createContext, useContext } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { type EnvironmentId, type ProjectId, type FlowModel } from "@t3tools/contracts";
@@ -33,6 +34,7 @@ function EnvironmentModelPicker({
   value: FlowModel;
   onChange: (value: FlowModel) => void;
 }) {
+  const gt = useGT();
   const settings = useEnvironmentSettings(environmentId);
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
@@ -46,7 +48,7 @@ function EnvironmentModelPicker({
   if (!instanceId)
     return (
       <Choice
-        label="Provider"
+        label={gt("Provider")}
         value=""
         values={["", ...entries.map((entry) => entry.instanceId)]}
         onChange={(id) => {

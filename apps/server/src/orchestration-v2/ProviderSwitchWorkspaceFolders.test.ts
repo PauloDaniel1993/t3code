@@ -19,6 +19,7 @@ import * as Stream from "effect/Stream";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -44,6 +45,9 @@ const adapterFor = (instanceId: ProviderInstanceId) =>
 const runtimePolicyLayer = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(
     Layer.mergeAll(
+      Layer.mock(WorkspaceFolders.WorkspaceFolders)({
+        forThread: () => Effect.succeed({ folders: [], extraRoots: [] }),
+      }),
       Layer.mock(ProjectStore.ProjectStoreV2)({
         get: () =>
           Effect.succeedSome({

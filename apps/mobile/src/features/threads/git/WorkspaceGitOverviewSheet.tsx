@@ -5,11 +5,13 @@ import {
   workspaceActionOutcomeSummary,
   workspaceActionState,
 } from "@t3tools/client-runtime/state/vcs";
-import type { WorkspaceGitCheckout } from "@t3tools/shared/workspaceFolders";
-import { useMemo, useState } from "react";
+import { threadPrimaryPath, type WorkspaceGitCheckout } from "@t3tools/shared/workspaceFolders";
+import { use, useMemo, useState } from "react";
 import { Atom } from "effect/reactivity";
 import { Alert, Pressable, View } from "react-native";
 import * as Cause from "effect/Cause";
+import { msg, T, useGT, useMessages } from "gt-react-native";
+import { m } from "../../../i18n/messages";
 import { AppText as Text, AppTextInput } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { AppBar } from "../../../components/ui/AppBar";
@@ -23,6 +25,10 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { useVcsActionState } from "../../../state/use-vcs-action-state";
 import { vcsActionManager, vcsEnvironment, workspaceVcs } from "../../../state/vcs";
 import { appAtomRegistry } from "../../../state/atom-registry";
+import { filesystemEnvironment } from "../../../state/filesystem";
+import { useEnvironmentQuery } from "../../../state/query";
+import { InspectorSheetContext } from "../../layout/workspace-inspector-sheet";
+import { ThreadRepositoryRows } from "./ThreadRepositoryRows";
 import { workspaceGitSummary } from "./workspace-git-model";
 import { ListRow } from "../../../components/ui/ListRow";
 import { ListSection } from "../../../components/ui/ListSection";
@@ -38,7 +44,10 @@ import { useLinkedPullRequestActions } from "../useLinkedPullRequestActions";
 function reportFailure(result: { readonly _tag: string; readonly cause?: Cause.Cause<unknown> }) {
   if (result._tag === "Failure" && result.cause) {
     const error = Cause.squash(result.cause);
-    Alert.alert("Git action failed", error instanceof Error ? error.message : String(error));
+    Alert.alert(
+      m(msg("Git action failed")),
+      error instanceof Error ? error.message : String(error),
+    );
   }
 }
 
@@ -59,6 +68,7 @@ function RepositoryControls(props: {
   readonly primary: boolean;
 }) {
   const navigation = useNavigation();
+  const gt = useGT();
   const { checkout, status } = props;
   const actionPermission = workspaceVcs.runAction.permissionAtom(props.target.environmentId);
   const branchPermission = workspaceVcs.switchBranch.permissionAtom(props.target.environmentId);
@@ -102,11 +112,13 @@ function RepositoryControls(props: {
     };
     if (status?.isDefaultRef && action !== "commit")
       Alert.alert(
-        "Default branch",
-        `Run ${action === "push" ? "push" : "Create PR"} on ${status.refName}?`,
+        gt("Default branch"),
+        action === "push"
+          ? gt("Run push on {branch}?", { branch: String(status.refName) })
+          : gt("Run Create PR on {branch}?", { branch: String(status.refName) }),
         [
-          { text: "Cancel", style: "cancel" },
-          { text: "Continue", onPress: () => void execute() },
+          { text: gt("Cancel"), style: "cancel" },
+          { text: gt("Continue"), onPress: () => void execute() },
         ],
       );
     else await execute();
@@ -119,9 +131,16 @@ function RepositoryControls(props: {
           props.drifted ? "text-sm text-warning-foreground" : "text-sm text-foreground-muted"
         }
       >
-        {status?.refName ?? "Status unavailable"}
-        {props.drifted ? " · drifted" : ""} · {status?.workingTree.files.length ?? 0} files changed
-        · +{status?.workingTree.insertions ?? 0}/−{status?.workingTree.deletions ?? 0}
+        {gt(
+          "{status} · {drift, select, drifted {drifted · } other {}}{count} files changed · +{insertions}/−{deletions}",
+          {
+            status: status?.refName ?? gt("Status unavailable"),
+            drift: props.drifted ? "drifted" : "current",
+            count: status?.workingTree.files.length ?? 0,
+            insertions: status?.workingTree.insertions ?? 0,
+            deletions: status?.workingTree.deletions ?? 0,
+          },
+        )}
       </Text>
       <Text selectable className="text-xs text-foreground-muted">
         {checkout.cwd}
@@ -129,7 +148,7 @@ function RepositoryControls(props: {
       {actionState.isRunning ? <Text className="text-sm">{actionState.currentLabel}</Text> : null}
       {props.drifted && checkout.expectedBranch ? (
         <Button
-          label={`Switch back to ${checkout.expectedBranch}`}
+          label={gt("Switch back to {branch}", { branch: checkout.expectedBranch })}
           disabled={busy || !canSwitchBranch}
           onPress={() => {
             if (!appAtomRegistry.get(branchPermission)) return;
@@ -138,7 +157,7 @@ function RepositoryControls(props: {
               .track(
                 appAtomRegistry,
                 { environmentId: props.target.environmentId, cwd: checkout.cwd },
-                { operation: "switch_ref", label: "Switching back" },
+                { operation: "switch_ref", label: gt("Switching back") },
                 () =>
                   switchBack({
                     environmentId: props.target.environmentId,
@@ -163,7 +182,7 @@ function RepositoryControls(props: {
       ) : null}
       <View className="flex-row flex-wrap gap-2">
         <Button
-          label="Commit"
+          label={gt("Commit", { $context: "verb, commit Git changes" })}
           disabled={busy || !canRunAction || !status?.hasWorkingTreeChanges}
           onPress={() =>
             props.primary
@@ -172,12 +191,16 @@ function RepositoryControls(props: {
           }
         />
         <Button
-          label="Push"
+          label={gt("Push", { $context: "verb, upload Git commits to a remote" })}
           disabled={busy || !canRunAction || !status?.hasPrimaryRemote || !status.refName}
           onPress={() => void runAction("push")}
         />
         <Button
-          label={status?.pr?.state === "open" ? `PR #${status.pr.number}` : "Create PR"}
+          label={
+            status?.pr?.state === "open"
+              ? gt("PR #{number}", { number: status.pr.number })
+              : gt("Create PR")
+          }
           disabled={
             busy ||
             (status?.pr?.state !== "open" && !canRunAction) ||
@@ -194,15 +217,17 @@ function RepositoryControls(props: {
       {commitOpen ? (
         <View className="gap-2">
           <AppTextInput
-            accessibilityLabel={`Commit message for ${checkout.label}`}
+            accessibilityLabel={gt("Commit message for {repository}", {
+              repository: checkout.label,
+            })}
             className="min-h-12 rounded-xl bg-input px-3 text-foreground"
             value={message}
-            placeholder="Leave empty to auto-generate"
+            placeholder={gt("Leave empty to auto-generate")}
             onChangeText={setMessage}
             editable={!busy}
           />
           <Button
-            label={`Commit ${checkout.label}`}
+            label={gt("Commit {repository}", { repository: checkout.label })}
             disabled={busy || !canRunAction}
             onPress={() => void runAction("commit")}
           />
@@ -220,6 +245,7 @@ function PrimaryRepositoryTools(props: {
   readonly presentation: "sheet" | "inspector";
 }) {
   const navigation = useNavigation();
+  const gt = useGT();
   const pull = useAtomCommand(vcsEnvironment.pull, { reportFailure: false });
   const pullPermission = vcsEnvironment.pull.permissionAtom(props.target.environmentId);
   const canPull = useAtomValue(pullPermission);
@@ -228,19 +254,23 @@ function PrimaryRepositoryTools(props: {
   );
   return (
     <View className="gap-1">
-      <Text className="font-t3-semibold">Primary repository</Text>
+      <Text className="font-t3-semibold">
+        <T>Primary repository</T>
+      </Text>
       <ListSection>
         <ListRow
           icon="arrow.down.circle"
-          label="Pull latest"
-          description={`${props.status?.behindCount ?? 0} commits behind upstream`}
+          label={gt("Pull latest", { $context: "verb, pull the latest Git changes" })}
+          description={gt("{count} commits behind upstream", {
+            count: props.status?.behindCount ?? 0,
+          })}
           disabled={props.busy || !canPull || !props.status?.hasUpstream}
           onPress={() => {
             if (!appAtomRegistry.get(pullPermission)) return;
             void vcsActionManager.track(
               appAtomRegistry,
               { environmentId: props.target.environmentId, cwd: props.checkout.cwd },
-              { operation: "pull", label: "Pulling latest changes" },
+              { operation: "pull", label: gt("Pulling latest changes") },
               async () => {
                 const result = await pull({
                   environmentId: props.target.environmentId,
@@ -256,8 +286,8 @@ function PrimaryRepositoryTools(props: {
       <ListSection>
         <ListRow
           icon="text.bubble"
-          label="Review changes"
-          description="Inspect turn diffs, working tree changes, and base branch diff"
+          label={gt("Review changes", { $context: "verb, inspect changes" })}
+          description={gt("Inspect turn diffs, working tree changes, and base branch diff")}
           disabled={props.busy || !props.status?.isRepo}
           onPress={() =>
             navigation.dispatch(
@@ -271,8 +301,8 @@ function PrimaryRepositoryTools(props: {
       <ListSection>
         <ListRow
           icon="point.topleft.down.curvedto.point.bottomright.up"
-          label="Branches & worktrees"
-          description="Switch branch, create branch, or move the primary to a worktree"
+          label={gt("Branches & worktrees")}
+          description={gt("Switch branch, create branch, or move the primary to a worktree")}
           disabled={props.busy || !canChangeThreadBranch || !props.status?.isRepo}
           onPress={() => navigation.navigate("GitBranches", props.target)}
         />
@@ -286,8 +316,22 @@ export function WorkspaceGitOverviewSheet(props: {
   readonly presentation?: "sheet" | "inspector";
 }) {
   const navigation = useNavigation();
+  const gt = useGT();
+  const resolveMessage = useMessages();
   const isInspector = props.presentation === "inspector";
   const workspace = useThreadWorkspace(props.target);
+  const closeInspectorSheet = use(InspectorSheetContext);
+  const tracksRepositories = (workspace.project?.trackedFolders?.length ?? 0) > 0;
+  const worktreePath = workspace.thread?.worktreePath ?? workspace.shell?.worktreePath ?? null;
+  const taskFolderQuery = useEnvironmentQuery(
+    tracksRepositories && worktreePath !== null
+      ? filesystemEnvironment.taskFolder({
+          environmentId: props.target.environmentId,
+          input: { worktreePath },
+        })
+      : null,
+  );
+  const taskFolder = taskFolderQuery.data?.taskFolder ?? null;
   const queries = useWorkspaceGitQueries(props.target, workspace.checkouts);
   const statuses = queries.map((query) => query.status);
   const participation = workspaceActionState(
@@ -386,11 +430,11 @@ export function WorkspaceGitOverviewSheet(props: {
             ).length;
             Alert.alert(
               completed === result.value.results.length
-                ? "Workspace action completed"
+                ? gt("Workspace action completed")
                 : completed > 0
-                  ? "Workspace action partially completed"
-                  : "Workspace action did not complete",
-              workspaceActionOutcomeSummary(result.value),
+                  ? gt("Workspace action partially completed")
+                  : gt("Workspace action did not complete"),
+              workspaceActionOutcomeSummary(result.value, resolveMessage),
             );
           }
         },
@@ -398,10 +442,14 @@ export function WorkspaceGitOverviewSheet(props: {
       );
     };
     if (action !== "commit" && statuses.some((status) => status?.isDefaultRef))
-      Alert.alert("Default branches", "This action includes a repository on its default branch.", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Continue", onPress: () => void execute() },
-      ]);
+      Alert.alert(
+        gt("Default branches"),
+        gt("This action includes a repository on its default branch."),
+        [
+          { text: gt("Cancel"), style: "cancel" },
+          { text: gt("Continue"), onPress: () => void execute() },
+        ],
+      );
     else await execute();
   };
   const content = (
@@ -413,13 +461,22 @@ export function WorkspaceGitOverviewSheet(props: {
       <ListSection>
         <ListRow
           icon="arrow.triangle.branch"
-          label={`${workspace.thread?.worktrees?.length ? (workspace.thread.branch ?? summary.branch) : !participation.ready ? "Loading branches…" : summary.branch} · ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`}
+          label={gt("{branch} · {count, plural, =1 {{count} repo} other {{count} repos}}", {
+            branch: workspace.thread?.worktrees?.length
+              ? (workspace.thread.branch ?? summary.branch)
+              : !participation.ready
+                ? gt("Loading branches…")
+                : summary.branch,
+            count: repoCount,
+          })}
           description={
             summary.drifted
-              ? `${summary.drifted} repositories drifted. Batch actions paused.`
+              ? gt("{count} repositories drifted. Batch actions paused.", {
+                  count: summary.drifted,
+                })
               : workspace.thread?.worktrees?.length
-                ? "Change the branch across the worktree set"
-                : "Each repository uses its current checkout"
+                ? gt("Change the branch across the worktree set")
+                : gt("Each repository uses its current checkout")
           }
           disabled={busy || !canSwitchBranch || !workspace.thread?.worktrees?.length}
           onPress={() => setBranchOpen(!branchOpen)}
@@ -428,7 +485,7 @@ export function WorkspaceGitOverviewSheet(props: {
       {branchOpen ? (
         <View className="gap-2">
           <AppTextInput
-            accessibilityLabel="Shared branch"
+            accessibilityLabel={gt("Shared branch")}
             className="min-h-12 rounded-xl bg-input px-3 text-foreground"
             value={branch}
             onChangeText={setBranch}
@@ -437,7 +494,7 @@ export function WorkspaceGitOverviewSheet(props: {
             autoCorrect={false}
           />
           <Button
-            label="Switch all repositories"
+            label={gt("Switch all repositories")}
             disabled={busy || !canSwitchBranch || !branch.trim()}
             onPress={() => {
               if (!appAtomRegistry.get(branchPermission)) return;
@@ -451,7 +508,7 @@ export function WorkspaceGitOverviewSheet(props: {
                 .track(
                   appAtomRegistry,
                   { environmentId: props.target.environmentId, cwd: primary.cwd },
-                  { operation: "switch_ref", label: "Switching workspace branch" },
+                  { operation: "switch_ref", label: gt("Switching workspace branch") },
                   () =>
                     switchBranch({
                       environmentId: props.target.environmentId,
@@ -474,13 +531,16 @@ export function WorkspaceGitOverviewSheet(props: {
           icon="doc.text"
           label={
             participation.ready
-              ? `${summary.files.length} files changed across ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`
-              : "Loading workspace changes…"
+              ? gt(
+                  "{files} files changed across {repos, plural, =1 {{repos} repo} other {{repos} repos}}",
+                  { files: summary.files.length, repos: repoCount },
+                )
+              : gt("Loading workspace changes…")
           }
           description={
             participation.ready
               ? `+${summary.files.reduce((sum, file) => sum + file.insertions, 0)} / −${summary.files.reduce((sum, file) => sum + file.deletions, 0)}`
-              : "Checking repository status"
+              : gt("Checking repository status")
           }
           onPress={() =>
             navigation.dispatch(
@@ -494,13 +554,19 @@ export function WorkspaceGitOverviewSheet(props: {
       {repoCount > 0 ? (
         <View className="flex-row flex-wrap gap-2">
           <Button
-            label="Commit all"
+            label={gt("Commit all", {
+              $context: "verb, commit changes in all workspace repositories",
+            })}
             disabled={disabled || summary.files.length === 0}
             onPress={() => setCommitOpen(!commitOpen)}
           />
-          <Button label="Push all" disabled={disabled} onPress={() => void runBatch("push")} />
           <Button
-            label={`Create PRs (${repoCount})`}
+            label={gt("Push all", { $context: "verb, push all workspace repositories" })}
+            disabled={disabled}
+            onPress={() => void runBatch("push")}
+          />
+          <Button
+            label={gt("Create PRs ({count})", { count: repoCount })}
             disabled={disabled}
             onPress={() => void runBatch("create-prs")}
           />
@@ -510,15 +576,16 @@ export function WorkspaceGitOverviewSheet(props: {
         <View className="gap-2">
           {summary.files.some((file) => file.folderLabel === null) ? (
             <Text className="text-sm text-warning-foreground">
-              {summary.files.filter((file) => file.folderLabel === null).length} changed files
-              outside workspace folders will also be committed.
+              {gt("{count} changed files outside workspace folders will also be committed.", {
+                count: summary.files.filter((file) => file.folderLabel === null).length,
+              })}
             </Text>
           ) : null}
           <Text className="text-sm text-foreground-muted">
-            One commit message for every repository
+            <T>One commit message for every repository</T>
           </Text>
           <AppTextInput
-            accessibilityLabel="Workspace commit message"
+            accessibilityLabel={gt("Workspace commit message")}
             className="min-h-12 rounded-xl bg-input px-3 text-foreground"
             value={message}
             onChangeText={setMessage}
@@ -526,7 +593,7 @@ export function WorkspaceGitOverviewSheet(props: {
             multiline
           />
           <Button
-            label="Commit all repositories"
+            label={gt("Commit all repositories")}
             disabled={disabled || !message.trim()}
             onPress={() => void runBatch("commit")}
           />
@@ -534,8 +601,10 @@ export function WorkspaceGitOverviewSheet(props: {
       ) : null}
       {summary.drifted ? (
         <Text className="text-sm text-warning-foreground">
-          Switch drifted repositories back, or change the shared branch. Per-repo actions and
-          inspection remain available.
+          <T>
+            Switch drifted repositories back, or change the shared branch. Per-repo actions and
+            inspection remain available.
+          </T>
         </Text>
       ) : null}
       {progress ? (
@@ -545,7 +614,7 @@ export function WorkspaceGitOverviewSheet(props: {
       ) : null}
       {outcomes.length ? (
         <Text selectable className="text-sm">
-          {workspaceActionOutcomeSummary({ results: outcomes })}
+          {workspaceActionOutcomeSummary({ results: outcomes }, resolveMessage)}
         </Text>
       ) : null}
       {outcomes.map((member) =>
@@ -553,7 +622,7 @@ export function WorkspaceGitOverviewSheet(props: {
         member.outcome.result.toast.cta.kind === "open_pr" ? (
           <Button
             key={member.repositoryRoot}
-            label={`Open PR · ${member.label}`}
+            label={gt("Open PR · {repository}", { repository: member.label })}
             onPress={() => {
               if (
                 member.outcome._tag === "completed" &&
@@ -571,7 +640,10 @@ export function WorkspaceGitOverviewSheet(props: {
         onPress={() => setBreakdownOpen(!breakdownOpen)}
       >
         <Text className="font-t3-semibold">
-          {breakdownOpen ? "⌃" : "⌄"} Per-repo breakdown · {repoCount}
+          {gt("{arrow} Per-repo breakdown · {count}", {
+            arrow: breakdownOpen ? "⌃" : "⌄",
+            count: repoCount,
+          })}
         </Text>
       </Pressable>
       {breakdownOpen
@@ -597,15 +669,21 @@ export function WorkspaceGitOverviewSheet(props: {
               row.unavailable ? "text-sm text-warning-foreground" : "text-sm text-foreground-muted"
             }
           >
-            {row.folder.name} ·{" "}
-            {row.unavailable ? `Unavailable · ${row.reason}` : "Shared · not checkpointed"}
+            {row.unavailable
+              ? gt("{folder} · Unavailable · {reason}", {
+                  folder: row.folder.name,
+                  reason: String(row.reason),
+                })
+              : gt("{folder} · Shared · not checkpointed", { folder: row.folder.name })}
           </Text>
         ))}
       {workspace.checkouts
         .filter((_, index) => queries[index]?.error || statuses[index]?.isRepo === false)
         .map((checkout) => (
           <Text key={checkout.repositoryRoot} className="text-sm text-warning-foreground">
-            {checkout.label} · Repository status unavailable · excluded from actions
+            {gt("{repository} · Repository status unavailable · excluded from actions", {
+              repository: checkout.label,
+            })}
           </Text>
         ))}
       {workspace.rows[0]?.isGit && workspace.checkouts[0] ? (
@@ -617,18 +695,43 @@ export function WorkspaceGitOverviewSheet(props: {
           presentation={props.presentation ?? "sheet"}
         />
       ) : null}
+      {tracksRepositories && workspace.project ? (
+        <ThreadRepositoryRows
+          threadRef={props.target}
+          projectId={workspace.project.id}
+          threadCwd={threadPrimaryPath(workspace.thread ?? workspace.shell, workspace.project)}
+          taskFolder={taskFolder}
+          reachesTracked={worktreePath === null || taskFolder !== null}
+          onTaskFolderChange={taskFolderQuery.refresh}
+          explainsEmpty={false}
+          onOpen={(section) => {
+            const params = {
+              ...props.target,
+              repositoryCwd: section.cwd,
+              repositoryName: section.name,
+            };
+            if (!isInspector) {
+              navigation.dispatch(StackActions.replace("GitOverview", params));
+              return;
+            }
+            const present = () => navigation.dispatch(StackActions.push("GitOverview", params));
+            if (closeInspectorSheet) closeInspectorSheet(present);
+            else present();
+          }}
+        />
+      ) : null}
       {linkedPrActions.canLink ? (
         <ListSection>
           <ListRow
             icon="link"
-            label="Link pull request"
-            description="Attach a pull request by URL or number"
+            label={gt("Link pull request")}
+            description={gt("Attach a pull request by URL or number")}
             onPress={linkedPrActions.promptLink}
           />
         </ListSection>
       ) : null}
       {linkedPrLines.length > 0 ? (
-        <ListSection title="Linked pull requests">
+        <ListSection title={gt("Linked pull requests")}>
           {linkedPrLines.map((line, index) => (
             <LinkedPullRequestRow
               key={linkedPullRequestKey(line)}
@@ -641,13 +744,17 @@ export function WorkspaceGitOverviewSheet(props: {
           ))}
         </ListSection>
       ) : null}
-      <Button label="Refresh repositories" disabled={busy} onPress={() => void refreshAll()} />
+      <Button
+        label={gt("Refresh repositories")}
+        disabled={busy}
+        onPress={() => void refreshAll()}
+      />
     </NativeScrollView>
   );
   return (
     <SheetPane surface={isInspector ? "screen" : "sheet"}>
       <AppBar
-        title="Version Control"
+        title={gt("Version Control")}
         hideBottomBorder={!isInspector}
         onClose={isInspector ? undefined : () => navigation.goBack()}
       />

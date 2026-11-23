@@ -1,9 +1,9 @@
+import { subagentCardDetail } from "@t3tools/client-runtime/state/subagent-display";
 import * as DateTime from "effect/DateTime";
 import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   resolveSubagentCardChildThreadId,
-  subagentCardDetail,
   subagentCardElapsed,
 } from "./subagent-card-presentation";
 
@@ -36,15 +36,6 @@ describe("subagent card", () => {
     ).toBe("Updated app.ts with the fix. Checked tests.");
     expect(subagentCardDetail("Child task ended with status failed.")).toBeNull();
     expect(subagentCardDetail("  ")).toBeNull();
-  });
-
-  it.each([
-    ["![screenshot](screenshots/shot.png) Verified", "screenshot Verified"],
-    ["[docs](https://en.wikipedia.org/wiki/T3_(protocol))", "docs"],
-    ["[report](outputs/report%20(final).md)", "report"],
-    ["[report](outputs/report\\(final.md)", "report"],
-  ])("strips image and link markup from %s", (detail, expected) => {
-    expect(subagentCardDetail(detail)).toBe(expected);
   });
 
   const start = DateTime.makeUnsafe("2026-09-21T12:00:00Z");

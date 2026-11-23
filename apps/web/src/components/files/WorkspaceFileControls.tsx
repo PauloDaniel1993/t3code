@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react";
 import type { WorkspaceScopeFolder } from "@t3tools/contracts";
 import { Button } from "~/components/ui/button";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "~/components/ui/menu";
@@ -8,6 +9,7 @@ export function WorkspaceFolderPicker(props: {
   readonly value: string | undefined;
   readonly onChange: (folderPath: string | undefined) => void;
 }) {
+  const gt = useGT();
   if (!props.workspace || props.workspace.folders.length < 2) return null;
   const folders = props.workspace.folders;
   const selected = folders.find(
@@ -16,16 +18,18 @@ export function WorkspaceFolderPicker(props: {
   return (
     <Menu>
       <MenuTrigger
-        render={<Button variant="ghost" size="xs" aria-label="Search workspace folder" />}
+        render={<Button variant="ghost" size="xs" aria-label={gt("Search workspace folder")} />}
       >
-        {selected?.label ?? "All folders"}
+        {selected?.label ?? gt("All folders")}
       </MenuTrigger>
       <MenuPopup>
         <MenuRadioGroup
           value={props.value ?? ""}
           onValueChange={(value) => props.onChange(value || undefined)}
         >
-          <MenuRadioItem value="">All folders</MenuRadioItem>
+          <MenuRadioItem value="">
+            <T>All folders</T>
+          </MenuRadioItem>
           {folders.map((folder) => (
             <MenuRadioItem key={folder.label} value={folder.folder.path ?? folder.folder.uri!}>
               {folder.label}

@@ -1,3 +1,5 @@
+import { msg, T, useGT, useMessages } from "gt-react";
+import { m, type MessageResolver } from "~/i18n/messages";
 import { useParams } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -52,7 +54,7 @@ import { wayfinderEnvironment } from "~/state/wayfinder";
 import { resolveThreadRouteTarget } from "~/threadRoutes";
 
 import "./starMap.css";
-import { StarMapTicketDetail } from "./StarMapTicketDetail";
+import { StarMapTicketDetail, starMapTicketStatusText } from "./StarMapTicketDetail";
 import { starMapTaskSourcePath } from "./StarMapSurface.logic";
 import {
   boundsFromPoints,
@@ -101,20 +103,9 @@ export interface StarMapPanelProps {
   readonly workspace?: WorkspaceFileContext | undefined;
 }
 
-function ticketStatusText(node: WayfinderNode): string {
-  const status = (() => {
-    switch (node.status) {
-      case "open":
-        return "open";
-      case "claimed":
-        return node.claimedBy !== null ? `claimed by ${node.claimedBy}` : "claimed";
-      case "resolved":
-        return "resolved";
-      case "out_of_scope":
-        return "out of scope";
-    }
-  })();
-  return node.isFrontier ? `${status} · frontier` : status;
+function ticketStatusText(node: WayfinderNode, resolve: MessageResolver): string {
+  const status = starMapTicketStatusText(node, resolve);
+  return node.isFrontier ? resolve(msg("{status} · frontier", { status })) : status;
 }
 
 /** Blockers that still block: resolved or ruled-out blockers no longer hold a ticket back. */
@@ -128,13 +119,22 @@ function unresolvedBlockers(graph: StarMapGraph, nodeId: string): StarMapGraphNo
   });
 }
 
-function ticketAriaLabel(graph: StarMapGraph, node: StarMapGraphNode): string {
+function ticketAriaLabel(
+  graph: StarMapGraph,
+  node: StarMapGraphNode,
+  resolve: MessageResolver,
+): string {
   const blockers = unresolvedBlockers(graph, node.id);
-  const blockedBy =
-    blockers.length > 0
-      ? `, blocked by ${blockers.map((blocker) => blocker.label).join(", ")}`
-      : "";
-  return `${node.label}, ${ticketStatusText(node)}${blockedBy}`;
+  const status = ticketStatusText(node, resolve);
+  return blockers.length > 0
+    ? resolve(
+        msg("{label}, {status}, blocked by {blockers}", {
+          label: node.label,
+          status,
+          blockers: blockers.map((blocker) => blocker.label).join(", "),
+        }),
+      )
+    : resolve(msg("{label}, {status}", { label: node.label, status }));
 }
 
 function LintList(props: { lints: ReadonlyArray<WayfinderLint> }) {
@@ -159,10 +159,14 @@ function NoMapEmptyState() {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
       <MapIcon className="size-6 text-muted-foreground" aria-hidden />
-      <p className="text-sm font-medium text-foreground">No wayfinder map in this project</p>
+      <p className="text-sm font-medium text-foreground">
+        <T>No wayfinder map in this project</T>
+      </p>
       <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-        Wayfinder maps live in the project&apos;s .plan directory. Once one exists, its tickets and
-        blockers show up here.
+        <T>
+          Wayfinder maps live in the project&apos;s .plan directory. Once one exists, its tickets
+          and blockers show up here.
+        </T>
       </p>
     </div>
   );
@@ -172,7 +176,9 @@ function UnparseableMapEmptyState(props: { lints: ReadonlyArray<WayfinderLint> }
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6">
       <TriangleAlert className="size-6 text-muted-foreground" aria-hidden />
-      <p className="text-sm font-medium text-foreground">A map was found but could not be parsed</p>
+      <p className="text-sm font-medium text-foreground">
+        <T>A map was found but could not be parsed</T>
+      </p>
       <div className="w-full max-w-md">
         <LintList lints={props.lints} />
       </div>
@@ -191,6 +197,8 @@ function TicketList(props: {
   checkedTicketIds: ReadonlySet<string>;
   onToggleChecked: (ticketId: string) => void;
 }) {
+  const gt = useGT();
+  const messages = useMessages();
   const listRef = useRef<HTMLUListElement>(null);
   const ordered = [...props.graph.nodes].sort(
     (left, right) => left.rank - right.rank || left.ordinal - right.ordinal,
@@ -205,14 +213,14 @@ function TicketList(props: {
   }, [props.selectedTicketId]);
 
   return (
-    <ul aria-label="Tickets" className="space-y-0.5 p-2" ref={listRef}>
+    <ul aria-label={gt("Tickets")} className="space-y-0.5 p-2" ref={listRef}>
       {ordered.map((node) => {
         const selected = node.id === props.selectedTicketId;
         return (
           <li key={node.id} className="flex items-center gap-1">
             <Checkbox
-              aria-label={`Start ${node.label} as a task`}
-              title={node.isFrontier ? "Start as a task" : "Only ready tickets can start"}
+              aria-label={gt("Start {label} as a task", { label: node.label })}
+              title={node.isFrontier ? gt("Start as a task") : gt("Only ready tickets can start")}
               disabled={!node.isFrontier}
               checked={node.isFrontier && props.checkedTicketIds.has(node.id)}
               onCheckedChange={() => props.onToggleChecked(node.id)}
@@ -221,7 +229,7 @@ function TicketList(props: {
             <button
               type="button"
               data-ticket-id={node.id}
-              aria-label={ticketAriaLabel(props.graph, node)}
+              aria-label={ticketAriaLabel(props.graph, node, messages)}
               aria-current={selected ? "true" : undefined}
               onClick={() => props.onSelectTicket(node.id)}
               onFocus={() => props.onFocusTicket(node.id)}
@@ -236,7 +244,7 @@ function TicketList(props: {
               </span>
               <span className="min-w-0 flex-1 truncate text-sm text-foreground">{node.label}</span>
               <span className="shrink-0 truncate text-xs text-muted-foreground">
-                {ticketStatusText(node)}
+                {ticketStatusText(node, messages)}
               </span>
             </button>
           </li>
@@ -247,6 +255,8 @@ function TicketList(props: {
 }
 
 export default function StarMapPanel(props: StarMapPanelProps) {
+  const gt = useGT();
+  const messages = useMessages();
   const mapsQuery = useEnvironmentQuery(
     wayfinderEnvironment.maps({ environmentId: props.environmentId, input: { cwd: props.cwd } }),
   );
@@ -270,9 +280,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         const error = squashAtomCommandFailure(result);
         toastManager.add({
           type: "error",
-          title: "Could not reload map",
+          title: m(msg("Could not reload map")),
           description:
-            error instanceof Error ? error.message : "The map could not be read from disk.",
+            error instanceof Error ? error.message : m(msg("The map could not be read from disk.")),
         });
       }
     })();
@@ -361,7 +371,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const [isStartingTasks, setIsStartingTasks] = useState(false);
   const startInFlightRef = useRef(false);
-  const startUnavailable = taskUnavailable ?? (thread === null ? "Open a thread first." : null);
+  const startUnavailable = taskUnavailable ?? (thread === null ? gt("Open a thread first.") : null);
   // The thread's agent creates the tasks: it reads the map for each ticket's
   // complexity tier and the model that tier runs on, which the client cannot.
   const startTicketsAsTasks = async (tickets: ReadonlyArray<StarMapGraphNode>) => {
@@ -416,15 +426,23 @@ export default function StarMapPanel(props: StarMapPanelProps) {
           );
           toastManager.add({
             type: "success",
-            title: `Sent ${tickets.length} ${tickets.length === 1 ? "ticket" : "tickets"} to this thread`,
-            description: "Its agent starts one task per ticket and picks each model by complexity.",
+            title: m(
+              msg(
+                "Sent {count, plural, one {{count} ticket} other {{count} tickets}} to this thread",
+                { count: tickets.length },
+              ),
+            ),
+            description: m(
+              msg("Its agent starts one task per ticket and picks each model by complexity."),
+            ),
           });
         } else if (!isAtomCommandInterrupted(result)) {
           const error = squashAtomCommandFailure(result);
           toastManager.add({
             type: "error",
-            title: "Could not start the tickets",
-            description: error instanceof Error ? error.message : "The message was not sent.",
+            title: m(msg("Could not start the tickets")),
+            description:
+              error instanceof Error ? error.message : m(msg("The message was not sent.")),
           });
         }
       },
@@ -654,18 +672,24 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     dispatch({ type: "escape" });
   };
 
-  let headerTitle = "Maps";
+  let headerTitle = gt("Maps", { $context: "noun, wayfinder maps" });
   let headerMeta: string | null =
     snapshot !== null
-      ? `${snapshot.maps.length} ${snapshot.maps.length === 1 ? "map" : "maps"}`
+      ? gt("{count, plural, one {{count} map} other {{count} maps}}", {
+          count: snapshot.maps.length,
+        })
       : null;
   if (state.level !== "maps" && selectedMap !== null) {
     headerTitle = selectedMap.title;
-    headerMeta = `${selectedMap.counts.frontier} frontier · ${selectedMap.counts.open} open · ${selectedMap.counts.resolved} resolved`;
+    headerMeta = gt("{frontier} frontier · {open} open · {resolved} resolved", {
+      frontier: selectedMap.counts.frontier,
+      open: selectedMap.counts.open,
+      resolved: selectedMap.counts.resolved,
+    });
   }
   if (state.level === "ticket" && selectedNode !== null) {
     headerTitle = selectedNode.label;
-    headerMeta = ticketStatusText(selectedNode);
+    headerMeta = ticketStatusText(selectedNode, messages);
   }
 
   const hasUsableNodes = snapshot?.maps.some((map) => map.nodes.length > 0) ?? false;
@@ -688,7 +712,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         {mapsQuery.error !== null ? (
           <p className="text-xs leading-relaxed text-destructive">{mapsQuery.error}</p>
         ) : (
-          <p className="text-xs text-muted-foreground">Loading maps…</p>
+          <p className="text-xs text-muted-foreground">
+            <T>Loading maps…</T>
+          </p>
         )}
       </div>
     );
@@ -724,14 +750,14 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         {(
           [
             {
-              label: `Start ${checkedTickets.length} selected`,
+              label: gt("Start {count} selected", { count: checkedTickets.length }),
               tickets: checkedTickets,
-              hint: "Start the selected tickets as tasks in parallel",
+              hint: gt("Start the selected tickets as tasks in parallel"),
             },
             {
-              label: `Start all ready (${readyTickets.length})`,
+              label: gt("Start all ready ({count})", { count: readyTickets.length }),
               tickets: readyTickets,
-              hint: "Start every ready ticket as a task in parallel",
+              hint: gt("Start every ready ticket as a task in parallel"),
             },
           ] as const
         ).map((action, index) => {
@@ -740,13 +766,13 @@ export default function StarMapPanel(props: StarMapPanelProps) {
           const reason =
             startUnavailable ??
             (action.tickets.length === 0
-              ? "No ready tickets to start."
+              ? gt("No ready tickets to start.")
               : isStartingTasks
-                ? "Sending the tickets…"
+                ? gt("Sending the tickets…")
                 : action.hint);
           const reasonId = `${startReasonId}-${index}`;
           return (
-            <Tooltip key={action.hint}>
+            <Tooltip key={reasonId}>
               {/* A disabled button takes no pointer or focus, so the focusable
                   wrapper carries the tooltip and, for screen readers, the
                   description that explains why. */}
@@ -808,8 +834,14 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                         aria-hidden
                       />
                       <span className="truncate">
-                        {graph.nodes.length} {graph.nodes.length === 1 ? "ticket" : "tickets"}
-                        {checkedTickets.length > 0 ? ` · ${checkedTickets.length} selected` : ""}
+                        {checkedTickets.length > 0
+                          ? gt(
+                              "{count, plural, one {{count} ticket} other {{count} tickets}} · {selected} selected",
+                              { count: graph.nodes.length, selected: checkedTickets.length },
+                            )
+                          : gt("{count, plural, one {{count} ticket} other {{count} tickets}}", {
+                              count: graph.nodes.length,
+                            })}
                       </span>
                     </button>
                     {startActions}
@@ -838,8 +870,10 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                               type="button"
                               aria-label={
                                 showAllLinks
-                                  ? "Show dependency backbone"
-                                  : `Show all dependency links, ${hiddenLinkCount} hidden`
+                                  ? gt("Show dependency backbone")
+                                  : gt("Show all dependency links, {count} hidden", {
+                                      count: hiddenLinkCount,
+                                    })
                               }
                               aria-pressed={showAllLinks}
                               onClick={() => setShowAllLinks((current) => !current)}
@@ -854,8 +888,10 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                         />
                         <TooltipPopup side="bottom">
                           {showAllLinks
-                            ? "Show dependency backbone"
-                            : `Show all dependency links (${hiddenLinkCount} hidden)`}
+                            ? gt("Show dependency backbone")
+                            : gt("Show all dependency links ({count} hidden)", {
+                                count: hiddenLinkCount,
+                              })}
                         </TooltipPopup>
                       </Tooltip>
                     ) : null}
@@ -864,7 +900,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                         render={
                           <button
                             type="button"
-                            aria-label="Reset map view"
+                            aria-label={gt("Reset map view")}
                             onClick={() => rendererRef.current?.fitToContent()}
                             className="flex size-7 items-center justify-center rounded-md border border-border/60 bg-background/80 text-muted-foreground backdrop-blur-xs hover:text-foreground"
                           >
@@ -872,7 +908,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                           </button>
                         }
                       />
-                      <TooltipPopup side="bottom">Reset map view</TooltipPopup>
+                      <TooltipPopup side="bottom">
+                        <T>Reset map view</T>
+                      </TooltipPopup>
                     </Tooltip>
                   </div>
                 </div>
@@ -904,7 +942,10 @@ export default function StarMapPanel(props: StarMapPanelProps) {
     );
   } else {
     body = (
-      <ul aria-label="Maps" className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+      <ul
+        aria-label={gt("Maps", { $context: "noun, wayfinder maps" })}
+        className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2"
+      >
         {snapshot.maps.map((map) => {
           const complete = isWayfinderMapComplete(map);
           return (
@@ -912,19 +953,34 @@ export default function StarMapPanel(props: StarMapPanelProps) {
               <button
                 type="button"
                 data-wayfinder-map-complete={complete ? "" : undefined}
-                aria-label={`${map.title}, ${map.counts.total} tickets, ${map.counts.frontier} frontier${complete ? ", done" : ""}`}
+                aria-label={
+                  complete
+                    ? gt("{title}, {total} tickets, {frontier} frontier, done", {
+                        title: map.title,
+                        total: map.counts.total,
+                        frontier: map.counts.frontier,
+                      })
+                    : gt("{title}, {total} tickets, {frontier} frontier", {
+                        title: map.title,
+                        total: map.counts.total,
+                        frontier: map.counts.frontier,
+                      })
+                }
                 onClick={() => dispatch({ type: "selectMap", mapId: map.id })}
                 className="flex w-full flex-col gap-0.5 rounded-md px-2 py-2 text-left hover:bg-accent/60"
               >
                 <span className="text-sm font-medium text-foreground">{map.title}</span>
                 <span className="text-xs text-muted-foreground">
-                  {map.counts.total} tickets · {map.counts.frontier} frontier ·{" "}
-                  {map.counts.resolved} resolved
+                  {gt("{total} tickets · {frontier} frontier · {resolved} resolved", {
+                    total: map.counts.total,
+                    frontier: map.counts.frontier,
+                    resolved: map.counts.resolved,
+                  })}
                 </span>
                 {complete ? (
                   <span className="mt-1.5 flex w-full items-center gap-1 border-t border-border/60 pt-1.5 text-xs font-medium text-success">
                     <CircleCheck className="size-3.5" aria-hidden />
-                    Done
+                    <T>Done</T>
                   </span>
                 ) : null}
               </button>
@@ -949,12 +1005,12 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         {state.level !== "maps" ? (
           <button
             type="button"
-            aria-label={state.level === "ticket" ? "Back to map" : "Back to maps"}
+            aria-label={state.level === "ticket" ? gt("Back to map") : gt("Back to maps")}
             onClick={() => dispatch({ type: "back" })}
             className="flex h-6 shrink-0 items-center gap-0.5 rounded-md pl-0.5 pr-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
           >
             <ChevronLeft className="size-3.5" aria-hidden />
-            Back
+            <T>Back</T>
           </button>
         ) : null}
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
@@ -968,7 +1024,7 @@ export default function StarMapPanel(props: StarMapPanelProps) {
             render={
               <button
                 type="button"
-                aria-label={isReloading ? "Reloading map" : "Reload map"}
+                aria-label={isReloading ? gt("Reloading map") : gt("Reload map")}
                 disabled={isReloading}
                 onClick={handleReloadMap}
                 className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
@@ -977,12 +1033,14 @@ export default function StarMapPanel(props: StarMapPanelProps) {
               </button>
             }
           />
-          <TooltipPopup side="bottom">{isReloading ? "Reloading map" : "Reload map"}</TooltipPopup>
+          <TooltipPopup side="bottom">
+            {isReloading ? gt("Reloading map") : gt("Reload map")}
+          </TooltipPopup>
         </Tooltip>
         {state.level === "map" && selectedMap !== null ? (
           <div
             role="group"
-            aria-label="Star map view"
+            aria-label={gt("Star map view")}
             className="flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 p-0.5"
           >
             {(["map", "list"] as const).map((option) => (
@@ -998,7 +1056,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {option}
+                {option === "map"
+                  ? gt("map", { $context: "noun, wayfinder map view" })
+                  : gt("list", { $context: "noun, ticket list view" })}
               </button>
             ))}
           </div>
@@ -1011,11 +1071,11 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         >
           <TriangleAlert className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
           <p className="min-w-0 flex-1 text-xs text-muted-foreground">
-            The selected map was removed from disk.
+            <T>The selected map was removed from disk.</T>
           </p>
           <button
             type="button"
-            aria-label="Dismiss notification"
+            aria-label={gt("Dismiss notification")}
             onClick={() => dispatch({ type: "dismissNotice" })}
             className="flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent/60 hover:text-foreground"
           >
@@ -1027,7 +1087,9 @@ export default function StarMapPanel(props: StarMapPanelProps) {
         <details className="shrink-0 border-b border-border/60 px-3 py-2">
           <summary className="cursor-pointer select-none text-xs text-muted-foreground">
             <TriangleAlert className="mr-1 inline size-3.5" aria-hidden />
-            {visibleLints.length} map {visibleLints.length === 1 ? "warning" : "warnings"}
+            {gt("{count, plural, one {{count} map warning} other {{count} map warnings}}", {
+              count: visibleLints.length,
+            })}
           </summary>
           <div className="mt-1">
             <LintList lints={visibleLints} />

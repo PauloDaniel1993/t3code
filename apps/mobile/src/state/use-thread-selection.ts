@@ -62,6 +62,7 @@ function threadDetailToShell(
   projection: OrchestrationV2ThreadProjection,
 ): EnvironmentThreadShell {
   const thread = projection.thread;
+  const primaryFolderPath = thread.workspaceFolders?.[0]?.path;
   const latestRun = deriveLatestThreadRun(projection);
   const runtime = deriveThreadRuntime(projection);
   const pendingRequest =
@@ -76,6 +77,13 @@ function threadDetailToShell(
     interactionMode: thread.interactionMode,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    ...(thread.workspaceFolders?.length
+      ? { workspaceFolderCount: thread.workspaceFolders.length }
+      : {}),
+    ...(primaryFolderPath !== undefined && thread.worktreePath === null
+      ? { workspacePrimaryPath: primaryFolderPath }
+      : {}),
+    ...(thread.worktrees === undefined ? {} : { worktrees: thread.worktrees }),
     linkedPullRequest: thread.linkedPullRequest ?? null,
     pullRequests: thread.pullRequests,
     branchPullRequest: thread.branchPullRequest ?? null,

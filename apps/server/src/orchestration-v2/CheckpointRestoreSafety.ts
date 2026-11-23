@@ -1,8 +1,13 @@
-import type {
-  OrchestrationV2AppThread,
-  OrchestrationV2Checkpoint,
-  OrchestrationV2CheckpointPart,
-  OrchestrationV2CheckpointScope,
+import {
+  isLiveSubagentShell,
+  isProviderNativeSubagentThread,
+  type OrchestrationV2AppThread,
+  type OrchestrationV2Checkpoint,
+  type OrchestrationV2CheckpointPart,
+  type OrchestrationV2CheckpointScope,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2ThreadShell,
+  type TaskFolder,
 } from "@t3tools/contracts";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { isSamePath, resolveThreadWorkspace } from "@t3tools/shared/workspaceFolders";
@@ -17,6 +22,7 @@ import type * as ProjectStore from "./ProjectStore.ts";
 
 const SHARED_WORKSPACE_RESTORE_REASON =
   "File restore requires an isolated worktree. This workspace may contain changes from another thread or a side chat.";
+const UNFINISHED_RUN_STATUSES = new Set(["queued", "preparing", "starting", "running", "waiting"]);
 
 const CONVERSATION_ONLY =
   "Rewind the conversation without restoring files instead, or delete side chats you no longer need.";
@@ -55,7 +61,7 @@ interface RestoreSafetyDependencies {
 
 /**
  * Whether restoring `parts` could overwrite work that isn't this thread's. A
- * part restores a whole checkout, so it must be one of the thread's own
+ * part may restore a whole checkout, so it must be one of the thread's own
  * worktrees, and no other thread may work in, above or below it. The thread's
  * own nested members never conflict with each other.
  */
@@ -64,6 +70,7 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
     thread: Pick<OrchestrationV2AppThread, "id" | "worktreePath" | "worktrees">,
     parts: ReadonlyArray<Pick<OrchestrationV2CheckpointPart, "cwd" | "folders">>,
     dependencies: RestoreSafetyDependencies,
+    taskFolder?: Pick<TaskFolder, "repositories"> | null,
   ) {
     const { fileSystem, projections, projects, path } = dependencies;
     const contains = (parent: string, child: string) => {
@@ -98,6 +105,7 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
     const own = new Set<string>();
     for (const root of [
       ...(thread.worktrees ?? []).map((member) => member.path),
+      ...(taskFolder?.repositories ?? []).map((repository) => repository.worktreePath),
       ...(thread.worktreePath === null ? [] : [thread.worktreePath]),
     ]) {
       own.add(pathKey(yield* resolve(root)));
@@ -112,14 +120,35 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
     if (shared.size === parts.length) return refusal(shared);
 
     const shell = yield* projections.getShellSnapshot();
+    const threads = [...shell.threads, ...shell.archivedThreads];
+    const threadsById = new Map(threads.map((candidate) => [candidate.id, candidate]));
+    const subagentAncestors = (candidate: OrchestrationV2ThreadShell) => {
+      const ancestors: OrchestrationV2AppThread["id"][] = [];
+      const seen = new Set<string>();
+      let current: OrchestrationV2ThreadShell | undefined = candidate;
+      while (current !== undefined && !seen.has(current.id)) {
+        seen.add(current.id);
+        if (current.lineage?.relationshipToParent !== "subagent") return undefined;
+        const parentId: OrchestrationV2AppThread["id"] | null = current.lineage.parentThreadId;
+        if (parentId === null) return undefined;
+        ancestors.push(parentId);
+        if (parentId === thread.id) return ancestors;
+        current = threadsById.get(parentId);
+      }
+      return undefined;
+    };
+    const ancestorProviders = new Map<
+      OrchestrationV2AppThread["id"],
+      ReadonlyArray<OrchestrationV2ProviderThread>
+    >();
     const checkedPaths = new Set<string>();
-    for (const otherThread of [...shell.threads, ...shell.archivedThreads]) {
+    for (const otherThread of threads) {
       if (otherThread.id === thread.id || otherThread.deletedAt !== null) continue;
       // An idle side chat that only answered questions never touched the shared worktree.
       if (
         otherThread.lineage?.sideChat === true &&
         otherThread.activeRunId === null &&
-        otherThread.worktreePath === thread.worktreePath
+        isSamePath(otherThread.worktreePath ?? "", thread.worktreePath ?? "")
       ) {
         const { turnItems } = yield* projections.getThreadRecords(otherThread.id, ["turnItems"], {
           turnItemTypes: ["command_execution", "file_change", "dynamic_tool"],
@@ -127,6 +156,77 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
         if (turnItems.length === 0) continue;
       }
       const other = yield* projections.getCheckpointContext(otherThread.id);
+      const ancestors = subagentAncestors(otherThread);
+      const nativeSubagent = ancestors !== undefined && isProviderNativeSubagentThread(otherThread);
+      // Native children can be runless; their completion lives on the parent's task record.
+      if (
+        otherThread.worktreePath === thread.worktreePath &&
+        (otherThread.status === "completed" ||
+          (nativeSubagent && otherThread.status === "idle" && other.runs.length === 0)) &&
+        otherThread.activeRunId === null &&
+        !isLiveSubagentShell(otherThread) &&
+        ancestors !== undefined &&
+        !other.runs.some((run) => UNFINISHED_RUN_STATUSES.has(run.status)) &&
+        otherThread.lineage.parentThreadId !== null &&
+        otherThread.forkedFrom?.type === "node"
+      ) {
+        const taskNodeId = otherThread.forkedFrom.nodeId;
+        const { subagents } = yield* projections.getThreadRecords(
+          otherThread.lineage.parentThreadId,
+          ["subagents"],
+          { subagentIds: [taskNodeId] },
+        );
+        const task = subagents.find(
+          (candidate) => candidate.id === taskNodeId && candidate.childThreadId === otherThread.id,
+        );
+        if (
+          task?.status === "completed" &&
+          task.origin === (nativeSubagent ? "provider_native" : "app_owned")
+        ) {
+          if (!nativeSubagent) continue;
+          // Runless shells omit background work; inspect the raw records before restoring files.
+          const { providerThreads, turnItems } = yield* projections.getThreadRecords(
+            otherThread.id,
+            ["providerThreads", "turnItems"],
+            {
+              turnItemTypes: ["command_execution", "file_change", "dynamic_tool", "subagent"],
+              turnItemStatuses: ["pending", "running", "waiting"],
+            },
+          );
+          if (
+            turnItems.length === 0 &&
+            !providerThreads.some(
+              (providerThread) =>
+                providerThread.status === "active" ||
+                (providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
+            )
+          ) {
+            // Claude can keep a child's unattributed background commands on an ancestor session.
+            let pendingAncestorWork = false;
+            for (const ancestorId of ancestors) {
+              let providers = ancestorProviders.get(ancestorId);
+              if (providers === undefined) {
+                const records = yield* projections.getThreadRecords(ancestorId, [
+                  "providerThreads",
+                ]);
+                providers = records.providerThreads;
+                ancestorProviders.set(ancestorId, providers);
+              }
+              if (
+                providers.some(
+                  (provider) =>
+                    provider.providerInstanceId === task.providerInstanceId &&
+                    (provider.pendingBackgroundTasks?.length ?? 0) > 0,
+                )
+              ) {
+                pendingAncestorWork = true;
+                break;
+              }
+            }
+            if (!pendingAncestorWork) continue;
+          }
+        }
+      }
       const providerContext = yield* projections.getThreadProviderContext(otherThread.id);
       const paths = [
         otherThread.worktreePath,
@@ -156,6 +256,12 @@ export const restoreIsolationRefusal = Effect.fn("orchestrationV2.restoreIsolati
           (otherThread.workspaceFolderCount ?? 0) > 1
             ? yield* projections.getThread(otherThread.id)
             : otherThread;
+        if (
+          otherThread.workspaceFolderCount === undefined &&
+          project.value.workspaceFile === null
+        ) {
+          paths.push(...(project.value.trackedFolders ?? []).map((folder) => folder.path));
+        }
         for (const folder of resolveThreadWorkspace({
           thread: workspaceThread,
           project: project.value,
@@ -231,3 +337,28 @@ export const fileRestoreRefusal = Effect.fn("orchestrationV2.fileRestoreRefusal"
     dependencies,
   );
 });
+
+// Admission uses this for tracked task folders, including a linked project with no root ref.
+export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpointRestoreIsolated")(
+  function* (
+    thread: Pick<OrchestrationV2AppThread, "id" | "worktreePath" | "worktrees">,
+    scope: Pick<OrchestrationV2CheckpointScope, "cwd">,
+    taskFolder: Pick<TaskFolder, "repositories"> | null,
+    dependencies: RestoreSafetyDependencies,
+  ) {
+    if (thread.worktreePath === null) return false;
+    const refusal = yield* restoreIsolationRefusal(
+      thread,
+      [
+        { cwd: scope.cwd, folders: [] },
+        ...(taskFolder?.repositories ?? []).map((repository) => ({
+          cwd: repository.worktreePath,
+          folders: [],
+        })),
+      ],
+      dependencies,
+      taskFolder,
+    );
+    return refusal === undefined;
+  },
+);

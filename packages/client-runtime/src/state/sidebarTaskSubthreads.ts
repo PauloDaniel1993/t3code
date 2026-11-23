@@ -1,5 +1,7 @@
 import { isProviderNativeSubagentThread, type OrchestrationV2Subagent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 
 import type { EnvironmentThreadShell } from "./models.ts";
 import { arrayElementsEqual } from "./entities.ts";
@@ -58,12 +60,23 @@ export function createSidebarTaskGrouper() {
     // Flatten to the nearest displayed ancestor, as V2 can delegate below a task.
     const displayedAncestor = (thread: Thread, start: Thread | undefined) => {
       let parent = start;
-      const seen = new Set([thread.id]);
-      while (parent !== undefined && isSidebarTaskThread(parent) && input.supportsTasks(parent)) {
-        if (seen.has(parent.id)) return undefined;
-        seen.add(parent.id);
+      const seen = new Set([
+        scopedThreadKey({ environmentId: thread.environmentId, threadId: thread.id }),
+      ]);
+      while (parent !== undefined && input.supportsTasks(parent)) {
+        const key = scopedThreadKey({ environmentId: parent.environmentId, threadId: parent.id });
+        if (seen.has(key)) return undefined;
+        seen.add(key);
         const ancestorId = parent.lineage.parentThreadId;
-        parent = ancestorId === null ? undefined : findParent(parent.environmentId, ancestorId);
+        if (ancestorId !== null && isSidebarTaskThread(parent)) {
+          parent = findParent(parent.environmentId, ancestorId);
+          continue;
+        }
+        const delegatedFrom = parent.delegatedFrom;
+        if (ancestorId !== null || delegatedFrom == null) break;
+        const source = findParent(delegatedFrom.environmentId, delegatedFrom.threadId);
+        if (source === undefined || !input.supportsTasks(source)) break;
+        parent = source;
       }
       return parent;
     };
@@ -253,16 +266,19 @@ export function resolveSidebarTaskState(
   }
 }
 
-export function sidebarTaskStatusWord(state: SidebarTaskState): string {
+export function sidebarTaskStatusWord(
+  state: SidebarTaskState,
+  resolve: MFunctionType = mFallback,
+): string {
   return state === "queued" || state === "running"
-    ? "Running"
+    ? resolve(msg("Running"))
     : state === "finished"
-      ? "Done"
+      ? resolve(msg("Done"))
       : state === "failed"
-        ? "Failed"
+        ? resolve(msg("Failed"))
         : state === "cancelled"
-          ? "Cancelled"
-          : "Task status unavailable";
+          ? resolve(msg("Cancelled"))
+          : resolve(msg("Task status unavailable"));
 }
 
 export function formatSidebarTaskElapsed(
@@ -305,14 +321,21 @@ export function formatSidebarTaskStatus(
   thread: Thread,
   task: OrchestrationV2Subagent | undefined,
   nowMs: number,
+  resolve: MFunctionType = mFallback,
 ): string {
   const state = resolveSidebarTaskState(thread, task);
   const elapsed = formatSidebarTaskElapsed(thread, task, nowMs);
   const label =
-    state === "queued" ? "Queued" : state === "running" ? "Working" : sidebarTaskStatusWord(state);
-  return elapsed === ""
-    ? label
-    : `${label}${state === "finished" ? " in " : state === "failed" || state === "cancelled" ? " after " : " · "}${elapsed}`;
+    state === "queued"
+      ? resolve(msg("Queued"))
+      : state === "running"
+        ? resolve(msg("Working"))
+        : sidebarTaskStatusWord(state, resolve);
+  if (elapsed === "") return label;
+  if (state === "finished") return resolve(msg("Done in {elapsed}", { elapsed }));
+  if (state === "failed") return resolve(msg("Failed after {elapsed}", { elapsed }));
+  if (state === "cancelled") return resolve(msg("Cancelled after {elapsed}", { elapsed }));
+  return resolve(msg("{label} · {elapsed}", { label, elapsed }));
 }
 
 export function sidebarTaskCountLabel(tasks: number, agents: number): string {

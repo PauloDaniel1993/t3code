@@ -82,6 +82,9 @@ const makeHarness = Effect.fnUntraced(function* () {
           mcpServerStatus: Effect.succeed([]),
           readMcpResource: () => Effect.succeed({ contents: [] }),
           callMcpTool: () => Effect.die("Unused MCP tool call"),
+          mcpAuthenticate: () => Effect.die("Unused MCP sign-in"),
+          mcpSubmitOAuthCallbackUrl: () => Effect.die("Unused MCP sign-in"),
+          reconnectMcpServer: () => Effect.die("Unused MCP reconnect"),
           listPermissionRules: Effect.succeed([]),
           messages: Stream.fromQueue(messages),
           offer: () => Effect.void,
@@ -95,6 +98,7 @@ const makeHarness = Effect.fnUntraced(function* () {
             }),
           backgroundTasks: () => Effect.succeed(false),
           setPermissionMode: () => Effect.void,
+          renameSession: () => Effect.void,
           stopTask: () => Effect.void,
           interrupt: Effect.void,
           close: Effect.sync(() => {

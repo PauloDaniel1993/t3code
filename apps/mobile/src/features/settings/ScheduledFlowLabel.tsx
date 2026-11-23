@@ -1,4 +1,5 @@
 import type { EnvironmentId, ScheduledTask } from "@t3tools/contracts";
+import { T, Var } from "gt-react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { flowEnvironment } from "../../state/flows";
 import { useEnvironmentQuery } from "../../state/query";
@@ -18,7 +19,9 @@ export function ScheduledFlowLabel({
   const flow = definitions.data?.flows.find((entry) => entry.flowId === task.flow?.flowId);
   return (
     <Text className="text-sm text-foreground-muted">
-      Runs flow: {flow?.definition?.title ?? task.prompt.replace(/^Run flow: /, "")}
+      <T>
+        Runs flow: <Var>{flow?.definition?.title ?? task.prompt.replace(/^Run flow: /, "")}</Var>
+      </T>
     </Text>
   );
 }

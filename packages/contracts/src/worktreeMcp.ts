@@ -1,14 +1,14 @@
 import * as Schema from "effect/Schema";
 
-import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { GitRefName, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { VcsListRefsInput, VcsListRefsResult } from "./git.ts";
 import { WorkspaceMcpBinding } from "./workspaceMcp.ts";
 
 /** Uses the managed worktree folder; handoff detaches the provider, ending this turn and resuming there next run. */
 export const WorktreeMcpHandoffInput = Schema.Struct({
-  branch: TrimmedNonEmptyString,
+  branch: GitRefName,
   baseRef: Schema.optional(
-    TrimmedNonEmptyString.annotate({
+    GitRefName.annotate({
       description:
         "Branch or ref the primary repository's worktree starts from. Defaults to the primary folder's current branch. Other repositories start from their own current branch or commit.",
     }),
@@ -69,8 +69,8 @@ export type WorktreeMcpContinuationStatus = typeof WorktreeMcpContinuationStatus
 export const WorktreeMcpHandoffResult = Schema.Struct({
   ...WorkspaceMcpBinding.fields,
   worktreePath: TrimmedNonEmptyString,
-  branch: TrimmedNonEmptyString,
-  baseRef: TrimmedNonEmptyString,
+  branch: GitRefName,
+  baseRef: GitRefName,
   startedFromOrigin: Schema.Boolean,
   setupScript: WorktreeMcpSetupScriptStatus,
   continuation: WorktreeMcpContinuationStatus,
@@ -84,7 +84,7 @@ export const WorktreeMcpStatusResult = Schema.Struct({
     description: "True when this thread is already attached to a git worktree.",
   }),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
-  branch: Schema.NullOr(TrimmedNonEmptyString),
+  branch: Schema.NullOr(GitRefName),
   projectWorkspaceRoot: TrimmedNonEmptyString.annotate({
     description: "The project's current primary folder. The thread keeps its own folder snapshot.",
   }),

@@ -16,6 +16,7 @@ import { kiroClient } from "@t3tools/provider-kiro/client";
 import { museClient } from "@t3tools/provider-muse/client";
 import { openCodeClient } from "@t3tools/provider-opencode/client";
 import { piClient } from "@t3tools/provider-pi/client";
+import { msg } from "gt-i18n";
 
 // OpenRouter's Ink and Cloud glyphs from https://openrouter.ai/brand.
 export const openRouterIcon: ProviderIcon = {
@@ -50,7 +51,7 @@ export const providerClients = makeProviderClientRegistry([
   {
     driverKind: ProviderDriverKind.make("kimi"),
     label: "Kimi",
-    badgeLabel: "Early Access",
+    badgeLabel: msg("Early Access"),
     settingsSchema: KimiSettings,
   },
   {

@@ -1,3 +1,4 @@
+import { T, Var, useGT, useMessages } from "gt-react";
 import { Alert, AlertDescription } from "../ui/alert";
 import type {
   EnvironmentId,
@@ -73,6 +74,7 @@ function FinalStepResult({
   step: FlowStep;
   stepRun: FlowStepRunState;
 }) {
+  const resolve = useMessages();
   const stepOutput = useStepRunOutput(environmentId, stepRun.id);
   const fields = stepRun.outputFields?.kind === "agent" ? stepRun.outputFields.fields : {};
   const declared = step.kind === "agent" ? (step.outputs ?? []) : [];
@@ -96,7 +98,7 @@ function FinalStepResult({
             }
           >
             <ExternalLink />
-            Open step thread
+            <T>Open step thread</T>
           </Button>
         )}
       </div>
@@ -119,7 +121,9 @@ function FinalStepResult({
         (stepRun.outputFields.kind === "approval" ||
           stepRun.outputFields.kind === "loop" ||
           stepRun.outputFields.kind === "map") && (
-          <p className="whitespace-pre-wrap text-sm">{outputFieldsText(stepRun.outputFields)}</p>
+          <p className="whitespace-pre-wrap text-sm">
+            {outputFieldsText(stepRun.outputFields, resolve)}
+          </p>
         )}
       {stepOutput.loading && <Skeleton className="h-16 w-full" />}
       {stepOutput.error && (
@@ -154,11 +158,14 @@ function FlowRunResult({
   environmentId: EnvironmentId;
   snapshot: FlowRunSnapshot;
 }) {
+  const gt = useGT();
   const finals = flowResultStepRuns(snapshot);
   if (finals.length === 0) return null;
   return (
-    <section aria-label="Flow run result" className="flex flex-col gap-3">
-      <h3 className="text-xs font-medium text-muted-foreground">Result</h3>
+    <section aria-label={gt("Flow run result")} className="flex flex-col gap-3">
+      <h3 className="text-xs font-medium text-muted-foreground">
+        <T>Result</T>
+      </h3>
       {finals.map(({ step, stepRun }) => (
         <FinalStepResult
           key={`${stepRun.id}:${stepRun.finishedAt}`}
@@ -179,6 +186,7 @@ export function FlowRunThreadCard({
   threadRef: ScopedThreadRef;
   page?: boolean;
 }) {
+  const gt = useGT();
   const lookup = useFlowRunLookup(threadRef);
   const id = lookup.data?.flowRunId;
   const detail = useEnvironmentQuery(
@@ -199,7 +207,9 @@ export function FlowRunThreadCard({
       <Alert variant="info">
         <AlertDescription>
           <InlineButton tone="default" onClick={openInPanel}>
-            Part of {summary.flowTitle} · run {summary.runNumber}
+            <T>
+              Part of <Var>{summary.flowTitle}</Var> · run <Var>{summary.runNumber}</Var>
+            </T>
           </InlineButton>
         </AlertDescription>
       </Alert>
@@ -225,15 +235,17 @@ export function FlowRunThreadCard({
   if (!page)
     return (
       <section
-        aria-label="Flow run"
+        aria-label={gt("Flow run")}
         className="max-h-80 shrink-0 overflow-auto border-b border-border p-3"
       >
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-medium">
-            {summary.flowTitle} · Flow run {summary.runNumber}
+            <T>
+              <Var>{summary.flowTitle}</Var> · Flow run <Var>{summary.runNumber}</Var>
+            </T>
           </h2>
           <Button size="xs" variant="outline" onClick={openInPanel}>
-            Open in Flow panel
+            <T>Open in Flow panel</T>
           </Button>
         </div>
         <FlowRunActions environmentId={threadRef.environmentId} summary={summary} />
@@ -243,26 +255,31 @@ export function FlowRunThreadCard({
   const startedAt = Date.parse(summary.startedAt ?? summary.createdAt);
   return (
     <section
-      aria-label="Flow run"
+      aria-label={gt("Flow run")}
       className="mx-auto flex w-full max-w-(--chat-content-max-width) flex-col gap-6 px-4 py-6"
     >
       <header className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1.5">
           <h2 className="truncate text-base font-semibold">{summary.flowTitle}</h2>
           <p className="text-xs text-muted-foreground">
-            Flow run {summary.runNumber}
-            {summary.finishedAt &&
-              ` · took ${formatDuration(Date.parse(summary.finishedAt) - startedAt)}`}
+            {summary.finishedAt
+              ? gt("Flow run {runNumber} · took {duration}", {
+                  runNumber: summary.runNumber,
+                  duration: formatDuration(Date.parse(summary.finishedAt) - startedAt),
+                })
+              : gt("Flow run {runNumber}", { runNumber: summary.runNumber })}
           </p>
           <FlowRunActions environmentId={threadRef.environmentId} summary={summary} />
         </div>
         <Button size="xs" variant="outline" onClick={openInPanel}>
-          Open in Flow panel
+          <T>Open in Flow panel</T>
         </Button>
       </header>
       <FlowRunResult environmentId={threadRef.environmentId} snapshot={snapshot} />
-      <section aria-label="Step runs" className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium text-muted-foreground">Steps</h3>
+      <section aria-label={gt("Step runs")} className="flex flex-col gap-3">
+        <h3 className="text-xs font-medium text-muted-foreground">
+          <T>Steps</T>
+        </h3>
         {timeline}
       </section>
     </section>

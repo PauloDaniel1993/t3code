@@ -1,3 +1,5 @@
+import { T, Var, msg, useGT, useMessages } from "gt-react";
+import type { MessageResolver } from "~/i18n/messages";
 import { ExternalLink, RefreshCw, RotateCcw } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Skeleton } from "../ui/skeleton";
@@ -27,23 +29,37 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { TextField } from "./FlowFields";
 
-export function outputFieldsText(output: FlowOutputFields) {
+export function outputFieldsText(output: FlowOutputFields, resolve: MessageResolver) {
   switch (output.kind) {
     case "agent":
       return JSON.stringify(output.fields, null, 2);
     case "command":
-      return `Exit code: ${output.exitCode ?? "none"}\nTimed out: ${output.timedOut}\nOutput lines: ${output.lineCount}`;
+      return resolve(
+        msg("Exit code: {exitCode}\nTimed out: {timedOut}\nOutput lines: {lineCount}"),
+        {
+          exitCode:
+            output.exitCode ?? resolve(msg("none", { $context: "process exit code unavailable" })),
+          timedOut: String(output.timedOut),
+          lineCount: output.lineCount,
+        },
+      );
     case "approval":
       return `${output.decision}${output.comment ? `\n${output.comment}` : ""}`;
     case "loop":
-      return `${output.iterations} iterations · ${output.exitReason}`;
+      return resolve(msg("{count} iterations · {reason}"), {
+        count: output.iterations,
+        reason: output.exitReason,
+      });
     case "map":
-      return output.items.map((item, index) => `Item ${index + 1}: ${item.status}`).join("\n");
+      return output.items
+        .map((item, index) =>
+          resolve(msg("Item {number}: {status}"), { number: index + 1, status: item.status }),
+        )
+        .join("\n");
   }
 }
 
-function outputText(output: FlowStepOutput | null) {
-  if (!output) return "No step output yet.";
+function outputText(output: FlowStepOutput) {
   switch (output.kind) {
     case "agent":
     case "command":
@@ -66,7 +82,7 @@ export function useStepRunOutput(environmentId: EnvironmentId, stepRunId: FlowSt
     const result = await fetchOutput({ environmentId, input: { stepRunId } });
     if (!active()) return;
     if (result._tag === "Success") setOutput(result.value);
-    else setError(reportFlowFailure(result, "Could not fetch step output"));
+    else setError(reportFlowFailure(result, msg("Could not fetch step output")));
     setLoading(false);
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads persisted output when a step run is opened
@@ -111,12 +127,12 @@ export function FlowRunActions({
             setBusy(true);
             reportFlowFailure(
               await stop({ environmentId, input: { flowRunId: summary.id } }),
-              "Could not stop flow",
+              msg("Could not stop flow"),
             );
             setBusy(false);
           }}
         >
-          Stop
+          <T context="verb, stops a flow run">Stop</T>
         </Button>
       )}
       {summary.status === "cancelled" && summary.startedAt !== null && (
@@ -128,12 +144,12 @@ export function FlowRunActions({
             setBusy(true);
             reportFlowFailure(
               await resume({ environmentId, input: { flowRunId: summary.id } }),
-              "Could not resume flow",
+              msg("Could not resume flow"),
             );
             setBusy(false);
           }}
         >
-          Resume
+          <T context="verb, resumes a flow run">Resume</T>
         </Button>
       )}
     </div>
@@ -161,23 +177,31 @@ function StepRunDetails({
   snapshot: FlowRunSnapshot;
   stepRun: FlowStepRunState;
 }) {
+  const gt = useGT();
+  const resolve = useMessages();
   const retry = useAtomCommand(flowEnvironment.retryStep);
   const answer = useAtomCommand(flowEnvironment.answerApproval);
   const canRetry = useAtomValue(flowEnvironment.retryStep.permissionAtom(environmentId));
   const canAnswer = useAtomValue(flowEnvironment.answerApproval.permissionAtom(environmentId));
   const [comment, setComment] = useState("");
   const stepOutput = useStepRunOutput(environmentId, stepRun.id);
-  const output = stepOutput.loading ? null : outputText(stepOutput.output);
+  const output = stepOutput.loading
+    ? null
+    : stepOutput.output
+      ? outputText(stepOutput.output)
+      : gt("No step output yet.");
   const [busy, setBusy] = useState(false);
   const approval = snapshot.approvals.find(
     (entry) => entry.stepRunId === stepRun.id && entry.decision === null,
   );
   return (
-    <section className="flex flex-col gap-2 text-xs" aria-label="Step run details">
+    <section className="flex flex-col gap-2 text-xs" aria-label={gt("Step run details")}>
       <div className="flex items-center gap-2">
         <FlowStepStatus status={stepRun.status} />
         <Badge variant="secondary" size="sm">
-          Attempt {stepRun.attempt}
+          <T>
+            Attempt <Var>{stepRun.attempt}</Var>
+          </T>
         </Badge>
       </div>
       <p className="text-2xs text-muted-foreground">{stepRun.stepPath.join(" / ")}</p>
@@ -194,23 +218,25 @@ function StepRunDetails({
           }
         >
           <ExternalLink />
-          Open step thread
+          <T>Open step thread</T>
         </Button>
       )}
       {stepRun.outputFields && (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-2 text-xs">
-          {outputFieldsText(stepRun.outputFields)}
+          {outputFieldsText(stepRun.outputFields, resolve)}
         </pre>
       )}
       <div className="flex items-center justify-between">
-        <span className="text-2xs font-medium text-muted-foreground">OUTPUT</span>
+        <span className="text-2xs font-medium text-muted-foreground">
+          <T>OUTPUT</T>
+        </span>
         <Tooltip>
           <TooltipTrigger
             render={
               <Button
                 size="icon-xs"
                 variant="ghost"
-                aria-label="Refresh step output"
+                aria-label={gt("Refresh step output")}
                 disabled={!stepOutput.canRead || stepOutput.loading}
                 onClick={stepOutput.refresh}
               />
@@ -218,7 +244,9 @@ function StepRunDetails({
           >
             <RefreshCw />
           </TooltipTrigger>
-          <TooltipPopup>Refresh step output</TooltipPopup>
+          <TooltipPopup>
+            <T>Refresh step output</T>
+          </TooltipPopup>
         </Tooltip>
       </div>
       {stepOutput.loading && <Skeleton className="h-16 w-full" />}
@@ -242,18 +270,23 @@ function StepRunDetails({
               setBusy(true);
               reportFlowFailure(
                 await retry({ environmentId, input: { stepRunId: stepRun.id } }),
-                "Could not retry step",
+                msg("Could not retry step"),
               );
               setBusy(false);
             }}
           >
-            <RotateCcw /> Retry step
+            <RotateCcw /> <T>Retry step</T>
           </Button>
         )}
       {approval && (
         <>
           <p>{approval.prompt}</p>
-          <TextField label="Approval comment" multiline value={comment} onChange={setComment} />
+          <TextField
+            label={gt("Approval comment")}
+            multiline
+            value={comment}
+            onChange={setComment}
+          />
           <div className="flex gap-2">
             {(["approve", "reject"] as const).map((decision) => (
               <Button
@@ -267,11 +300,13 @@ function StepRunDetails({
                     environmentId,
                     input: { stepRunId: stepRun.id, decision, ...(comment ? { comment } : {}) },
                   });
-                  reportFlowFailure(result, "Could not answer approval");
+                  reportFlowFailure(result, msg("Could not answer approval"));
                   setBusy(false);
                 }}
               >
-                {decision === "approve" ? "Approve" : "Reject"}
+                {decision === "approve"
+                  ? gt("Approve", { $context: "verb, approves a step" })
+                  : gt("Reject", { $context: "verb, rejects a step" })}
               </Button>
             ))}
           </div>
@@ -299,7 +334,9 @@ export function FlowRunTimeline({
   return (
     <div className="flex flex-col gap-2">
       <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-2 text-3xs text-muted-foreground">
-        <span>Step run</span>
+        <span>
+          <T>Step run</T>
+        </span>
         <div className="flex justify-between">
           <span>0s</span>
           <span>{formatDuration((end - start) / 2)}</span>
@@ -325,7 +362,9 @@ export function FlowRunTimeline({
                 >
                   <span className="block truncate font-medium">{step.stepId}</span>
                   <span className="block truncate text-3xs text-muted-foreground">
-                    Attempt {step.attempt} {step.scopeLabel}
+                    <T>
+                      Attempt <Var>{step.attempt}</Var> <Var>{step.scopeLabel}</Var>
+                    </T>
                   </span>
                 </span>
                 <span className="min-w-0">

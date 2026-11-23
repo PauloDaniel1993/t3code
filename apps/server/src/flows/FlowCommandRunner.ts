@@ -87,7 +87,7 @@ const make = Effect.gen(function* () {
         environment,
         input.env ? { ...input.env } : undefined,
         platform,
-        environment.HOME ?? environment.USERPROFILE ?? "",
+        yield* HostProcess.HomeDirectory,
       );
       let tail = "";
       const lines: string[] = [];

@@ -1,57 +1,5 @@
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off -- Installed before the SDK loads, outside an Effect runtime. stderr must match Node's default unhandled-rejection print.
+// @effect-diagnostics nodeBuiltinImport:off -- The SDK must load from disk beside its Webpack chunks.
 import * as NodeModule from "node:module";
-
-// Cursor can leave its shell-spawn rejection unobserved; isolate that failure
-// without changing other unhandled rejections or patching child_process.spawn.
-const CURSOR_SHELL_SPAWN_MARKERS = [
-  "dump_zsh_state",
-  "dump_bash_state",
-  "__CURSOR_SANDBOX_ENV_RESTORE",
-] as const;
-
-function isCursorShellSpawnFailure(reason: unknown): boolean {
-  if (typeof reason !== "object" || reason === null) {
-    return false;
-  }
-  const syscall = Reflect.get(reason, "syscall");
-  const code = Reflect.get(reason, "code");
-  const spawnargs = Reflect.get(reason, "spawnargs");
-  if (typeof syscall !== "string" || !syscall.startsWith("spawn") || typeof code !== "string") {
-    return false;
-  }
-  if (!Array.isArray(spawnargs)) {
-    return false;
-  }
-  return spawnargs.some(
-    (arg) =>
-      typeof arg === "string" && CURSOR_SHELL_SPAWN_MARKERS.some((marker) => arg.includes(marker)),
-  );
-}
-
-let cursorShellSpawnGuardInstalled = false;
-
-function installCursorShellSpawnGuard(): void {
-  if (cursorShellSpawnGuardInstalled) {
-    return;
-  }
-  cursorShellSpawnGuardInstalled = true;
-
-  process.on("unhandledRejection", (reason) => {
-    if (isCursorShellSpawnFailure(reason)) {
-      console.error("Cursor shell spawn failed. The server will keep running.", reason);
-      return;
-    }
-    // Another handler registered besides this one owns the decision.
-    if (process.listenerCount("unhandledRejection") > 1) {
-      return;
-    }
-    console.error(reason);
-    process.exit(1);
-  });
-}
-
-// Arm before the SDK loads. Its shell tools spawn from this process.
-installCursorShellSpawnGuard();
 
 // createRequire preserves adjacent Webpack chunks and native modules in bundled/SEA builds.
 const requireCursorSdk = NodeModule.createRequire(import.meta.url);
@@ -78,9 +26,45 @@ export function loadCursorSqlite(): typeof import("@cursor/sdk/sqlite") {
   return sqlite;
 }
 
+export type CursorSdkErrorKind = "AuthenticationError" | "ConfigurationError" | "CursorSdkError";
+
+const CURSOR_SDK_ERROR_KIND = Symbol.for("@t3tools/provider-cursor/sdkErrorKind");
+
+export function tagCursorSdkError(error: Error, kind: CursorSdkErrorKind): Error {
+  Reflect.set(error, CURSOR_SDK_ERROR_KIND, kind);
+  return error;
+}
+
+export function getCursorSdkErrorKind(cause: unknown): CursorSdkErrorKind | undefined {
+  if (typeof cause !== "object" || cause === null) return undefined;
+  const tagged = Reflect.get(cause, CURSOR_SDK_ERROR_KIND);
+  if (
+    tagged === "AuthenticationError" ||
+    tagged === "ConfigurationError" ||
+    tagged === "CursorSdkError"
+  ) {
+    return tagged;
+  }
+  if (isCursorSdkError(cause, "AuthenticationError")) return "AuthenticationError";
+  if (isCursorSdkError(cause, "ConfigurationError")) return "ConfigurationError";
+  if (isCursorSdkError(cause, "CursorSdkError")) return "CursorSdkError";
+  return undefined;
+}
+
 // Error classification must not initialize the SDK when the load itself failed.
-export function isCursorSdkError<
-  K extends "AuthenticationError" | "ConfigurationError" | "CursorSdkError",
->(cause: unknown, kind: K): cause is InstanceType<(typeof import("@cursor/sdk"))[K]> {
+export function isCursorSdkError<K extends CursorSdkErrorKind>(
+  cause: unknown,
+  kind: K,
+): cause is InstanceType<(typeof import("@cursor/sdk"))[K]> {
+  if (typeof cause === "object" && cause !== null) {
+    const tagged = Reflect.get(cause, CURSOR_SDK_ERROR_KIND);
+    if (
+      tagged === kind ||
+      (kind === "CursorSdkError" &&
+        (tagged === "AuthenticationError" || tagged === "ConfigurationError"))
+    ) {
+      return true;
+    }
+  }
   return sdk !== undefined && cause instanceof sdk[kind];
 }

@@ -1,4 +1,5 @@
 import type { WorkspaceScopeFolder } from "@t3tools/contracts";
+import { T, useGT } from "gt-react-native";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -9,6 +10,7 @@ export function WorkspaceFolderPicker(props: {
   readonly selectedFolderPath: string | null;
   readonly onSelectFolder: (folderPath: string | null) => void;
 }) {
+  const gt = useGT();
   if (props.folders.length <= 1) return null;
   return (
     <View className="mx-3 mb-2 gap-1 border-b border-border pb-2">
@@ -18,7 +20,9 @@ export function WorkspaceFolderPicker(props: {
         className="min-h-11 justify-center rounded-xl px-2 active:bg-subtle"
         onPress={() => props.onSelectFolder(null)}
       >
-        <Text className="text-sm font-t3-medium text-foreground">Search all folders</Text>
+        <Text className="text-sm font-t3-medium text-foreground">
+          <T>Search all folders</T>
+        </Text>
       </Pressable>
       {props.folders.map((folder) => (
         <Pressable
@@ -42,8 +46,8 @@ export function WorkspaceFolderPicker(props: {
               {folder.status === "ok"
                 ? folder.folderPath
                 : folder.status === "unavailable"
-                  ? "Folder unavailable"
-                  : "File index unavailable"}
+                  ? gt("Folder unavailable")
+                  : gt("File index unavailable")}
             </Text>
           </View>
           {props.selectedFolderPath === folder.folderPath ? (

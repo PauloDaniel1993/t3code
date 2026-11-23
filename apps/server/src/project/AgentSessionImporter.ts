@@ -48,6 +48,10 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 
+const isProjectionStoreThreadNotFoundError = Schema.is(
+  ProjectionStore.ProjectionStoreThreadNotFoundError,
+);
+
 const IMPORT_EVENT_PREFIX = "agent-session-import:v2";
 const CLAUDE_SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -277,18 +281,21 @@ const make = Effect.gen(function* () {
           (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
         ),
       );
-    const completedSources = runtimeRows.flatMap((runtime) => {
-      const payload = AgentSessionScanner.decodeImportedTranscriptPayload(runtime.runtimePayload);
-      if (
-        Option.isNone(payload) ||
-        payload.value.cwd === undefined ||
-        normalizeProjectPathForComparison(payload.value.cwd) !==
-          normalizeProjectPathForComparison(cwd)
-      ) {
-        return [];
-      }
-      return payload.value.importedTranscripts ?? [];
-    });
+    // The thread's project owns its transcripts: a linked worktree import records the worktree as cwd.
+    const completedSources = (yield* Effect.forEach(runtimeRows, (runtime) => {
+      const imported = AgentSessionScanner.decodeImportedTranscriptPayload(
+        runtime.runtimePayload,
+      ).pipe(Option.flatMapNullishOr((payload) => payload.importedTranscripts));
+      if (Option.isNone(imported) || imported.value.length === 0) return Effect.succeed([]);
+      return orchestrator.getThreadRecords(runtime.threadId, []).pipe(
+        Effect.map(({ thread }) => (thread.projectId === input.projectId ? imported.value : [])),
+        Effect.catch((cause) =>
+          isProjectionStoreThreadNotFoundError(cause.cause)
+            ? Effect.succeed([])
+            : Effect.fail(new AgentSessionScanError({ operation: "read-projects", cause })),
+        ),
+      );
+    })).flat();
     const outcomes = scanner.recentThreads(cwd, completedSources, binding);
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
@@ -306,7 +313,6 @@ const make = Effect.gen(function* () {
         );
         if (outcome._tag === "AlreadyImported") {
           importedThreadIds.add(threadId);
-          importedCount += 1;
           return;
         }
         if (outcome._tag === "Duplicate") {
@@ -344,11 +350,13 @@ const make = Effect.gen(function* () {
                 thread.source === "claudeAgent"
                   ? { threadId, resume: thread.providerSessionId }
                   : { threadId: nativeThreadId },
-              runtimePayload: { cwd },
+              runtimePayload: { cwd: outcome.worktree?.path ?? cwd },
             },
             { onConflict: "ignore" },
           );
-          const existing = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
+          const existing = yield* Effect.option(
+            orchestrator.getThreadRecords(threadId, ["messages"]),
+          );
           if (Option.isSome(existing)) {
             if (existing.value.thread.projectId !== input.projectId) {
               return yield* new AgentSessionThreadProjectConflictError({
@@ -360,23 +368,23 @@ const make = Effect.gen(function* () {
             if (existing.value.thread.historyOrigin !== "v1_import") {
               return yield* new AgentSessionThreadModifiedError({ threadId });
             }
-            // Other recorded transcripts mean this one changed after the import, and the
-            // thread does not hold its new messages, so it must stay unrecorded.
-            const recorded = Option.flatMap(yield* runtimes.getByThreadId({ threadId }), (row) =>
-              AgentSessionScanner.decodeImportedTranscriptPayload(row.runtimePayload),
-            ).pipe(Option.flatMapNullishOr((payload) => payload.importedTranscripts));
+            // A transcript can change after the import, so record it only when the
+            // thread already holds exactly its messages.
+            const stored = existing.value.messages;
             if (
-              Option.isSome(recorded) &&
-              recorded.value.length > 0 &&
-              !recorded.value.some((imported) =>
-                AgentSessionScanner.sameTranscriptIdentity(imported, source),
+              stored.length !== thread.messages.length ||
+              stored.some(
+                (message, index) =>
+                  message.role !== thread.messages[index]?.role ||
+                  message.text !== thread.messages[index]?.text,
               )
             ) {
               return false;
             }
             yield* persistRuntime;
             yield* runtimes.recordImportedTranscript({ threadId, source });
-            return true;
+            importedThreadIds.add(threadId);
+            return null;
           }
 
           const model = thread.model ?? DEFAULT_MODEL_BY_PROVIDER[driver] ?? DEFAULT_MODEL;
@@ -402,6 +410,9 @@ const make = Effect.gen(function* () {
             runtimeMode,
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             ...binding,
+            ...(binding.worktreePath == null && outcome.worktree != null
+              ? { branch: outcome.worktree.branch, worktreePath: outcome.worktree.path }
+              : {}),
             linkedPullRequest: null,
             branchPullRequest: null,
             activeProviderThreadId: providerThreadId,

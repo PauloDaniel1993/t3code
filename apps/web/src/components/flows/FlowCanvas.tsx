@@ -1,3 +1,5 @@
+import { T, Var, msg, useGT, useLocale, useMessages } from "gt-react";
+import type { MessageResolver } from "~/i18n/messages";
 import {
   createContext,
   memo,
@@ -53,24 +55,35 @@ const FlowRunContext = createContext<ReadonlyMap<string, FlowStepRunStatus>>(new
 const FlowCountsContext = createContext<
   ReadonlyMap<string, { total: number; succeeded: number; failed: number }>
 >(new Map());
-function stepSummary(step: FlowStep) {
+function stepSummary(step: FlowStep, resolve: MessageResolver) {
   switch (step.kind) {
     case "agent":
-      return `${step.model?.model || "Inherits model"} · ${step.prompt.split("\n")[0]}`;
+      return resolve(msg("{model} · {prompt}"), {
+        model: step.model?.model || resolve(msg("Inherits model")),
+        prompt: step.prompt.split("\n")[0] ?? "",
+      });
     case "command":
       return step.command.split("\n")[0];
     case "approval":
-      return step.prompt.split("\n")[0] || "Approve or reject + comment";
+      return step.prompt.split("\n")[0] || resolve(msg("Approve or reject + comment"));
     case "loop":
       // A new loop starts with an empty condition; label it once it names a ref.
       return "ref" in step.until && !step.until.ref
-        ? `Up to ${step.maxIterations} iterations`
-        : `Up to ${step.maxIterations} iterations · until ${conditionLabel(step.until)}`;
+        ? resolve(msg("Up to {count} iterations"), { count: step.maxIterations })
+        : resolve(msg("Up to {count} iterations · until {condition}"), {
+            count: step.maxIterations,
+            condition: conditionLabel(step.until),
+          });
     case "map":
-      return `For each in ${step.over} · ${step.concurrency ?? 1} at a time`;
+      return resolve(msg("For each in {reference} · {concurrency} at a time"), {
+        reference: step.over,
+        concurrency: step.concurrency ?? 1,
+      });
   }
 }
 const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProps<FlowNode>) {
+  const gt = useGT();
+  const resolve = useMessages();
   const status = useContext(FlowRunContext).get(id);
   const count = useContext(FlowCountsContext).get(id);
   const container = data.step.kind === "loop" || data.step.kind === "map";
@@ -82,7 +95,11 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
         <Tooltip>
           <TooltipTrigger
             render={
-              <span tabIndex={0} aria-label="Step problems" aria-describedby={`${id}-errors`} />
+              <span
+                tabIndex={0}
+                aria-label={gt("Step problems")}
+                aria-describedby={`${id}-errors`}
+              />
             }
           >
             <TriangleAlert className="size-3.5 text-destructive" />
@@ -95,13 +112,15 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
       {data.step.kind === "agent" && !!data.step.images?.length && (
         <span
           className="flex items-center gap-1 text-3xs text-muted-foreground"
-          aria-label={`${data.step.images.length} images`}
+          aria-label={gt("{count} images", { count: data.step.images.length })}
         >
           <Image className="size-3" />
           {data.step.images.length}
         </span>
       )}
-      <span className="ml-auto text-3xs text-muted-foreground">{data.step.kind}</span>
+      <span className="ml-auto text-3xs text-muted-foreground">
+        {resolve(kindLabels[data.step.kind])}
+      </span>
     </div>
   );
   const summary = (
@@ -111,7 +130,7 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
         data.step.kind === "command" && "font-mono",
       )}
     >
-      {stepSummary(data.step)}
+      {stepSummary(data.step, resolve)}
     </p>
   );
   const runStatus = status && (
@@ -119,7 +138,9 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
       <FlowStepStatus status={status} />
       {count && count.total > 1 && (
         <span className="text-3xs text-muted-foreground">
-          {count.succeeded}/{count.total} succeeded
+          <T>
+            <Var>{count.succeeded}</Var>/<Var>{count.total}</Var> succeeded
+          </T>
         </span>
       )}
     </div>
@@ -158,7 +179,9 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
           </div>
           {(data.step.kind === "loop" || data.step.kind === "map") &&
             data.step.steps.length === 0 && (
-              <p className="m-auto text-3xs text-muted-foreground">Drag steps here</p>
+              <p className="m-auto text-3xs text-muted-foreground">
+                <T>Drag steps here</T>
+              </p>
             )}
         </>
       ) : (
@@ -178,12 +201,26 @@ const FlowStepNode = memo(function FlowStepNode({ data, id, selected }: NodeProp
   );
 });
 const nodeTypes = { step: FlowStepNode };
+const kindLabels = {
+  agent: msg("agent", { $context: "noun, a flow step type" }),
+  command: msg("command", { $context: "noun, a flow step type" }),
+  approval: msg("approval", { $context: "noun, a flow step type" }),
+  loop: msg("loop", { $context: "noun, a flow step type" }),
+  map: msg("map", { $context: "noun, a flow step that applies steps to each item" }),
+};
+const paletteLabels = {
+  agent: msg("Agent", { $context: "noun, a flow step type" }),
+  command: msg("Command", { $context: "noun, a flow step type" }),
+  approval: msg("Approval", { $context: "noun, a flow step type" }),
+  loop: msg("Loop", { $context: "noun, a flow step type" }),
+  map: msg("Map", { $context: "noun, a flow step that applies steps to each item" }),
+};
 const paletteDescriptions = {
-  agent: "Ask an agent to work on a prompt",
-  command: "Run a shell command",
-  approval: "Wait for a person to approve or reject",
-  loop: "Repeat steps until a condition is met",
-  map: "Run steps for each item in a list",
+  agent: msg("Ask an agent to work on a prompt"),
+  command: msg("Run a shell command"),
+  approval: msg("Wait for a person to approve or reject"),
+  loop: msg("Repeat steps until a condition is met"),
+  map: msg("Run steps for each item in a list"),
 };
 const kinds: ReadonlyArray<FlowStep["kind"]> = ["agent", "command", "approval", "loop", "map"];
 
@@ -215,6 +252,9 @@ function Canvas({
   onSelectStep,
   onSelectEdge,
 }: Parameters<typeof FlowCanvas>[0]) {
+  const gt = useGT();
+  const locale = useLocale();
+  const resolve = useMessages();
   const { resolvedTheme } = useTheme();
   const { screenToFlowPosition, setCenter, getViewport } = useReactFlow();
   const wrapper = useRef<HTMLDivElement>(null);
@@ -223,12 +263,17 @@ function Canvas({
   const [graphState, setGraphState] = useState(() => ({
     definition,
     rem,
-    graph: flowGraph(definition, [], rem),
+    locale,
+    graph: flowGraph(definition, [], rem, resolve),
   }));
   let graph = graphState.graph;
-  if (definition !== graphState.definition || rem !== graphState.rem) {
-    graph = flowGraph(definition, graph.nodes, rem);
-    setGraphState({ definition, rem, graph });
+  if (
+    definition !== graphState.definition ||
+    rem !== graphState.rem ||
+    locale !== graphState.locale
+  ) {
+    graph = flowGraph(definition, graph.nodes, rem, resolve);
+    setGraphState({ definition, rem, locale, graph });
   }
   const nodes = graph.nodes.map((node) => {
     const selected = selectedId === node.id;
@@ -249,7 +294,7 @@ function Canvas({
   });
   if (nodes.some((node, i) => node !== graph.nodes[i])) {
     graph = { ...graph, nodes };
-    setGraphState({ definition, rem, graph });
+    setGraphState({ definition, rem, locale, graph });
   }
   const selectedNode = graph.nodes.find((node) => node.id === selectedId);
   let selectedX = selectedNode?.position.x;
@@ -302,7 +347,7 @@ function Canvas({
   );
   if (edges.some((edge, i) => edge !== graph.edges[i])) {
     graph = { ...graph, edges };
-    setGraphState({ definition, rem, graph });
+    setGraphState({ definition, rem, locale, graph });
   }
   const [runState, setRunState] = useState(() => ({
     snapshot,
@@ -416,7 +461,7 @@ function Canvas({
               const nextNodes = changes.some((change) => change.type === "position")
                 ? fitFrames(applied, rem)
                 : applied;
-              setGraphState({ definition, rem, graph: { ...graph, nodes: nextNodes } });
+              setGraphState({ definition, rem, locale, graph: { ...graph, nodes: nextNodes } });
               if (locked) return;
               const layout = { ...definition.layout };
               let changed = false;
@@ -474,7 +519,7 @@ function Canvas({
             {definition.steps.length === 0 && (
               <Panel position="top-center">
                 <div className="mt-24 max-w-48 text-center text-xs text-muted-foreground">
-                  Drag a step from the palette to start building your flow.
+                  <T>Drag a step from the palette to start building your flow.</T>
                 </div>
               </Panel>
             )}
@@ -488,11 +533,13 @@ function Canvas({
               <Panel position="top-left">
                 <div className="hidden min-w-32 flex-col gap-0.5 rounded-xl border border-border bg-popover p-1.5 shadow-lg @min-[24rem]:flex">
                   <span className="px-2 py-1 text-3xs font-medium text-muted-foreground">
-                    DRAG A STEP
+                    <T>DRAG A STEP</T>
                   </span>
                   {parent && (
                     <span className="max-w-40 truncate px-2 text-3xs text-muted-foreground">
-                      Adding into {parent}
+                      <T>
+                        Adding into <Var>{parent}</Var>
+                      </T>
                     </span>
                   )}
                   {kinds.map((kind) => (
@@ -511,24 +558,18 @@ function Canvas({
                         }
                       >
                         <FlowKindIcon kind={kind} />
-                        {kind === "agent"
-                          ? "Agent"
-                          : kind === "command"
-                            ? "Command"
-                            : kind === "approval"
-                              ? "Approval"
-                              : kind === "loop"
-                                ? "Loop"
-                                : "Map"}
+                        {resolve(paletteLabels[kind])}
                       </TooltipTrigger>
-                      <TooltipPopup>{paletteDescriptions[kind]}</TooltipPopup>
+                      <TooltipPopup>{resolve(paletteDescriptions[kind])}</TooltipPopup>
                     </Tooltip>
                   ))}
                 </div>
                 <div className="@min-[24rem]:hidden">
                   <Menu>
                     <MenuTrigger
-                      render={<Button size="icon-sm" variant="outline" aria-label="Add step" />}
+                      render={
+                        <Button size="icon-sm" variant="outline" aria-label={gt("Add step")} />
+                      }
                     >
                       <Plus />
                     </MenuTrigger>
@@ -536,7 +577,7 @@ function Canvas({
                       {kinds.map((kind) => (
                         <MenuItem key={kind} onClick={() => add(kind)}>
                           <FlowKindIcon kind={kind} />
-                          {kind}
+                          {resolve(kindLabels[kind])}
                         </MenuItem>
                       ))}
                     </MenuPopup>

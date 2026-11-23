@@ -1,3 +1,4 @@
+import { T, Var } from "gt-react";
 import { InlineButton } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { FlowStepStatus } from "./FlowStepStatus";
@@ -76,18 +77,28 @@ export function ScheduledFlowSummary({
   if (!task.flow) return null;
   return (
     <span className="flex flex-wrap gap-2">
-      <span>Runs flow: {entry?.definition?.title ?? task.prompt.replace(/^Run flow: /, "")}</span>
+      <span>
+        <T>
+          Runs flow: <Var>{entry?.definition?.title ?? task.prompt.replace(/^Run flow: /, "")}</Var>
+        </T>
+      </span>
       {definitions.data && !entry && (
         <Badge variant="error" size="sm">
-          Flow not found
+          <T>Flow not found</T>
         </Badge>
       )}
       {entry && !entry.validation.valid && (
         <Badge variant="error" size="sm">
-          Invalid flow
+          <T>Invalid flow</T>
         </Badge>
       )}
-      {history?.error && <span role="status">Could not load flow run: {history.error}</span>}
+      {history?.error && (
+        <span role="status">
+          <T>
+            Could not load flow run: <Var>{history.error}</Var>
+          </T>
+        </span>
+      )}
       {latest && (
         <InlineButton
           tone="default"
@@ -104,7 +115,10 @@ export function ScheduledFlowSummary({
             });
           }}
         >
-          Flow run {latest.runNumber} <FlowStepStatus status={latest.status} />
+          <T>
+            Flow run <Var>{latest.runNumber}</Var>
+          </T>{" "}
+          <FlowStepStatus status={latest.status} />
         </InlineButton>
       )}
     </span>

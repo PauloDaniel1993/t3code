@@ -9,13 +9,15 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import * as Persistence from "../platform/persistence.ts";
-import type { AtomCommandResult } from "./runtime.ts";
 import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
 import { createWorkspaceVcsAtoms, workspaceActionOutcomeSummary } from "./workspaceVcsActions.ts";
 
@@ -120,149 +122,161 @@ describe("workspace action progress", () => {
       "api: Push rejected\nweb: Paused: switch back to feature",
     );
   });
-  it("retains an in-flight batch and its receipt across readers, isolated by environment", async () => {
-    const environmentId = EnvironmentId.make("environment-one");
-    const otherEnvironmentId = EnvironmentId.make("environment-two");
-    const phase: VcsWorkspaceActionProgressEvent = {
-      kind: "phase_started",
-      actionId: "batch",
-      action: "push",
-      cwd: "/api",
-      phase: "push",
-      label: "Pushing",
-    };
-    let release!: (event: VcsWorkspaceActionProgressEvent) => void;
-    const receipt = new Promise<VcsWorkspaceActionProgressEvent>((resolve) => {
-      release = resolve;
-    });
-    let markStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
-    let response: Stream.Stream<VcsWorkspaceActionProgressEvent, Error> = Stream.fromIterable([
-      phase,
-    ]).pipe(Stream.concat(Stream.fromEffect(Effect.promise(() => receipt))));
-    const requests: EnvironmentId[] = [];
-    const environments = EnvironmentRegistry.of({
-      runStream: (id: EnvironmentId) => {
-        requests.push(id);
-        return response;
-      },
-    } as unknown as EnvironmentRegistry["Service"]);
-    const cleared: EnvironmentId[] = [];
-    const cache = Persistence.EnvironmentCacheStore.of({
-      loadShell: () => Effect.succeedNone,
-      saveShell: () => Effect.void,
-      loadThread: () => Effect.succeedNone,
-      saveThread: () => Effect.void,
-      removeThread: () => Effect.void,
-      loadServerConfig: () => Effect.succeedNone,
-      saveServerConfig: () => Effect.void,
-      loadVcsRefs: () => Effect.succeedNone,
-      saveVcsRefs: () => Effect.void,
-      removeVcsRefs: () => Effect.void,
-      clearVcsRefs: (id) =>
-        Effect.sync(() => {
-          cleared.push(id);
-        }),
-      clear: () => Effect.void,
-    });
-    const runtime = Atom.runtime(
-      Layer.merge(
-        Layer.succeed(EnvironmentRegistry, environments),
-        Layer.succeed(Persistence.EnvironmentCacheStore, cache),
-      ),
-    );
-    const actions = createWorkspaceVcsAtoms(runtime);
-    const registry = AtomRegistry.make();
-    const target = { environmentId, threadId: input.threadId };
-    const unmountSession = registry.mount(sessions(environmentId));
-    const session: AuthSessionState = {
-      authenticated: true,
-      auth: {
-        policy: "remote-reachable",
-        bootstrapMethods: [],
-        sessionMethods: [],
-        sessionCookieName: "test",
-      },
-      scopes: [AuthSourceControlWriteScope, AuthOrchestrationOperateScope],
-      permissions: [AuthSourceControlWriteScope, AuthOrchestrationOperateScope],
-    };
-    registry.set(sessions(environmentId), AsyncResult.success(session));
-    try {
-      expect(registry.get(actions.runAction.permissionAtom(environmentId, input))).toBe(true);
-      let finishPrior!: () => void;
-      const priorReceipt = new Promise<AtomCommandResult<void, never>>((resolve) => {
-        finishPrior = () => resolve(AsyncResult.success(undefined));
-      });
-      const prior = vcsCommandScheduler.schedule(
-        registry,
-        vcsCommandConcurrency,
-        { environmentId, input: { cwd: "/api" } },
-        () => priorReceipt,
-      );
-      const running = actions.runAction.run(registry, {
-        environmentId,
-        input,
-        cwds: ["/api", "/web"],
-        onProgress: () => markStarted(),
-      });
-      expect(requests).toEqual([]);
-      finishPrior();
-      await prior;
-      await started;
-      let queuedRan = false;
-      const queued = vcsCommandScheduler.schedule(
-        registry,
-        vcsCommandConcurrency,
-        { environmentId, input: { cwd: "/web" } },
-        async () => {
-          queuedRan = true;
-          return AsyncResult.success(undefined);
-        },
-      );
-      expect(queuedRan).toBe(false);
-      // A sheet can unmount; its replacement reads the command-owned atom.
-      expect(registry.get(actions.stateAtom({ ...target }))).toMatchObject({
-        isRunning: true,
-        currentLabel: "/api: Pushing",
-      });
-      expect(
-        registry.get(actions.stateAtom({ ...target, environmentId: otherEnvironmentId })).isRunning,
-      ).toBe(false);
-      release(finished);
-      expect(AsyncResult.isSuccess(await running)).toBe(true);
-      await queued;
-      expect(queuedRan).toBe(true);
-      expect(registry.get(actions.stateAtom(target))).toEqual({
-        isRunning: false,
-        currentLabel: null,
-        result: { results: finished.results },
-      });
-      expect(cleared).toEqual([environmentId]);
-      response = Stream.fail(new Error("Disconnected"));
-      expect(
-        AsyncResult.isFailure(
-          await actions.runAction.run(registry, { environmentId, input, cwds: ["/api", "/web"] }),
-        ),
-      ).toBe(true);
-      expect(registry.get(actions.stateAtom(target))).toMatchObject({
-        isRunning: false,
-        result: null,
-      });
-      expect(requests).toEqual([environmentId, environmentId]);
-      expect(cleared).toEqual([environmentId, environmentId]);
-      registry.set(sessions(environmentId), AsyncResult.success({ ...session, permissions: [] }));
-      expect(registry.get(actions.runAction.permissionAtom(environmentId, input))).toBe(false);
-      expect(
-        AsyncResult.isFailure(
-          await actions.runAction.run(registry, { environmentId, input, cwds: ["/api", "/web"] }),
-        ),
-      ).toBe(true);
-      expect(requests).toEqual([environmentId, environmentId]);
-    } finally {
-      unmountSession();
-      registry.dispose();
-    }
-  });
+  it.effect(
+    "retains an in-flight batch and its receipt across readers, isolated by environment",
+    () =>
+      Effect.gen(function* () {
+        const environmentId = EnvironmentId.make("environment-one");
+        const otherEnvironmentId = EnvironmentId.make("environment-two");
+        const phase: VcsWorkspaceActionProgressEvent = {
+          kind: "phase_started",
+          actionId: "batch",
+          action: "push",
+          cwd: "/api",
+          phase: "push",
+          label: "Pushing",
+        };
+        const receipt = yield* Deferred.make<VcsWorkspaceActionProgressEvent>();
+        const started = yield* Deferred.make<void>();
+        let response: Stream.Stream<VcsWorkspaceActionProgressEvent, Error> = Stream.make(
+          phase,
+        ).pipe(Stream.concat(Stream.fromEffect(Deferred.await(receipt))));
+        const requests: EnvironmentId[] = [];
+        const environments = EnvironmentRegistry.of({
+          runStream: (id: EnvironmentId) => {
+            requests.push(id);
+            return response;
+          },
+        } as unknown as EnvironmentRegistry["Service"]);
+        const cleared: EnvironmentId[] = [];
+        const cache = Persistence.EnvironmentCacheStore.of({
+          loadShell: () => Effect.succeedNone,
+          saveShell: () => Effect.void,
+          loadThread: () => Effect.succeedNone,
+          saveThread: () => Effect.void,
+          removeThread: () => Effect.void,
+          loadServerConfig: () => Effect.succeedNone,
+          saveServerConfig: () => Effect.void,
+          loadVcsRefs: () => Effect.succeedNone,
+          saveVcsRefs: () => Effect.void,
+          removeVcsRefs: () => Effect.void,
+          clearVcsRefs: (id) =>
+            Effect.sync(() => {
+              cleared.push(id);
+            }),
+          clear: () => Effect.void,
+        });
+        const runtime = Atom.runtime(
+          Layer.merge(
+            Layer.succeed(EnvironmentRegistry, environments),
+            Layer.succeed(Persistence.EnvironmentCacheStore, cache),
+          ),
+        );
+        const actions = createWorkspaceVcsAtoms(runtime);
+        const registry = AtomRegistry.make();
+        const target = { environmentId, threadId: input.threadId };
+        const unmountSession = registry.mount(sessions(environmentId));
+        const session: AuthSessionState = {
+          authenticated: true,
+          auth: {
+            policy: "remote-reachable",
+            bootstrapMethods: [],
+            sessionMethods: [],
+            sessionCookieName: "test",
+          },
+          scopes: [AuthSourceControlWriteScope, AuthOrchestrationOperateScope],
+          permissions: [AuthSourceControlWriteScope, AuthOrchestrationOperateScope],
+        };
+        registry.set(sessions(environmentId), AsyncResult.success(session));
+        try {
+          expect(registry.get(actions.runAction.permissionAtom(environmentId, input))).toBe(true);
+          const priorStarted = yield* Deferred.make<void>();
+          const finishPrior = yield* Deferred.make<void>();
+          const prior = yield* vcsCommandScheduler
+            .schedule(
+              registry,
+              vcsCommandConcurrency,
+              { environmentId, input: { cwd: "/api" } },
+              Deferred.succeed(priorStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(finishPrior)),
+              ),
+            )
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(priorStarted);
+          const running = yield* actions.runAction
+            .run(registry, {
+              environmentId,
+              input,
+              cwds: ["/api", "/web"],
+              onProgress: () => Deferred.doneUnsafe(started, Effect.void),
+            })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          expect(requests).toEqual([]);
+          yield* Deferred.succeed(finishPrior, undefined);
+          yield* Fiber.join(prior);
+          yield* Deferred.await(started);
+          let queuedRan = false;
+          const queued = yield* vcsCommandScheduler
+            .schedule(
+              registry,
+              vcsCommandConcurrency,
+              { environmentId, input: { cwd: "/web" } },
+              Effect.sync(() => {
+                queuedRan = true;
+              }),
+            )
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          expect(queuedRan).toBe(false);
+          // A sheet can unmount; its replacement reads the command-owned atom.
+          expect(registry.get(actions.stateAtom({ ...target }))).toMatchObject({
+            isRunning: true,
+            currentLabel: "/api: Pushing",
+          });
+          expect(
+            registry.get(actions.stateAtom({ ...target, environmentId: otherEnvironmentId }))
+              .isRunning,
+          ).toBe(false);
+          yield* Deferred.succeed(receipt, finished);
+          expect(yield* Fiber.join(running)).toEqual({ results: finished.results });
+          yield* Fiber.join(queued);
+          expect(queuedRan).toBe(true);
+          expect(registry.get(actions.stateAtom(target))).toEqual({
+            isRunning: false,
+            currentLabel: null,
+            result: { results: finished.results },
+          });
+          expect(cleared).toEqual([environmentId]);
+          response = Stream.fail(new Error("Disconnected"));
+          expect(
+            Exit.isFailure(
+              yield* Effect.exit(
+                actions.runAction.run(registry, { environmentId, input, cwds: ["/api", "/web"] }),
+              ),
+            ),
+          ).toBe(true);
+          expect(registry.get(actions.stateAtom(target))).toMatchObject({
+            isRunning: false,
+            result: null,
+          });
+          expect(requests).toEqual([environmentId, environmentId]);
+          expect(cleared).toEqual([environmentId, environmentId]);
+          registry.set(
+            sessions(environmentId),
+            AsyncResult.success({ ...session, permissions: [] }),
+          );
+          expect(registry.get(actions.runAction.permissionAtom(environmentId, input))).toBe(false);
+          expect(
+            Exit.isFailure(
+              yield* Effect.exit(
+                actions.runAction.run(registry, { environmentId, input, cwds: ["/api", "/web"] }),
+              ),
+            ),
+          ).toBe(true);
+          expect(requests).toEqual([environmentId, environmentId]);
+        } finally {
+          unmountSession();
+          registry.dispose();
+        }
+      }),
+  );
 });

@@ -2,11 +2,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 
 import * as Effect from "effect/Effect";
 import type { AtomRegistry } from "effect/reactivity";
-import {
-  createAtomCommandScheduler,
-  scheduleAtomCommandEffect,
-  type AtomCommandConcurrency,
-} from "./runtime.ts";
+import { createAtomCommandScheduler, type AtomCommandConcurrency } from "./runtime.ts";
 
 export const vcsCommandScheduler = createAtomCommandScheduler();
 
@@ -29,9 +25,8 @@ export function scheduleWorkspaceVcsCommand<A, E, R>(
     .sort()
     .reduceRight(
       (operation, cwd) =>
-        scheduleAtomCommandEffect(
+        vcsCommandScheduler.schedule(
           registry,
-          vcsCommandScheduler,
           vcsCommandConcurrency,
           { environmentId, input: { cwd } },
           operation,

@@ -1,4 +1,6 @@
-import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import { msg, T, useGT, useMessages } from "gt-react";
+import type { MessageResolver } from "~/i18n/messages";
+import type { EnvironmentId, ScopedThreadRef, WayfinderNode } from "@t3tools/contracts";
 import { FileText, ListTodo, TriangleAlert } from "lucide-react";
 import { useId } from "react";
 
@@ -29,16 +31,21 @@ export interface StarMapTicketDetailProps {
   readonly onSelectTicket: (ticketId: string) => void;
 }
 
-function statusText(node: StarMapGraphNode): string {
+export function starMapTicketStatusText(
+  node: Pick<WayfinderNode, "status" | "claimedBy">,
+  resolve: MessageResolver,
+): string {
   switch (node.status) {
     case "open":
-      return "open";
+      return resolve(msg("open", { $context: "ticket status" }));
     case "claimed":
-      return node.claimedBy !== null ? `claimed by ${node.claimedBy}` : "claimed";
+      return node.claimedBy !== null
+        ? resolve(msg("claimed by {name}", { name: node.claimedBy }))
+        : resolve(msg("claimed", { $context: "ticket status" }));
     case "resolved":
-      return "resolved";
+      return resolve(msg("resolved", { $context: "ticket status" }));
     case "out_of_scope":
-      return "out of scope";
+      return resolve(msg("out of scope"));
   }
 }
 
@@ -54,7 +61,10 @@ function blockersOf(graph: StarMapGraph, nodeId: string): ReadonlyArray<StarMapG
 
 // Ticket bodies use the Files read path and stay off the map subscription wire.
 export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
+  const gt = useGT();
+  const messages = useMessages();
   const { node } = props;
+  const status = starMapTicketStatusText(node, messages);
   const taskUnavailableId = useId();
   const fileTarget = starMapFileTarget(node.relativePath, props.cwd, props.workspace);
   const fileQuery = useProjectFileQuery(
@@ -101,8 +111,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
               {node.ordinal}. {node.label}
             </h3>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {statusText(node)}
-              {node.isFrontier ? " · frontier" : ""}
+              {node.isFrontier ? gt("{status} · frontier", { status }) : status}
             </p>
           </div>
           {props.threadRef !== null ? (
@@ -111,10 +120,10 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                 type="button"
                 onClick={openAsFile}
                 className="flex h-6 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                aria-label={`Open ${node.relativePath} as a file`}
+                aria-label={gt("Open {path} as a file", { path: node.relativePath })}
               >
                 <FileText className="size-3.5" aria-hidden />
-                Open as file
+                <T>Open as file</T>
               </button>
               {/* Unavailable stays a focusable `aria-disabled` button, as the right panel launcher
                   and the Git quick action do: the element Tab reaches carries the name and the
@@ -133,10 +142,10 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                           ? "hover:bg-accent/60 hover:text-foreground"
                           : "cursor-not-allowed opacity-50",
                       )}
-                      aria-label={`Open ${node.label} as a task`}
+                      aria-label={gt("Open {label} as a task", { label: node.label })}
                     >
                       <ListTodo className="size-3.5" aria-hidden />
-                      Open as task
+                      <T>Open as task</T>
                     </button>
                   }
                 />
@@ -154,7 +163,9 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
         </div>
         {blockers.length > 0 ? (
           <div className="flex flex-wrap items-center gap-1">
-            <span className="text-xs text-muted-foreground">Blocked by</span>
+            <span className="text-xs text-muted-foreground">
+              <T>Blocked by</T>
+            </span>
             {blockers.map((blocker) => (
               <Tooltip key={blocker.id}>
                 <TooltipTrigger
@@ -162,7 +173,11 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                     <button
                       type="button"
                       onClick={() => props.onSelectTicket(blocker.id)}
-                      aria-label={`Go to ticket ${blocker.ordinal}. ${blocker.label}, ${statusText(blocker)}`}
+                      aria-label={gt("Go to ticket {ordinal}. {label}, {status}", {
+                        ordinal: blocker.ordinal,
+                        label: blocker.label,
+                        status: starMapTicketStatusText(blocker, messages),
+                      })}
                       className={cn(
                         "max-w-full truncate rounded-full border border-border/60 px-2 py-0.5 text-xs",
                         blocker.status === "resolved" || blocker.status === "out_of_scope"
@@ -175,7 +190,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
                   }
                 />
                 <TooltipPopup side="bottom">
-                  {blocker.ordinal}. {blocker.label}: {statusText(blocker)}
+                  {blocker.ordinal}. {blocker.label}: {starMapTicketStatusText(blocker, messages)}
                 </TooltipPopup>
               </Tooltip>
             ))}
@@ -190,7 +205,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
             {fileQuery.data.truncated ? (
               <p className="flex items-center gap-1 border-b border-border/60 px-4 py-2 text-xs text-muted-foreground">
                 <TriangleAlert className="size-3.5" aria-hidden />
-                This ticket file is too large to show in full; the preview is truncated.
+                <T>This ticket file is too large to show in full; the preview is truncated.</T>
               </p>
             ) : null}
             <ChatMarkdown
@@ -202,7 +217,7 @@ export function StarMapTicketDetail(props: StarMapTicketDetailProps) {
           </>
         ) : (
           <p className="px-4 py-3 text-xs text-muted-foreground">
-            {fileQuery.isPending ? "Loading ticket…" : "No ticket content."}
+            {fileQuery.isPending ? gt("Loading ticket…") : gt("No ticket content.")}
           </p>
         )}
       </div>

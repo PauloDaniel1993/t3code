@@ -1,3 +1,5 @@
+import { msg, T, useGT, useLocale, useMessages, Var } from "gt-react";
+import { m } from "../i18n/messages";
 import { Field } from "@base-ui/react/field";
 import {
   type ModelSelection,
@@ -56,6 +58,9 @@ export function NewThreadTaskDialog(props: {
   readonly onClose: () => void;
   readonly onRequest: (draft: NewThreadTaskDraft, model: ModelSelection) => Promise<string | null>;
 }) {
+  const gt = useGT();
+  const messages = useMessages();
+  const locale = useLocale();
   const { parentThreadRef, initialModelSelection, onClose, onRequest } = props;
   const { providers, problem: parentProblem } = useNewThreadTaskAvailability(parentThreadRef);
   const parent = useNewThreadTaskParent(parentThreadRef);
@@ -83,11 +88,13 @@ export function NewThreadTaskDialog(props: {
   const selectedModel = modelOptionsByInstance
     .get(model.instanceId)
     ?.find((option) => option.slug === model.model);
-  const draftProblem = validateNewThreadTaskDraft(draft);
+  const draftProblem = validateNewThreadTaskDraft(draft, messages);
   const parentProvider = providers.find(
     (provider) => provider.instanceId === parent?.modelSelection.instanceId,
   );
-  const modeNotice = parent ? getNewThreadTaskModeNotice(parent, parentProvider?.driver) : null;
+  const modeNotice = parent
+    ? getNewThreadTaskModeNotice(parent, parentProvider?.driver, messages)
+    : null;
   // The task works in its parent's folders, so it needs a provider that reaches them all.
   const workspaceScope = workspaceFolderScope({ thread: parent, project: null });
   const getModelDisabledReason = (instanceId: ProviderInstanceId) =>
@@ -99,13 +106,13 @@ export function NewThreadTaskDialog(props: {
       : PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE;
   const problem =
     parentProblem ??
-    validateNewThreadTaskRequest(draft, model) ??
+    validateNewThreadTaskRequest(draft, model, messages, locale) ??
     getModelDisabledReason(model.instanceId) ??
     (!selectedEntry ||
     !isProviderInstancePickerReady(selectedEntry) ||
     !selectedModel ||
     selectedModel.isUnavailable
-      ? "Choose an available provider instance and model."
+      ? gt("Choose an available provider instance and model.")
       : null);
 
   async function submit() {
@@ -120,7 +127,7 @@ export function NewThreadTaskDialog(props: {
           if (error === null) onClose();
           else setFailure(error);
         } catch (error) {
-          setFailure(error instanceof Error ? error.message : "Could not request a task.");
+          setFailure(error instanceof Error ? error.message : m(msg("Could not request a task.")));
         }
       },
       () => {
@@ -139,11 +146,15 @@ export function NewThreadTaskDialog(props: {
     >
       <DialogPopup data-testid="new-thread-task-dialog" showCloseButton={!submitting}>
         <DialogHeader>
-          <DialogTitle>New task</DialogTitle>
+          <DialogTitle>
+            <T>New task</T>
+          </DialogTitle>
           <DialogDescription>
-            Ask this thread's agent to delegate a task. This uses one parent turn and queues behind
-            any active work. The finished task's result wakes the parent for a second turn on its
-            model.
+            <T>
+              Ask this thread's agent to delegate a task. This uses one parent turn and queues
+              behind any active work. The finished task's result wakes the parent for a second turn
+              on its model.
+            </T>
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -156,13 +167,17 @@ export function NewThreadTaskDialog(props: {
             }}
           >
             <fieldset disabled={submitting} className="flex min-w-0 flex-col gap-4">
-              <legend className="sr-only">Task details</legend>
+              <legend className="sr-only">
+                <T>Task details</T>
+              </legend>
               <Field.Root className="flex flex-col gap-1.5">
-                <Field.Label render={<Label />}>Title (optional)</Field.Label>
+                <Field.Label render={<Label />}>
+                  <T>Title (optional)</T>
+                </Field.Label>
                 <Input
                   value={draft.title}
                   maxLength={TASK_TITLE_MAX_LENGTH}
-                  placeholder={deriveTaskTitle(draft) || "Taken from the task prompt"}
+                  placeholder={deriveTaskTitle(draft) || gt("Taken from the task prompt")}
                   onChange={(event) =>
                     setDraft((current) => ({ ...current, title: event.target.value }))
                   }
@@ -172,21 +187,28 @@ export function NewThreadTaskDialog(props: {
                 className="flex flex-col gap-1.5"
                 invalid={draftProblem !== null && draft.prompt.length > 0}
               >
-                <Field.Label render={<Label />}>What should this task do?</Field.Label>
+                <Field.Label render={<Label />}>
+                  <T>What should this task do?</T>
+                </Field.Label>
                 <Textarea
                   autoFocus
                   value={draft.prompt}
                   aria-invalid={draftProblem !== null && draft.prompt.length > 0}
-                  placeholder="Inventory every provider handler and report the ones without tests."
+                  placeholder={gt(
+                    "Inventory every provider handler and report the ones without tests.",
+                  )}
                   onChange={(event) =>
                     setDraft((current) => ({ ...current, prompt: event.target.value }))
                   }
                 />
                 <Field.Description className="text-xs text-muted-foreground">
-                  {draft.prompt.length.toLocaleString("en-US")} /{" "}
-                  {TASK_PROMPT_MAX_LENGTH.toLocaleString("en-US")} characters. The parent must
-                  repeat this prompt in a tool call. Put longer context in files the task can read.
-                  Include any context the task needs or let the parent summarize it below.
+                  <T>
+                    <Var>{draft.prompt.length.toLocaleString("en-US")}</Var> /{" "}
+                    <Var>{TASK_PROMPT_MAX_LENGTH.toLocaleString("en-US")}</Var> characters. The
+                    parent must repeat this prompt in a tool call. Put longer context in files the
+                    task can read. Include any context the task needs or let the parent summarize it
+                    below.
+                  </T>
                 </Field.Description>
               </Field.Root>
               <Field.Root className="flex flex-col gap-1.5">
@@ -198,15 +220,19 @@ export function NewThreadTaskDialog(props: {
                       setDraft((current) => ({ ...current, includeThreadContext }))
                     }
                   />
-                  Let the parent add relevant thread context
+                  <T>Let the parent add relevant thread context</T>
                 </Field.Label>
                 <Field.Description className="text-xs text-muted-foreground">
-                  The parent's agent writes a summary of the context the task needs. The
-                  conversation itself is not copied. This is off by default.
+                  <T>
+                    The parent's agent writes a summary of the context the task needs. The
+                    conversation itself is not copied. This is off by default.
+                  </T>
                 </Field.Description>
               </Field.Root>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium">Model</span>
+                <span className="text-sm font-medium">
+                  <T>Model</T>
+                </span>
                 <ProviderModelPicker
                   environmentId={parentThreadRef.environmentId}
                   activeInstanceId={model.instanceId}
@@ -244,7 +270,7 @@ export function NewThreadTaskDialog(props: {
                   size="xs"
                   onClick={() => setModel(initialModelSelection)}
                 >
-                  Reset
+                  <T>Reset</T>
                 </Button>
               </div>
             </fieldset>
@@ -265,10 +291,10 @@ export function NewThreadTaskDialog(props: {
         </DialogPanel>
         <DialogFooter>
           <Button type="button" variant="outline" disabled={submitting} onClick={onClose}>
-            Cancel
+            <T>Cancel</T>
           </Button>
           <Button type="submit" form={formId} disabled={problem !== null || submitting}>
-            {submitting ? "Requesting…" : "Request task"}
+            {submitting ? gt("Requesting…") : gt("Request task")}
           </Button>
         </DialogFooter>
       </DialogPopup>

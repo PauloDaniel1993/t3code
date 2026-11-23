@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../test/render";
 import { useRightPanelStore } from "../rightPanelStore";
@@ -102,6 +103,8 @@ vi.mock(import("@t3tools/client-runtime/change-request-links"), async (original)
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
+import { MarkdownFileLink } from "./chat/MarkdownFileLink";
+import { SharedTooltipProvider } from "./ui/shared-tooltip";
 
 const threadRef = {
   environmentId: EnvironmentId.make("selected"),
@@ -196,6 +199,19 @@ it("removes host actions after revocation while keeping file preview and copying
   expect(state.openEditor).not.toHaveBeenCalled();
 });
 
+it.each(["[Docs](https://example.com/docs)", "[Readme](docs/readme.md)"])(
+  "tells the native menu for %s whether the keyboard opened it",
+  async (text) => {
+    using _setup = setup();
+    await using screen = await renderMarkdown(text);
+    screen.anchor().focus();
+    await userEvent.keyboard("{Shift>}{F10}{/Shift}");
+    await vi.waitFor(() => expect(state.choose.mock.lastCall?.[2]).toBe("keyboard"));
+    await userEvent.click(screen.anchor(), { button: "right" });
+    await vi.waitFor(() => expect(state.choose.mock.lastCall?.[2]).toBe("mouse"));
+  },
+);
+
 it("does not launch an editor after revocation during a native context menu", async () => {
   using _setup = setup();
   let choose: (action: string) => void = () => {
@@ -278,3 +294,79 @@ it.each(["link-to-thread", "unlink-from-thread"])(
     );
   },
 );
+
+it("preserves keyboard activation of a file-options button", async () => {
+  using _setup = setup();
+  await using screen = await render(
+    <MarkdownFileLink
+      environmentId={null}
+      href="readme.md"
+      targetPath="readme.md"
+      iconPath="readme.md"
+      workspaceRelativePath="readme.md"
+      panelPath={null}
+      label="Readme"
+      copyMarkdown="[Readme](readme.md)"
+      theme="dark"
+      onOpenInPanel={vi.fn()}
+      resolveDragPath={async () => "/work/readme.md"}
+      resolveCopyPaths={async () => ({ relativePath: "readme.md", fullPath: "/work/readme.md" })}
+      openInEditorMenuLabel="Open in editor"
+    />,
+  );
+  const button = screen.container.querySelector("button")!;
+  button.focus();
+  for (const key of ["{Enter}", " "]) {
+    await userEvent.keyboard(key);
+    await vi.waitFor(() => expect(state.choose.mock.lastCall?.[2]).toBe("keyboard"));
+    state.choose.mockClear();
+  }
+  await userEvent.click(button);
+  await vi.waitFor(() => expect(state.choose.mock.lastCall?.[2]).toBe("mouse"));
+});
+
+it("opens a previewable file outside T3 from its shared-tooltip chip and menu", async () => {
+  using _setup = setup();
+  const openOutsideT3 = vi.fn(async () => AsyncResult.success(undefined));
+  const openInPanel = vi.fn();
+  await using screen = await render(
+    <SharedTooltipProvider>
+      <MarkdownFileLink
+        environmentId={threadRef.environmentId}
+        href="/work/report.pdf"
+        targetPath="/work/report.pdf"
+        iconPath="/work/report.pdf"
+        workspaceRelativePath="report.pdf"
+        panelPath="report.pdf"
+        label="report.pdf"
+        copyMarkdown="[report.pdf](report.pdf)"
+        theme="dark"
+        threadRef={threadRef}
+        onOpenInPanel={openInPanel}
+        onOpenOutsideT3={openOutsideT3}
+        resolveDragPath={async () => "/work/report.pdf"}
+        resolveCopyPaths={async () => ({
+          relativePath: "report.pdf",
+          fullPath: "/work/report.pdf",
+        })}
+        openInEditorMenuLabel="Open in editor"
+      />
+    </SharedTooltipProvider>,
+  );
+  const link = screen.getByRole("link", { name: "report.pdf" });
+  await userEvent.click(link);
+  expect(openInPanel).toHaveBeenCalledExactlyOnceWith("report.pdf", undefined);
+  expect(openOutsideT3).not.toHaveBeenCalled();
+
+  await act(() => {
+    link
+      .element()
+      .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
+  });
+  expect(openOutsideT3).toHaveBeenCalledOnce();
+  expect(openInPanel).toHaveBeenCalledOnce();
+
+  state.choose.mockResolvedValue("open-outside-t3");
+  await userEvent.click(link, { button: "right" });
+  await vi.waitFor(() => expect(openOutsideT3).toHaveBeenCalledTimes(2));
+});

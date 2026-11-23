@@ -25,7 +25,8 @@ export interface CreatedPullRequestKey {
 // Use checkout identity only when the URL cannot be read; absent PRs have no identity.
 export function createdPullRequestKey(
   result: Pick<GitRunStackedActionResult, "pr">,
-  checkout: { readonly repositoryIdentity?: RepositoryIdentity | null | undefined } | undefined,
+  /** Of the repository the action ran in, which a tracked repository does not share with its project. */
+  identity: RepositoryIdentity | null | undefined,
 ): CreatedPullRequestKey | null {
   const { status, number, url } = result.pr;
   if ((status !== "created" && status !== "opened_existing") || number === undefined || !url) {
@@ -35,7 +36,6 @@ export function createdPullRequestKey(
   if (parsed !== undefined) {
     return { host: parsed.host, repository: parsed.repository, number: parsed.number, url };
   }
-  const identity = checkout?.repositoryIdentity;
   const kind = identity?.provider;
   const repository = sourceControlDefinitions.repositorySelector(identity);
   if (!identity || kind === undefined || repository === null) return null;
@@ -83,13 +83,11 @@ export const linkCreatedPullRequest: <E>(input: {
       const projects = yield* ProjectService.ProjectService;
       const project = Option.getOrUndefined(yield* projects.getShell(thread.value.projectId));
       if (project !== undefined && isSamePath(input.cwd, project.workspaceRoot)) {
-        key = createdPullRequestKey(input.result, project);
+        key = createdPullRequestKey(input.result, project.repositoryIdentity);
       }
       if (key === null) {
         const identities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
-        key = createdPullRequestKey(input.result, {
-          repositoryIdentity: yield* identities.resolve(input.cwd),
-        });
+        key = createdPullRequestKey(input.result, yield* identities.resolve(input.cwd));
       }
     }
     if (key === null) return;

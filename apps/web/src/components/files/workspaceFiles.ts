@@ -201,7 +201,7 @@ export function workspaceMentionPreviewPath(path: string, cwd: string | null | u
 export function workspaceFileAsset(
   scope: WorkspaceScope | undefined,
   path: string,
-): AssetResource | undefined {
+): Extract<AssetResource, { _tag: "workspace-scope-file" }> | undefined {
   return scope?.folderPath
     ? { _tag: "workspace-scope-file", scope: { ...scope, folderPath: scope.folderPath }, path }
     : undefined;

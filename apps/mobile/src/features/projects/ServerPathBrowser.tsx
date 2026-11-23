@@ -5,6 +5,7 @@ import {
 } from "@t3tools/client-runtime/state/filesystem";
 import { isWindowsPlatform } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { useGT, useMessages } from "gt-react-native";
 import { useMemo } from "react";
 import { Platform, View } from "react-native";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -29,6 +30,8 @@ export function ServerPathBrowser(props: {
   readonly includeWorkspaceFiles?: boolean;
   readonly disabled?: boolean;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const browsePath = getFilesystemBrowsePath(props.pathInput, props.environment.platform);
   const browseTarget = useMemo(
     () =>
@@ -47,12 +50,15 @@ export function ServerPathBrowser(props: {
   const session = useEnvironmentQuery(
     environmentSession.sessionStateAtom(props.environment.environmentId),
   );
-  const fileAccess = resolveFilesystemReadAccess({
-    isCatalogReady: environment.isReady,
-    connection: environment.presentation?.connection ?? null,
-    session: session.data,
-    sessionError: session.error,
-  });
+  const fileAccess = resolveFilesystemReadAccess(
+    {
+      isCatalogReady: environment.isReady,
+      connection: environment.presentation?.connection ?? null,
+      session: session.data,
+      sessionError: session.error,
+    },
+    m,
+  );
   const browseState = useEnvironmentQuery(
     fileAccess.canReadFiles && browseTarget ? filesystemEnvironment.browse(browseTarget) : null,
   );
@@ -71,10 +77,14 @@ export function ServerPathBrowser(props: {
   return (
     <>
       <SectionTitle>
-        {props.includeWorkspaceFiles ? "Browse folders and workspace files" : "Browse folders"}
+        {props.includeWorkspaceFiles
+          ? gt("Browse folders and workspace files")
+          : gt("Browse folders")}
       </SectionTitle>
       {!fileAccess.canReadFiles && !fileAccess.isPending ? (
-        <ErrorBanner message={fileAccess.error ?? "This connection cannot browse host folders."} />
+        <ErrorBanner
+          message={fileAccess.error ?? gt("This connection cannot browse host folders.")}
+        />
       ) : null}
       {browseState.error ? <ErrorBanner message={browseState.error} /> : null}
       <ListSection>

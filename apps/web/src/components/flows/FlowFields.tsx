@@ -1,3 +1,4 @@
+import { T, msg, useGT, useMessages } from "gt-react";
 import { FlowPrompt } from "./FlowPrompt";
 import { X } from "lucide-react";
 import { Checkbox } from "../ui/checkbox";
@@ -35,33 +36,21 @@ import {
 } from "../ui/select";
 
 const FieldErrors = createContext<ReadonlyArray<{ path: string; message: string }>>([]);
-const fieldPaths: Record<string, string> = {
-  "Step id": "id",
-  Prompt: "prompt",
-  "Approval prompt": "prompt",
-  Command: "command",
-  "Working directory": "cwd",
-  Timeout: "timeoutMs",
-  "Maximum iterations": "maxIterations",
-  "Iterate over": "over",
-  Concurrency: "concurrency",
-  "Maximum items": "maxItems",
-  "Share thread with": "thread.sameAs",
-  Reference: "ref",
-};
 function Field({
   label,
+  fieldPath,
   children,
   hint,
   error,
 }: {
   label: string;
+  fieldPath?: string | undefined;
   children: ReactNode;
   hint?: string | undefined;
   error?: string | null;
 }) {
   const errors = useContext(FieldErrors).filter(
-    (error) => fieldPaths[label] && error.path.endsWith(`.${fieldPaths[label]}`),
+    (error) => fieldPath && error.path.endsWith(`.${fieldPath}`),
   );
   return (
     <div className="flex min-w-0 flex-col gap-1 text-xs">
@@ -85,43 +74,43 @@ function Field({
 }
 
 const optionLabels: Record<string, string> = {
-  inherit: "Inherit flow default",
-  override: "Override model",
-  "full-access": "Full access",
-  "approval-required": "Approval required",
-  "auto-accept-edits": "Auto-accept edits",
-  auto: "Auto",
-  default: "Default",
-  plan: "Plan",
-  new: "New thread",
-  continue: "Continue previous step's thread",
-  sameAs: "Same thread as step…",
-  eq: "equals",
-  neq: "does not equal",
-  lt: "less than",
-  lte: "at most",
-  gt: "greater than",
-  gte: "at least",
-  contains: "contains",
-  isEmpty: "is empty",
-  string: "Text",
-  number: "Number",
-  boolean: "Yes/No",
-  "string[]": "List of text",
-  enum: "Choice",
-  true: "Yes",
-  false: "No",
-  worktree: "Fresh worktree per run",
-  root: "Project folder",
-  fail: "Stop on failure",
-  all: "All conditions",
-  any: "Any condition",
-  not: "Not",
-  comparison: "Comparison",
-  success: "Success",
-  failure: "Failure",
-  always: "Always",
-  conditional: "Only when…",
+  inherit: msg("Inherit flow default"),
+  override: msg("Override model"),
+  "full-access": msg("Full access"),
+  "approval-required": msg("Approval required"),
+  "auto-accept-edits": msg("Auto-accept edits"),
+  auto: msg("Auto", { $context: "automatic runtime mode" }),
+  default: msg("Default", { $context: "interaction mode" }),
+  plan: msg("Plan", { $context: "planning interaction mode" }),
+  new: msg("New thread"),
+  continue: msg("Continue previous step's thread"),
+  sameAs: msg("Same thread as step…"),
+  eq: msg("equals"),
+  neq: msg("does not equal"),
+  lt: msg("less than"),
+  lte: msg("at most"),
+  gt: msg("greater than"),
+  gte: msg("at least"),
+  contains: msg("contains"),
+  isEmpty: msg("is empty"),
+  string: msg("Text", { $context: "input data type" }),
+  number: msg("Number"),
+  boolean: msg("Yes/No"),
+  "string[]": msg("List of text"),
+  enum: msg("Choice", { $context: "enumerated input data type" }),
+  true: msg("Yes"),
+  false: msg("No"),
+  worktree: msg("Fresh worktree per run"),
+  root: msg("Project folder"),
+  fail: msg("Stop on failure"),
+  all: msg("All conditions"),
+  any: msg("Any condition"),
+  not: msg("Not", { $context: "logical negation" }),
+  comparison: msg("Comparison"),
+  success: msg("Success"),
+  failure: msg("Failure"),
+  always: msg("Always"),
+  conditional: msg("Only when…"),
 };
 export function FlowSection({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
@@ -147,6 +136,9 @@ export function Choice({
   labels?: Readonly<Record<string, ReactNode>>;
   onChange: (value: string) => void;
 }) {
+  const resolve = useMessages();
+  const optionLabel = (value: string) =>
+    labels?.[value] ?? (optionLabels[value] ? resolve(optionLabels[value]) : value);
   if (values.length === 2 && values.includes("true") && values.includes("false"))
     return (
       <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -166,13 +158,13 @@ export function Choice({
         }}
       >
         <SelectTrigger size="compact" aria-label={label}>
-          <SelectValue>{labels?.[value] ?? optionLabels[value] ?? value}</SelectValue>
+          <SelectValue>{optionLabel(value)}</SelectValue>
         </SelectTrigger>
         <SelectPopup>
           <SelectGroup>
             {[...new Set(values)].map((item) => (
               <SelectItem key={item} value={item}>
-                {labels?.[item] ?? optionLabels[item] ?? item}
+                {optionLabel(item)}
               </SelectItem>
             ))}
           </SelectGroup>
@@ -184,6 +176,7 @@ export function Choice({
 
 export function TextField({
   label,
+  fieldPath,
   value,
   onChange,
   multiline = false,
@@ -191,6 +184,7 @@ export function TextField({
   mono = false,
 }: {
   label: string;
+  fieldPath?: string | undefined;
   value: string;
   onChange: (value: string) => void;
   multiline?: boolean;
@@ -198,7 +192,7 @@ export function TextField({
   mono?: boolean;
 }) {
   return (
-    <Field label={label} hint={hint}>
+    <Field label={label} fieldPath={fieldPath} hint={hint}>
       {multiline ? (
         <Textarea
           size="sm"
@@ -221,15 +215,17 @@ export function TextField({
 
 function NumberField({
   label,
+  fieldPath,
   value,
   onChange,
 }: {
   label: string;
+  fieldPath?: string | undefined;
   value: number;
   onChange: (value: number) => void;
 }) {
   return (
-    <Field label={label}>
+    <Field label={label} fieldPath={fieldPath}>
       <Input
         size="compact"
         type="number"
@@ -289,6 +285,7 @@ export function ConditionForm({
   value: FlowCondition;
   onChange: (value: FlowCondition) => void;
 }) {
+  const gt = useGT();
   const wrap = (kind: "all" | "any" | "not") =>
     onChange(
       kind === "all"
@@ -303,9 +300,9 @@ export function ConditionForm({
       {"not" in value ? (
         <>
           <div className="flex items-center gap-2 text-2xs text-muted-foreground">
-            Not{" "}
+            <T context="logical negation">Not</T>{" "}
             <Button size="xs" variant="ghost" onClick={() => onChange(value.not)}>
-              Remove not
+              <T>Remove not</T>
             </Button>
           </div>
           <div className="border-l border-border/60 pl-2">
@@ -315,7 +312,7 @@ export function ConditionForm({
       ) : !comparison ? (
         <>
           <span className="text-2xs font-medium text-muted-foreground">
-            {"all" in value ? "All conditions" : "Any condition"}
+            {"all" in value ? gt("All conditions") : gt("Any condition")}
           </span>
           {("all" in value ? value.all : value.any).map((condition, index, conditions) => (
             <div key={index} className="border-l border-border/60 pl-2">
@@ -334,7 +331,7 @@ export function ConditionForm({
                   onChange("all" in value ? { all: children } : { any: children });
                 }}
               >
-                Remove condition
+                <T>Remove condition</T>
               </Button>
             </div>
           ))}
@@ -349,20 +346,21 @@ export function ConditionForm({
               )
             }
           >
-            Add condition
+            <T>Add condition</T>
           </Button>
         </>
       ) : (
         <>
           <TextField
-            label="Reference"
+            label={gt("Reference", { $context: "noun, a flow reference" })}
+            fieldPath="ref"
             mono
             value={value.ref}
             onChange={(ref) => onChange({ ...value, ref })}
           />
           <div className="grid grid-cols-[9rem_minmax(0,1fr)_9rem] items-end gap-2">
             <Choice
-              label="Operator"
+              label={gt("Operator")}
               value={value.op}
               values={["eq", "neq", "lt", "lte", "gt", "gte", "contains", "isEmpty"]}
               onChange={(op) => {
@@ -382,12 +380,12 @@ export function ConditionForm({
             {"value" in value && (
               <>
                 <ValueField
-                  label="Value"
+                  label={gt("Value", { $context: "noun, the value used in the condition" })}
                   value={value.value}
                   onChange={(next) => onChange({ ...value, value: next })}
                 />
                 <Choice
-                  label="Type"
+                  label={gt("Type", { $context: "noun, the data type" })}
                   value={valueType(value.value)}
                   values={valueTypes}
                   onChange={(type) => onChange({ ...value, value: emptyValue(type) })}
@@ -398,15 +396,17 @@ export function ConditionForm({
         </>
       )}
       <div className="flex items-center gap-1.5">
-        <span className="text-2xs text-muted-foreground">Combine</span>
+        <span className="text-2xs text-muted-foreground">
+          <T>Combine</T>
+        </span>
         <Button size="xs" variant="outline" onClick={() => wrap("all")}>
-          + And
+          <T>+ And</T>
         </Button>
         <Button size="xs" variant="outline" onClick={() => wrap("any")}>
-          + Or
+          <T>+ Or</T>
         </Button>
         <Button size="xs" variant="outline" onClick={() => wrap("not")}>
-          Not
+          <T context="logical negation">Not</T>
         </Button>
       </div>
     </div>
@@ -420,6 +420,7 @@ function OutputFieldsForm({
   fields: ReadonlyArray<FlowOutputField>;
   onChange: (fields: ReadonlyArray<FlowOutputField>) => void;
 }) {
+  const gt = useGT();
   return (
     <fieldset className="flex flex-col gap-2">
       <FlowSection
@@ -429,11 +430,11 @@ function OutputFieldsForm({
             size="xs"
             onClick={() => onChange([...fields, { name: "result", type: "string" }])}
           >
-            + Field
+            <T>+ Field</T>
           </Button>
         }
       >
-        Output fields
+        <T>Output fields</T>
       </FlowSection>
       {fields.map((field, index) => {
         const update = (next: FlowOutputField) =>
@@ -441,12 +442,12 @@ function OutputFieldsForm({
         return (
           <div key={index} className="grid grid-cols-[minmax(0,1fr)_9rem_24px] items-end gap-2">
             <TextField
-              label="Output name"
+              label={gt("Output name")}
               value={field.name}
               onChange={(name) => update({ ...field, name })}
             />
             <Choice
-              label="Output type"
+              label={gt("Output type")}
               value={field.type}
               values={[...valueTypes, "enum"]}
               onChange={(type) => {
@@ -463,7 +464,7 @@ function OutputFieldsForm({
             <Button
               variant="ghost-destructive"
               size="icon-xs"
-              aria-label="Remove output"
+              aria-label={gt("Remove output")}
               onClick={() => onChange(fields.filter((_, i) => i !== index))}
             >
               <X />
@@ -471,7 +472,7 @@ function OutputFieldsForm({
             {field.type === "enum" && (
               <div className="col-span-full">
                 <TextField
-                  label="Enum values (one per line)"
+                  label={gt("Enum values (one per line)")}
                   multiline
                   value={field.values.join("\n")}
                   onChange={(next) => update({ ...field, values: next.split("\n") })}
@@ -492,6 +493,7 @@ export function InputFieldsForm({
   fields: ReadonlyArray<FlowInput>;
   onChange: (fields: ReadonlyArray<FlowInput>) => void;
 }) {
+  const gt = useGT();
   return (
     <fieldset className="flex flex-col gap-2">
       <FlowSection
@@ -501,11 +503,11 @@ export function InputFieldsForm({
             size="xs"
             onClick={() => onChange([...fields, { name: "input", type: "string" }])}
           >
-            + Input
+            <T>+ Input</T>
           </Button>
         }
       >
-        Inputs
+        <T>Inputs</T>
       </FlowSection>
       {fields.map((field, index) => {
         const update = (next: FlowInput) =>
@@ -516,12 +518,12 @@ export function InputFieldsForm({
             className="grid grid-cols-[minmax(0,1fr)_9rem_auto_24px] items-end gap-2"
           >
             <TextField
-              label="Input name"
+              label={gt("Input name")}
               value={field.name}
               onChange={(name) => update({ ...field, name })}
             />
             <Choice
-              label="Input type"
+              label={gt("Input type")}
               value={field.type}
               values={valueTypes}
               onChange={(type) => {
@@ -537,7 +539,7 @@ export function InputFieldsForm({
               }}
             />
             <Choice
-              label="Required"
+              label={gt("Required")}
               value={String(field.required ?? false)}
               values={["true", "false"]}
               onChange={(next) => update({ ...field, required: next === "true" })}
@@ -545,24 +547,24 @@ export function InputFieldsForm({
             <Button
               variant="ghost-destructive"
               size="icon-xs"
-              aria-label="Remove input"
+              aria-label={gt("Remove input")}
               onClick={() => onChange(fields.filter((_, i) => i !== index))}
             >
               <X />
             </Button>
             <Collapsible className="col-span-full">
               <CollapsibleTrigger render={<Button size="xs" variant="ghost" />}>
-                Description and defaults
+                <T>Description and defaults</T>
               </CollapsibleTrigger>
               <CollapsiblePanel>
                 <div className="flex flex-col gap-2 py-2">
                   <TextField
-                    label="Input description"
+                    label={gt("Input description")}
                     value={field.description ?? ""}
                     onChange={(description) => update({ ...field, description })}
                   />
                   <Choice
-                    label="Has default"
+                    label={gt("Has default")}
                     value={String(field.default !== undefined)}
                     values={["true", "false"]}
                     onChange={(next) => {
@@ -580,7 +582,7 @@ export function InputFieldsForm({
                   />
                   {field.default !== undefined && (
                     <ValueField
-                      label="Default value"
+                      label={gt("Default value")}
                       value={field.default}
                       onChange={(value) => update(inputWithDefault(field, value))}
                     />
@@ -612,12 +614,15 @@ export function ModelFields({
   value: FlowModel | undefined;
   onChange: (model: FlowModel | undefined) => void;
 }) {
+  const gt = useGT();
   const context = useContext(FlowModelContext);
   return (
     <fieldset className="flex flex-col gap-2">
-      <FlowSection>Agent defaults</FlowSection>
+      <FlowSection>
+        <T>Agent defaults</T>
+      </FlowSection>
       <Choice
-        label="Override model"
+        label={gt("Override model")}
         value={String(!!value)}
         values={["true", "false"]}
         onChange={(next) =>
@@ -627,7 +632,11 @@ export function ModelFields({
       {value && (
         <>
           <FlowModelPicker value={value} onChange={onChange} />
-          {!context && <p>Choose a connected environment to select a model.</p>}
+          {!context && (
+            <p>
+              <T>Choose a connected environment to select a model.</T>
+            </p>
+          )}
         </>
       )}
     </fieldset>
@@ -647,10 +656,11 @@ export function AgentModes({
     interactionMode?: ProviderInteractionMode | undefined;
   }) => void;
 }) {
+  const gt = useGT();
   return (
     <>
       <Choice
-        label="Runtime mode"
+        label={gt("Runtime mode")}
         value={value.runtimeMode ?? "inherit"}
         values={["inherit", ...RuntimeMode.literals]}
         onChange={(mode) =>
@@ -667,7 +677,7 @@ export function AgentModes({
         }
       />
       <Choice
-        label="Interaction mode"
+        label={gt("Interaction mode")}
         value={value.interactionMode ?? "inherit"}
         values={["inherit", "default", "plan"]}
         onChange={(mode) =>
@@ -692,6 +702,7 @@ export function StepForm({
   step: FlowStep;
   onChange: Dispatch<SetStateAction<FlowStep>>;
 }) {
+  const gt = useGT();
   const [id, setId] = useState(step.id);
   const [idError, setIdError] = useState<string | null>(null);
   const commitId = () => {
@@ -705,10 +716,10 @@ export function StepForm({
   return (
     <FieldErrors value={errors}>
       <div className="flex flex-col gap-3">
-        <Field label="Step id" error={idError}>
+        <Field label={gt("Step id")} fieldPath="id" error={idError}>
           <Input
             size="compact"
-            aria-label="Step id"
+            aria-label={gt("Step id")}
             value={id}
             onChange={(event) => setId(event.target.value)}
             onBlur={commitId}
@@ -722,7 +733,10 @@ export function StepForm({
         </Field>
         {step.kind === "agent" && (
           <>
-            <Field label="Prompt">
+            <Field
+              label={gt("Prompt", { $context: "noun, instruction sent to the agent" })}
+              fieldPath="prompt"
+            >
               <FlowPrompt
                 prompt={step.prompt}
                 images={step.images ?? []}
@@ -739,7 +753,7 @@ export function StepForm({
             <ModelFields value={step.model} onChange={(model) => onChange({ ...step, model })} />
             <AgentModes value={step} onChange={(modes) => onChange({ ...step, ...modes })} />
             <Choice
-              label="Thread"
+              label={gt("Thread", { $context: "noun, conversation thread" })}
               value={typeof step.thread === "object" ? "sameAs" : (step.thread ?? "new")}
               values={["new", "continue", "sameAs"]}
               onChange={(thread) =>
@@ -756,7 +770,8 @@ export function StepForm({
             />
             {typeof step.thread === "object" && (
               <TextField
-                label="Share thread with"
+                label={gt("Share thread with")}
+                fieldPath="thread.sameAs"
                 value={step.thread.sameAs}
                 onChange={(sameAs) => onChange({ ...step, thread: { sameAs } })}
               />
@@ -770,14 +785,17 @@ export function StepForm({
         {step.kind === "command" && (
           <>
             <TextField
-              label="Command"
+              label={gt("Command", { $context: "noun, shell command" })}
+              fieldPath="command"
               multiline
               value={step.command}
               onChange={(command) => onChange({ ...step, command })}
             />
             <p className="text-xs text-muted-foreground">
-              Command lines are literal. Put flow references in environment values and read them
-              from the shell.
+              <T>
+                Command lines are literal. Put flow references in environment values and read them
+                from the shell.
+              </T>
             </p>
             {Object.entries(step.env ?? {}).map(([name, value], index) => (
               <div
@@ -785,7 +803,7 @@ export function StepForm({
                 className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_24px] items-end gap-2"
               >
                 <TextField
-                  label="Environment variable"
+                  label={gt("Environment variable")}
                   mono
                   value={name}
                   onChange={(next) => {
@@ -802,14 +820,14 @@ export function StepForm({
                   }}
                 />
                 <TextField
-                  label={`Environment value ${name}`}
+                  label={gt("Environment value {name}", { name })}
                   value={value}
                   onChange={(next) => onChange({ ...step, env: { ...step.env, [name]: next } })}
                 />
                 <Button
                   size="icon-xs"
                   variant="ghost-destructive"
-                  aria-label="Remove environment variable"
+                  aria-label={gt("Remove environment variable")}
                   onClick={() => {
                     const env = { ...step.env };
                     delete env[name];
@@ -829,16 +847,18 @@ export function StepForm({
                 onChange({ ...step, env: { ...step.env, [name]: "" } });
               }}
             >
-              Add environment variable
+              <T>Add environment variable</T>
             </Button>
             <TextField
-              label="Working directory"
+              label={gt("Working directory")}
+              fieldPath="cwd"
               value={step.cwd ?? ""}
               onChange={(cwd) => onChange({ ...step, cwd: cwd || undefined })}
             />
             <TextField
-              label="Timeout"
-              hint="ms · default 10 min"
+              label={gt("Timeout", { $context: "noun, time limit" })}
+              fieldPath="timeoutMs"
+              hint={gt("ms · default 10 min")}
               value={step.timeoutMs === undefined ? "" : String(step.timeoutMs)}
               onChange={(value) =>
                 onChange({ ...step, timeoutMs: value === "" ? undefined : Number(value) })
@@ -848,7 +868,8 @@ export function StepForm({
         )}
         {step.kind === "approval" && (
           <TextField
-            label="Approval prompt"
+            label={gt("Approval prompt")}
+            fieldPath="prompt"
             multiline
             value={step.prompt}
             onChange={(prompt) => onChange({ ...step, prompt })}
@@ -857,7 +878,8 @@ export function StepForm({
         {step.kind === "loop" && (
           <>
             <NumberField
-              label="Maximum iterations"
+              label={gt("Maximum iterations")}
+              fieldPath="maxIterations"
               value={step.maxIterations}
               onChange={(maxIterations) => onChange({ ...step, maxIterations })}
             />
@@ -867,23 +889,26 @@ export function StepForm({
         {step.kind === "map" && (
           <>
             <TextField
-              label="Iterate over"
+              label={gt("Iterate over")}
+              fieldPath="over"
               value={step.over}
               onChange={(over) => onChange({ ...step, over })}
             />
             <NumberField
-              label="Concurrency"
+              label={gt("Concurrency")}
+              fieldPath="concurrency"
               value={step.concurrency ?? 1}
               onChange={(concurrency) => onChange({ ...step, concurrency })}
             />
             <NumberField
-              label="Maximum items"
+              label={gt("Maximum items")}
+              fieldPath="maxItems"
               value={step.maxItems ?? 50}
               onChange={(maxItems) => onChange({ ...step, maxItems })}
             />
             <Choice
-              label="On item failure"
-              labels={{ fail: "Stop the flow", continue: "Continue other items" }}
+              label={gt("On item failure")}
+              labels={{ fail: gt("Stop the flow"), continue: gt("Continue other items") }}
               value={step.onItemFailure ?? "fail"}
               values={["fail", "continue"]}
               onChange={(next) =>

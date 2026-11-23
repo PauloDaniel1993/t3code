@@ -8,7 +8,12 @@ import {
   sidebarTaskCountLabel,
 } from "@t3tools/client-runtime/state/sidebar-task-subthreads";
 import * as DateTime from "effect/DateTime";
-import type { OrchestrationV2Subagent, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  ContextMenuSource,
+  OrchestrationV2Subagent,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
+import { T, useGT, Var } from "gt-react";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import {
@@ -20,6 +25,7 @@ import {
   useSidebarTaskProjection,
   useRememberSidebarTaskPresentation,
 } from "./sidebarTaskPresentation";
+import { contextMenuSourceOf } from "../contextMenuSource";
 import { useUiStateStore } from "../uiStateStore";
 import { useThreadFamily } from "../state/threads";
 import { cn } from "../lib/utils";
@@ -129,6 +135,7 @@ function useTaskGroup({
 
 export const SidebarTaskDisclosure = memo(
   function SidebarTaskDisclosure(props: GroupProps) {
+    const gt = useGT();
     const { agentCount, expanded, hasOpenTask, key, setExpanded, unread } = useTaskGroup(props);
     const label = sidebarTaskCountLabel(props.tasks.length, agentCount);
     if (label === "") return null;
@@ -155,7 +162,7 @@ export const SidebarTaskDisclosure = memo(
         {unread ? (
           <span
             role="img"
-            aria-label="New task results"
+            aria-label={gt("New task results")}
             className="size-1.5 rounded-full bg-info-foreground"
           />
         ) : null}
@@ -171,7 +178,11 @@ export const SidebarTaskDisclosure = memo(
 
 export type TaskGroupProps = GroupProps & {
   onOpenThread: (ref: ScopedThreadRef) => void;
-  onContextMenu: (ref: ScopedThreadRef, position: { x: number; y: number }) => void;
+  onContextMenu: (
+    ref: ScopedThreadRef,
+    position: { x: number; y: number },
+    source: ContextMenuSource,
+  ) => void;
   onCommitRename: (ref: ScopedThreadRef, title: string, originalTitle: string) => void;
   onCancelRename: () => void;
   onRenameTitleChange: (title: string) => void;
@@ -182,6 +193,7 @@ export type TaskGroupProps = GroupProps & {
 
 export const SidebarTaskGroup = memo(
   function SidebarTaskGroup(props: TaskGroupProps) {
+    const gt = useGT();
     const { parentRef, subagents, rollup, expanded, agentCount } = useTaskGroup(props);
     const { visible, leased, rowRef } = useSidebarTaskVisibility(
       expanded,
@@ -200,12 +212,14 @@ export const SidebarTaskGroup = memo(
         .filter((agent) => agent.origin === "app_owned" && agent.childThreadId !== null)
         .map((agent) => [agent.childThreadId, agent]),
     );
+    const taskForThread = (thread: EnvironmentThreadShell) =>
+      thread.environmentId === parentRef.environmentId ? tasksByThreadId.get(thread.id) : undefined;
     const ticking =
       expanded &&
       visible &&
       (rollup.groups.some((group) => group.label.startsWith("Earlier turn")) ||
         props.tasks.some((thread) => {
-          const state = resolveSidebarTaskState(thread, tasksByThreadId.get(thread.id));
+          const state = resolveSidebarTaskState(thread, taskForThread(thread));
           return state === "queued" || state === "running";
         }));
     const clock = useSidebarTaskClock(ticking);
@@ -228,19 +242,20 @@ export const SidebarTaskGroup = memo(
           className="pointer-events-none absolute inset-y-0 left-0 w-px bg-sidebar-border"
         />
         <ul
-          aria-label={`Tasks for ${props.parent.title}`}
+          aria-label={gt("Tasks for {title}", { title: props.parent.title })}
           className="max-h-48 overflow-y-auto overscroll-contain py-1"
         >
           {props.tasks.map((thread) => {
             const key = taskThreadKey(thread);
+            const task = taskForThread(thread);
             return (
               <SidebarTaskRow
                 key={key}
                 thread={thread}
-                task={tasksByThreadId.get(thread.id)}
+                task={task}
                 animate={visible}
                 isActive={props.openThreadKey === key}
-                elapsed={formatSidebarTaskElapsed(thread, tasksByThreadId.get(thread.id), now)}
+                elapsed={formatSidebarTaskElapsed(thread, task, now)}
                 onOpenThread={props.onOpenThread}
                 onContextMenu={props.onContextMenu}
                 onCommitRename={props.onCommitRename}
@@ -271,7 +286,7 @@ export const SidebarTaskGroup = memo(
                   <span className="ml-auto text-3xs">{group.summary.label}</span>
                 </button>
                 {open ? (
-                  <ul aria-label="Provider-owned agents">
+                  <ul aria-label={gt("Provider-owned agents")}>
                     {turnAgents.map((agent) => (
                       <li key={agent.id} className="list-none">
                         <button
@@ -316,7 +331,7 @@ export const SidebarTaskGroup = memo(
                                       : "running"
                             }
                           />
-                          <span className="truncate">{agent.title ?? "Agent"}</span>
+                          <span className="truncate">{agent.title ?? gt("Agent")}</span>
                         </button>
                       </li>
                     ))}
@@ -327,7 +342,10 @@ export const SidebarTaskGroup = memo(
           })}
           {rollup.hiddenSettledCount > 0 ? (
             <li className="px-2 py-1 text-xs text-muted-foreground">
-              {rollup.hiddenSettledCount} older inactive agents remain in the transcript
+              <T>
+                <Var>{rollup.hiddenSettledCount}</Var> older inactive agents remain in the
+                transcript
+              </T>
             </li>
           ) : null}
         </ul>
@@ -339,7 +357,7 @@ export const SidebarTaskGroup = memo(
           className="mb-1 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground opacity-0 outline-none hover:bg-sidebar-row-hover focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring group-hover/sidebar-task-group:opacity-100"
         >
           <PlusIcon aria-hidden className="size-3" />
-          New task
+          <T>New task</T>
         </button>
       </div>
     );
@@ -365,6 +383,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
   renamingTitle: string;
 }) {
   const { thread, task } = props;
+  const gt = useGT();
   const committed = useRef(false);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Starting a rename closes the externally stored hover peek.
   useEffect(() => {
@@ -386,7 +405,7 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
       <li className="list-none px-2 py-1">
         <input
           autoFocus
-          aria-label="Task title"
+          aria-label={gt("Task title")}
           value={props.renamingTitle}
           onFocus={(event) => event.currentTarget.select()}
           onChange={(event) => props.onRenameTitleChange(event.target.value)}
@@ -418,7 +437,11 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
         onContextMenu={(event) => {
           event.preventDefault();
           closeSidebarTaskPeek();
-          props.onContextMenu(ref, { x: event.clientX, y: event.clientY });
+          props.onContextMenu(
+            ref,
+            { x: event.clientX, y: event.clientY },
+            contextMenuSourceOf(event),
+          );
         }}
         onPointerEnter={(event) => {
           if (event.pointerType !== "touch")
@@ -442,14 +465,16 @@ const SidebarTaskRow = memo(function SidebarTaskRow(props: {
               render={
                 <span
                   role="img"
-                  aria-label="Returned results to the parent thread"
+                  aria-label={gt("Returned results to the parent thread")}
                   className="shrink-0 text-xs text-info-foreground"
                 />
               }
             >
               ↩
             </TooltipTrigger>
-            <TooltipPopup>Returned results to the parent thread and woke the parent</TooltipPopup>
+            <TooltipPopup>
+              <T>Returned results to the parent thread and woke the parent</T>
+            </TooltipPopup>
           </Tooltip>
         ) : null}
         <span className="shrink-0 text-3xs text-muted-foreground tabular-nums">{elapsed}</span>

@@ -14,6 +14,7 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -21,8 +22,16 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
 import * as WorktreeSet from "./WorktreeSetService.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
+
+// No project in these tests tracks a repository, so no thread works in a task folder.
+export const layerNoTaskFolders = Layer.mock(TaskFolders.TaskFolders)({
+  plan: () => Effect.succeed(null),
+  find: () => Effect.succeed(null),
+});
 
 export const layer = Layer.mergeAll(
+  layerNoTaskFolders,
   Layer.mock(WorktreeSet.WorktreeSetService)({
     recreateMissing: () => Effect.void,
   }),
@@ -58,6 +67,7 @@ export const layerRealGit = GitWorkflow.layer.pipe(
       Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
       Layer.mock(ProjectStore.ProjectStoreV2)({}),
       WorkspaceFolderResolver.layer,
+      Layer.mock(PullRequestService.PullRequestService)({}),
       ServerSettings.layerTest(),
     ),
   ),

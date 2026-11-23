@@ -14,6 +14,8 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 
 export type { VcsBranchStatus };
 export type RunWorkspaceActionInput = VcsRunWorkspaceActionInput & {
@@ -144,15 +146,20 @@ export function workspaceBranchState(
   };
 }
 
-export function workspaceActionOutcomeText(result: VcsRunWorkspaceActionResult["results"][number]) {
+export function workspaceActionOutcomeText(
+  result: VcsRunWorkspaceActionResult["results"][number],
+  resolve: MFunctionType = mFallback,
+) {
   switch (result.outcome._tag) {
     case "completed":
       return result.outcome.result.toast.title;
     case "failed":
       return result.outcome.message;
     case "drifted":
-      return `Paused: switch back to ${result.outcome.expectedBranch}`;
+      return resolve(msg("Paused: switch back to {branch}"), {
+        branch: result.outcome.expectedBranch,
+      });
     case "unavailable":
-      return `Unavailable: ${result.outcome.reason}`;
+      return resolve(msg("Unavailable: {reason}"), { reason: result.outcome.reason });
   }
 }

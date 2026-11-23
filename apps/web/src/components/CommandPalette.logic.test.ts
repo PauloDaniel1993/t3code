@@ -1,3 +1,4 @@
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import type { Thread } from "../types";
@@ -667,11 +668,13 @@ describe("buildThreadActionItems", () => {
     ]);
   });
 
-  it("hides subagent threads but keeps forks", () => {
+  it("hides subagent threads and tasks shown under their parent but keeps forks", () => {
     const parentId = ThreadId.make("parent");
+    const delegatedId = ThreadId.make("delegated");
     const items = buildThreadActionItems({
       threads: [
         makeThread({ id: parentId, title: "Parent" }),
+        makeThread({ id: delegatedId, title: "Delegated task" }),
         makeThread({
           id: ThreadId.make("subagent"),
           title: "Subagent",
@@ -691,6 +694,9 @@ describe("buildThreadActionItems", () => {
           },
         }),
       ],
+      delegatedUnderParent: new Set([
+        threadKey({ environmentId: LOCAL_ENVIRONMENT_ID, threadId: delegatedId }),
+      ]),
       projectByKey: new Map(),
       icon: null,
       runThread: async () => undefined,
@@ -796,6 +802,26 @@ describe("filterPinnedBrowseEntries", () => {
       visibleEntries: windowsEntries,
       exactEntry: windowsEntries[0],
     });
+    const decomposed = { name: "De\u0301veloppement", fullPath: "/Users/me/De\u0301veloppement" };
+    expect(
+      filterPinnedBrowseEntries({
+        browseEntries: [decomposed],
+        filterQuery: "D\u00e9veloppement",
+        pinnedDirectoryName: "repo",
+        caseSensitive: true,
+      }).exactEntry,
+    ).toBe(decomposed);
+    expect(
+      filterPinnedBrowseEntries({
+        browseEntries: [
+          { name: "\u212B", fullPath: "/home/me/\u212B" },
+          { name: "A\u030A", fullPath: "/home/me/A\u030A" },
+        ],
+        filterQuery: "\u00C5",
+        pinnedDirectoryName: "repo",
+        caseSensitive: true,
+      }).exactEntry,
+    ).toBeNull();
   });
 });
 
@@ -957,6 +983,40 @@ describe("buildBrowseGroups", () => {
     finishNavigation?.();
     await action;
     expect(actionSettled).toBe(true);
+  });
+
+  it("labels mixed results through the message resolver and opens a workspace file as a file", async () => {
+    const browseTo = vi.fn();
+    const resolve = ((message: unknown) =>
+      typeof message === "string" ? "Translated browse group" : message) as NonNullable<
+      Parameters<typeof buildBrowseGroups>[1]
+    >;
+    const [group] = buildBrowseGroups(
+      {
+        browseEntries: [
+          {
+            name: "Tools.code-workspace",
+            fullPath: "/work/Tools.code-workspace",
+            kind: "workspace-file",
+          },
+        ],
+        browseQuery: "tools",
+        canBrowseUp: false,
+        upIcon: null,
+        directoryIcon: null,
+        workspaceFileIcon: "workspace",
+        browseUp: vi.fn(),
+        browseTo,
+      },
+      resolve,
+    );
+
+    expect(group?.label).toBe("Translated browse group");
+    const item = group?.items[0];
+    if (item?.kind !== "action") throw new Error("Expected a browse action");
+    expect(item.icon).toBe("workspace");
+    await item.run();
+    expect(browseTo).toHaveBeenCalledExactlyOnceWith("Tools.code-workspace", "workspace-file");
   });
 });
 

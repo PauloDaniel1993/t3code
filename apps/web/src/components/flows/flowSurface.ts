@@ -1,19 +1,20 @@
+import { msg } from "gt-react";
 import { Workflow } from "lucide-react";
 
 export const FLOW_SURFACE = {
-  title: "Flow",
+  title: msg("Flow"),
   icon: Workflow,
   emptyState: {
-    label: "Flow",
-    description: "Design and monitor project flows.",
+    label: msg("Flow", { $context: "noun, the Flow panel" }),
+    description: msg("Design and monitor project flows."),
     icon: Workflow,
     shortcut: "W",
-    disabledReason: "Available when a project is open.",
+    disabledReason: msg("Available when a project is open."),
   },
   menu: {
-    label: "Flow",
+    label: msg("Flow", { $context: "noun, the Flow panel" }),
     icon: Workflow,
     shortcut: "W",
-    disabledReason: "Available when a project is open.",
+    disabledReason: msg("Available when a project is open."),
   },
 } as const;

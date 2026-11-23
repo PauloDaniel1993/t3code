@@ -18,7 +18,6 @@ import {
   vcsCommandScheduler,
   vcsCommandConcurrency,
 } from "./vcsCommandScheduler.ts";
-import { scheduleAtomCommandEffect } from "./runtime.ts";
 
 describe("workspace action eligibility", () => {
   const checkouts = ["/api", "/web"].map((root) => ({
@@ -87,9 +86,8 @@ it.effect("serializes a batch with per-repository commands on every checkout lan
       yield* batchStarted.await;
       const singles = yield* Effect.forEach(["/api", "/web"], (cwd) =>
         Effect.forkChild(
-          scheduleAtomCommandEffect(
+          vcsCommandScheduler.schedule(
             registry,
-            vcsCommandScheduler,
             vcsCommandConcurrency,
             { environmentId, input: { cwd } },
             Effect.sync(() => {

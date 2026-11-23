@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { owningFolder } from "@t3tools/shared/workspaceFolders";
+import { T, useGT } from "gt-react-native";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
@@ -47,6 +48,7 @@ function FolderRow(props: {
   readonly onTerminal?: () => void;
   readonly statusCwd?: string;
 }) {
+  const gt = useGT();
   const { row, target } = props;
   const navigation = useNavigation();
   const [pathVisible, setPathVisible] = useState(false);
@@ -58,24 +60,32 @@ function FolderRow(props: {
         })
       : null,
   );
+  const branch = status.data?.isRepo
+    ? (status.data.refName ?? gt("Detached HEAD"))
+    : status.data || status.error
+      ? gt("Repository status unavailable")
+      : gt("Loading branch…");
   const subtitle = row.unavailable
-    ? `${row.reason} · skipped`
+    ? gt("{reason} · skipped", { reason: row.reason })
     : row.isGit
-      ? `${status.data ? (status.data.isRepo ? (status.data.refName ?? "Detached HEAD") : "Repository status unavailable") : status.error ? "Repository status unavailable" : "Loading branch…"} · ${row.isWorktree ? "Worktree" : "Current checkout"}`
-      : "Shared · not checkpointed";
+      ? gt("{branch} · {checkout}", {
+          branch,
+          checkout: row.isWorktree ? gt("Worktree") : gt("Current checkout"),
+        })
+      : gt("Shared · not checkpointed");
   return (
     <View className="ml-4 border-l border-border pl-3 py-2">
       <View className="flex-row items-center gap-2">
         <Pressable
           className="min-h-11 flex-1 justify-center"
           accessibilityRole="button"
-          accessibilityLabel={`${row.folder.name}, show path`}
+          accessibilityLabel={gt("{folder}, show path", { folder: row.folder.name })}
           accessibilityState={{ expanded: pathVisible }}
           onPress={() => setPathVisible(!pathVisible)}
         >
           <Text className="font-t3-medium">
             {row.folder.name}
-            {row.isPrimary ? " · Primary" : ""}
+            {row.isPrimary ? gt(" · Primary") : ""}
           </Text>
           <Text
             className={
@@ -88,15 +98,15 @@ function FolderRow(props: {
         <Menu
           title={row.folder.name}
           actions={[
-            { id: "copy", title: "Copy path" },
+            { id: "copy", title: gt("Copy path") },
             {
               id: "changes",
-              title: "Show changes for this folder",
+              title: gt("Show changes for this folder"),
               attributes: { disabled: !row.isGit || !target.threadId },
             },
             {
               id: "terminal",
-              title: "Open terminal here",
+              title: gt("Open terminal here"),
               attributes: { disabled: row.effectivePath === null || !props.onTerminal },
             },
           ]}
@@ -114,7 +124,7 @@ function FolderRow(props: {
           }}
         >
           <View
-            accessibilityLabel={`Actions for ${row.folder.name}`}
+            accessibilityLabel={gt("Actions for {folder}", { folder: row.folder.name })}
             className="size-11 items-center justify-center"
           >
             <SymbolView name="ellipsis" size={18} tintColorClassName="accent-icon" />
@@ -134,6 +144,7 @@ export function ThreadWorkspaceFolders(props: {
   readonly target: ScopedThreadRef;
   readonly showEnvironmentMode?: boolean;
 }) {
+  const gt = useGT();
   const workspace = useThreadWorkspace(props.target);
   const navigation = useNavigation();
   const environment = useEnvironmentPresentation(props.target.environmentId).presentation;
@@ -152,7 +163,11 @@ export function ThreadWorkspaceFolders(props: {
   )
     return null;
   if (!workspace.project || !workspace.thread)
-    return <Text className="p-4 text-foreground-muted">Loading workspace folders…</Text>;
+    return (
+      <Text className="p-4 text-foreground-muted">
+        <T>Loading workspace folders…</T>
+      </Text>
+    );
   const { project, thread, rows } = workspace;
   if (props.showEnvironmentMode !== false && !project.workspaceFile && !thread.workspaceFolders)
     return null;
@@ -192,16 +207,19 @@ export function ThreadWorkspaceFolders(props: {
       {props.showEnvironmentMode !== false ? (
         <>
           <Text accessibilityRole="header" className="font-t3-semibold">
-            Workspace
+            <T>Workspace</T>
           </Text>
           <ListSection>
             <ListRow
               icon="folder"
-              label={`${thread.worktreePath ? "Worktree" : "Current checkout"} · ${repoCount} ${repoCount === 1 ? "repo" : "repos"}`}
+              label={gt("{checkout} · {count, plural, one {{count} repo} other {{count} repos}}", {
+                checkout: thread.worktreePath ? gt("Worktree") : gt("Current checkout"),
+                count: repoCount,
+              })}
               description={
                 !rows[0]?.isGit
-                  ? "The primary folder is not a Git repository; worktree mode is unavailable."
-                  : "Branches and workspace mode"
+                  ? gt("The primary folder is not a Git repository; worktree mode is unavailable.")
+                  : gt("Branches and workspace mode")
               }
               disabled={!rows[0]?.isGit}
               onPress={() => navigation.navigate("GitBranches", props.target)}
@@ -211,10 +229,10 @@ export function ThreadWorkspaceFolders(props: {
       ) : (
         <>
           <Text accessibilityRole="header" className="text-xl font-t3-semibold">
-            Workspace folders
+            <T>Workspace folders</T>
           </Text>
           <Text className="text-sm text-foreground-muted">
-            {rows.length} folders · primary folder starts the thread
+            {gt("{count} folders · primary folder starts the thread", { count: rows.length })}
           </Text>
         </>
       )}
@@ -232,7 +250,9 @@ export function ThreadWorkspaceFolders(props: {
               }
             >
               <Text className="font-t3-medium">
-                {git ? "Git repositories" : "Other folders"} · {group.length}
+                {git
+                  ? gt("Git repositories · {count}", { count: group.length })
+                  : gt("Other folders · {count}", { count: group.length })}
               </Text>
               <SymbolView
                 name={expanded ? "chevron.up" : "chevron.down"}
@@ -264,18 +284,22 @@ export function ThreadWorkspaceFolders(props: {
       })}
       {rows[0]?.unavailable ? (
         <Text className="text-sm text-warning-foreground">
-          Primary folder unavailable. This thread cannot start a turn until it is available again.
+          <T>
+            Primary folder unavailable. This thread cannot start a turn until it is available again.
+          </T>
         </Text>
       ) : null}
       {workspaceSnapshotChanged(project, thread) ? (
         <Text className="text-sm text-foreground-muted">
-          This thread keeps the folders it started with. Start a new thread to use the updated
-          workspace.
+          <T>
+            This thread keeps the folders it started with. Start a new thread to use the updated
+            workspace.
+          </T>
         </Text>
       ) : null}
       {workspaceAvailabilityPending(rows, workspace.unavailableFolderPaths) ? (
         <Text className="text-sm text-warning-foreground">
-          Folder availability changed; applies on the next turn
+          <T>Folder availability changed; applies on the next turn</T>
         </Text>
       ) : null}
       {project.workspaceFileStatus &&
@@ -297,6 +321,7 @@ function DraftWorkspaceFolders(props: {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
 }) {
+  const gt = useGT();
   const project = useProject(props);
   const [gitExpanded, setGitExpanded] = useState(true);
   const [otherExpanded, setOtherExpanded] = useState(true);
@@ -304,10 +329,10 @@ function DraftWorkspaceFolders(props: {
   return (
     <View className="p-4">
       <Text accessibilityRole="header" className="text-xl font-t3-semibold">
-        Workspace folders
+        <T>Workspace folders</T>
       </Text>
       <Text className="py-2 text-sm text-foreground-muted">
-        {rows.length} folders · primary folder starts the thread
+        {gt("{count} folders · primary folder starts the thread", { count: rows.length })}
       </Text>
       {([true, false] as const).map((git) => {
         const group = rows.filter((row) => row.isGit === git);
@@ -323,7 +348,10 @@ function DraftWorkspaceFolders(props: {
               }
             >
               <Text className="font-t3-medium">
-                {expanded ? "⌃" : "⌄"} {git ? "Git repositories" : "Other folders"} · {group.length}
+                {expanded ? "⌃" : "⌄"}{" "}
+                {git
+                  ? gt("Git repositories · {count}", { count: group.length })
+                  : gt("Other folders · {count}", { count: group.length })}
               </Text>
             </Pressable>
             {expanded
@@ -355,10 +383,11 @@ export function ThreadWorkspaceFoldersSheet({
   readonly threadId?: ThreadId;
   readonly projectId?: ProjectId;
 }>) {
+  const gt = useGT();
   const navigation = useNavigation();
   return (
     <SheetPane>
-      <SheetHeader title="Workspace folders" onClose={() => navigation.goBack()} />
+      <SheetHeader title={gt("Workspace folders")} onClose={() => navigation.goBack()} />
       <ScreenContent>
         <NativeScrollView
           contentInsetAdjustmentBehavior="automatic"

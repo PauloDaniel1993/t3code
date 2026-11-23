@@ -1,4 +1,6 @@
 import { vi } from "vite-plus/test";
+import { msg } from "gt-react";
+import { m } from "../i18n/messages";
 import type { ReactNode } from "react";
 import type {
   EnvironmentProject,
@@ -36,6 +38,7 @@ vi.mock("./Sidebar.logic", async (importOriginal) => {
 vi.mock("../state/entities", () => ({
   useThreadShells: () => sidebarHarness.threads,
   useQuietThreadShells: () => sidebarHarness.threads,
+  useDelegatedUnderParent: () => new Set<string>(),
   useServerConfigs: () => config,
   useThreadShell: (ref: ScopedThreadRef) =>
     sidebarHarness.threads.find(
@@ -62,6 +65,7 @@ vi.mock("../state/presentation", () => ({
 vi.mock("../state/session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/session")>()),
   readEnvironmentScope: () => true,
+  useEnvironmentScope: () => true,
 }));
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: unknown) =>
@@ -95,7 +99,7 @@ vi.mock("../state/environments", () => ({
   useEnvironmentMachines: () => machines,
   usePrimaryEnvironmentId: () => "local",
 }));
-const identities = [{ environmentId: "local", label: "Local" }];
+const identities = [{ environmentId: "local", label: m(msg("Local")) }];
 const machines = new Map();
 vi.mock("../state/threads", () => ({
   threadEnvironment: {},
@@ -126,7 +130,11 @@ vi.mock("../state/olderSettledShelf", () => ({
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => noop }));
 vi.mock("../state/use-orchestration-command", () => ({ useOrchestrationCommand: () => noop }));
 const noop = () => {};
-vi.mock("../state/terminalSessions", () => ({ useThreadRunningTerminalIds: () => emptyIds }));
+vi.mock("../state/terminalSessions", () => ({
+  useThreadRunningTerminalIds: () => emptyIds,
+  useTerminalLabelsByThreadKey: () => emptyTerminalLabels,
+}));
+const emptyTerminalLabels = new Map<string, string>();
 const emptyIds: string[] = [];
 vi.mock("../hooks/useThreadActions", () => ({
   useThreadActions: () => actions,
@@ -176,6 +184,9 @@ const drafts = {
   clearComposerContent: noop,
   clearDraftThread: noop,
 };
+vi.mock("../hooks/useShownThreadRouteTarget", () => ({
+  useShownThreadRouteTarget: () => ({ shownTarget: sidebarHarness.routeTarget, modalOpen: false }),
+}));
 vi.mock("@tanstack/react-router", () => ({
   useParams: (options: {
     select?: (params: { environmentId?: string; threadId?: string; draftId?: string }) => unknown;
@@ -278,7 +289,7 @@ vi.mock("./sidebar/SidebarThreadHeader", () => ({
     onSearchQueryChange: (value: string) => void;
   }) => (
     <input
-      aria-label="Search threads"
+      aria-label={m(msg("Search threads"))}
       onChange={(event) => onSearchQueryChange(event.target.value)}
     />
   ),

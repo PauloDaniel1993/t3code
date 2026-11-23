@@ -1,7 +1,9 @@
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { OrchestrationV2Subagent } from "@t3tools/contracts";
-import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import * as DateTime from "effect/DateTime";
+
+import { m, type MessageResolver } from "../../i18n/messages";
 
 /** The live entity owns child navigation, including an explicitly cleared link. */
 export function resolveSubagentCardChildThreadId(
@@ -11,21 +13,10 @@ export function resolveSubagentCardChildThreadId(
   return live ? live.childThreadId : item.childThreadId;
 }
 
-export function subagentCardDetail(detail: string | null): string | null {
-  if (!detail || /^Child task ended with status\b/i.test(detail)) return null;
-  return (
-    detail
-      .replace(/!?\[([^\]]+)\]\((?:\\.|[^\\()]|\((?:\\.|[^\\()])*\))*\)/g, "$1")
-      .replace(/`/g, "")
-      .replace(/^[ \t]*[-*][ \t]+/gm, "")
-      .replace(/\s+/g, " ")
-      .trim() || null
-  );
-}
-
 export function subagentCardElapsed(
   agents: ReadonlyArray<Pick<OrchestrationV2Subagent, "status" | "startedAt" | "completedAt">>,
   nowMs: number,
+  resolve: MessageResolver = m,
 ): string | null {
   const starts = agents.flatMap((agent) =>
     agent.startedAt ? [DateTime.toEpochMillis(agent.startedAt)] : [],
@@ -37,5 +28,5 @@ export function subagentCardElapsed(
     agent.completedAt ? [DateTime.toEpochMillis(agent.completedAt)] : [],
   );
   const duration = (live ? nowMs : Math.max(...ends)) - Math.min(...starts);
-  return duration > 0 ? formatDuration(duration) : null;
+  return duration > 0 ? formatDuration(duration, resolve) : null;
 }

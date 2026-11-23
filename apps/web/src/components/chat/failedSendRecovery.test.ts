@@ -4,7 +4,9 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   EnvironmentId,
+  MessageId,
   ThreadId,
+  TurnItemId,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
@@ -18,6 +20,7 @@ import {
   markPromotedDraftThreadByRef,
   finalizePromotedDraftThreadByRef,
 } from "../../composerDraftStore";
+import { environmentContextRecord, responseContextRecord } from "../../lib/composerContextRecords";
 import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 import { type FailedSendDraft } from "./failedSendRecovery";
 import * as ChatViewLogic from "../ChatView.logic";
@@ -59,6 +62,7 @@ vi.mock("../../lib/attachmentUploadQueue", () => ({
   readAttachmentUpload: () => undefined,
   startAttachmentUpload: vi.fn(),
   awaitAttachmentUploads: async () => {},
+  refreshExpiredAttachmentUploads: async () => {},
   releaseDraftAttachments: vi.fn(),
   getUploadedAttachments: mocks.uploads,
 }));
@@ -144,6 +148,8 @@ function makeDraft(label: string): FailedSendDraft {
       },
     ],
     threadContexts: [threadContextRecord(target, `${label} context thread`)],
+    environmentContexts: [],
+    replyTo: null,
   };
 }
 
@@ -156,6 +162,8 @@ function writeDraft(draft: FailedSendDraft, destination: ComposerThreadTarget = 
   store.setPreviewAnnotations(destination, draft.previewAnnotations);
   store.setReviewComments(destination, draft.reviewComments);
   store.setThreadContexts(destination, draft.threadContexts);
+  store.setEnvironmentContexts(destination, draft.environmentContexts);
+  store.setReplyTo(destination, draft.replyTo);
   const saved = store.getComposerDraft(destination);
   if (!saved) throw new Error("Draft fixture was not saved");
   return saved;
@@ -170,6 +178,8 @@ function plain(prompt: string): FailedSendDraft {
     previewAnnotations: [],
     reviewComments: [],
     threadContexts: [],
+    environmentContexts: [],
+    replyTo: null,
   };
 }
 
@@ -382,7 +392,23 @@ describe("ChatView single-send failures", () => {
   });
 
   it("preserves both drafts' attachments and context across an app reload", async () => {
-    writeDraft(makeDraft("failed"));
+    const machine = environmentContextRecord(environmentId, "Local");
+    const replyTo = responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId,
+        threadId,
+        messageId: MessageId.make("assistant-message"),
+        text: "The previous response",
+        start: 0,
+        end: 21,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make("assistant-item"),
+      subagents: [],
+    });
+    writeDraft({ ...makeDraft("failed"), environmentContexts: [machine], replyTo });
     const harness = createSendHarness(target);
     await failSend(harness, makeDraft("newer"));
     await saveMountedComposerImages();
@@ -407,6 +433,8 @@ describe("ChatView single-send failures", () => {
       "failed review",
     ]);
     expect(draft?.threadContexts).toHaveLength(1);
+    expect(draft?.environmentContexts).toEqual([machine]);
+    expect(draft?.replyTo).toEqual(replyTo);
   });
 
   it("preserves different text from the same terminal selection in the recovered chip", async () => {
@@ -585,12 +613,7 @@ describe("ChatView single-send failures", () => {
     writeDraft(makeDraft("failed"));
     const harness = createSendHarness(target);
     harness.delaySettings();
-    mocks.uploads
-      .mockReturnValueOnce([
-        { type: "image", id: "uploaded" },
-        { type: "file", id: "uploaded-file" },
-      ])
-      .mockReturnValue(null);
+    mocks.uploads.mockReturnValue(null);
     const sent = harness.send();
     await Promise.race([
       harness.settingsStarted.promise,

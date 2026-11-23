@@ -107,6 +107,8 @@ it.each([false, true])(
           previewAnnotations: [],
           reviewComments: [],
           threadContexts: [],
+          environmentContexts: [],
+          replyTo: null,
         },
         isOriginalRoute: () => true,
         onRestored: vi.fn(),

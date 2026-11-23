@@ -1,6 +1,3 @@
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import ReactMarkdown from "react-markdown";
 import {
   extractMarkdownLinkHrefs,
   isWindowsDrivePathHref,
@@ -11,39 +8,22 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   isMarkdownFileExternalOpenModifier,
   shouldOpenMarkdownFileLinkInEditor,
-  shouldOpenMarkdownFileLinkInBrowserByDefault,
   isLocalEditorFileHref,
   resolveInlineCodeFileLinkMeta,
   resolveMarkdownFileLinkMeta,
-  rewriteMarkdownFileHrefForRendering,
   rewriteMarkdownFileUriHref,
 } from "./markdown-links";
+import {
+  markdownFileCopyPaths,
+  markdownFileEditorTarget,
+  resolveMarkdownFileHostPath,
+} from "./markdownFileHostPath";
 
 describe("isMarkdownFileExternalOpenModifier", () => {
   it("recognizes Ctrl+click and Cmd+click", () => {
     expect(isMarkdownFileExternalOpenModifier({ ctrlKey: true, metaKey: false })).toBe(true);
     expect(isMarkdownFileExternalOpenModifier({ ctrlKey: false, metaKey: true })).toBe(true);
     expect(isMarkdownFileExternalOpenModifier({ ctrlKey: false, metaKey: false })).toBe(false);
-  });
-});
-
-describe("rewriteMarkdownFileHrefForRendering", () => {
-  it("wraps absolute windows paths in an allowed file URL for markdown rendering", () => {
-    expect(
-      rewriteMarkdownFileHrefForRendering("C:/work/reports/output/pdf/quarterly-report.pdf"),
-    ).toBe("file:///C:/work/reports/output/pdf/quarterly-report.pdf");
-  });
-
-  it("preserves file URLs so the markdown sanitizer can allow them", () => {
-    expect(
-      rewriteMarkdownFileHrefForRendering(
-        "file:///D:/Programme/t3code/apps/web/src/markdown-links.ts#L42",
-      ),
-    ).toBe("file:///D:/Programme/t3code/apps/web/src/markdown-links.ts#L42");
-  });
-
-  it("leaves non-file links to the default markdown URL transform", () => {
-    expect(rewriteMarkdownFileHrefForRendering("https://example.com/docs")).toBeNull();
   });
 });
 
@@ -56,25 +36,6 @@ describe("isWindowsDrivePathHref", () => {
     expect(isWindowsDrivePathHref(href)).toBe(expected);
   });
 });
-
-function renderMarkdownLinkHref(markdown: string): string | undefined {
-  let renderedHref: string | undefined;
-  renderToStaticMarkup(
-    createElement(
-      ReactMarkdown,
-      {
-        components: {
-          a({ href }) {
-            renderedHref = href;
-            return createElement("a", { href });
-          },
-        },
-      },
-      markdown,
-    ),
-  );
-  return renderedHref;
-}
 
 describe("extractMarkdownLinkHrefs", () => {
   it("extracts angle-bracketed paths containing spaces", () => {
@@ -113,20 +74,6 @@ describe("shouldOpenMarkdownFileLinkInEditor", () => {
     ).toBe(false);
   });
 });
-
-describe("shouldOpenMarkdownFileLinkInBrowserByDefault", () => {
-  it("keeps PDFs browser-first while source files open in the file viewer", () => {
-    expect(shouldOpenMarkdownFileLinkInBrowserByDefault("report.pdf")).toBe(true);
-    expect(shouldOpenMarkdownFileLinkInBrowserByDefault("report.PDF?download=1")).toBe(true);
-    expect(shouldOpenMarkdownFileLinkInBrowserByDefault("report.html")).toBe(false);
-    expect(shouldOpenMarkdownFileLinkInBrowserByDefault("report.xml")).toBe(false);
-  });
-});
-import {
-  markdownFileCopyPaths,
-  markdownFileEditorTarget,
-  resolveMarkdownFileHostPath,
-} from "./markdownFileHostPath";
 
 describe("isLocalEditorFileHref", () => {
   it("accepts absolute file deep links of known editors", () => {
@@ -257,31 +204,6 @@ describe("resolveMarkdownFileLinkTarget", () => {
       basename: "Bike Receipts",
     });
   });
-
-  it("resolves relative spaced folders from the markdown renderer", () => {
-    const href = renderMarkdownLinkHref("[folder](<docs/My Folder>)");
-
-    expect(href).toBe("docs/My%20Folder");
-    expect(resolveMarkdownFileLinkMeta(href, "/repo/project")).toMatchObject({
-      targetPath: "/repo/project/docs/My Folder",
-      workspaceRelativePath: "docs/My Folder",
-      basename: "My Folder",
-    });
-  });
-
-  it.each(["md", "html", "xml"])(
-    "resolves a bare spaced .%s filename from the markdown renderer",
-    (extension) => {
-      const href = renderMarkdownLinkHref(`[checklist](<Updated cutover checklist.${extension}>)`);
-
-      expect(href).toBe(`Updated%20cutover%20checklist.${extension}`);
-      expect(resolveMarkdownFileLinkMeta(href, "/repo/project")).toMatchObject({
-        targetPath: `/repo/project/Updated cutover checklist.${extension}`,
-        workspaceRelativePath: `Updated cutover checklist.${extension}`,
-        basename: `Updated cutover checklist.${extension}`,
-      });
-    },
-  );
 
   it("formats tooltip display paths relative to the cwd for slash-prefixed windows paths", () => {
     expect(

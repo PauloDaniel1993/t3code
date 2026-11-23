@@ -1,3 +1,4 @@
+import { useMessages } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
@@ -6,7 +7,11 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
-import { getNewThreadTaskUnavailableReason } from "../components/NewThreadTaskDialog.logic";
+import {
+  getNewThreadTaskUnavailableReason,
+  NEW_THREAD_TASK_NO_ACCESS,
+  NEW_THREAD_TASK_NO_PARENT,
+} from "../components/NewThreadTaskDialog.logic";
 import { environmentPresentations } from "../state/presentation";
 import { environmentThreadDetails } from "../state/threads";
 import { useEnvironmentScope } from "../state/session";
@@ -27,18 +32,22 @@ const providersAtom = Atom.family((environmentId: EnvironmentId | null) =>
       : (get(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS),
   ),
 );
+// Cache the message descriptor so the hook can resolve it in the current language.
 const problemAtom = Atom.family((key: string | null) =>
   Atom.make((get) => {
     const ref = key === null ? null : parseScopedThreadKey(key);
-    if (ref === null) return "Open an existing thread to request a task.";
+    if (ref === null) return NEW_THREAD_TASK_NO_PARENT;
     const thread = get(environmentThreadDetails.threadAtom(ref));
     const presentation = get(environmentPresentations.presentationAtom(ref.environmentId));
-    return getNewThreadTaskUnavailableReason({
-      projection: thread?.projection ?? null,
-      status: get(environmentThreadDetails.statusAtom(ref)),
-      connected: presentation?.connection.phase === "connected",
-      providers: get(providersAtom(ref.environmentId)),
-    });
+    return getNewThreadTaskUnavailableReason(
+      {
+        projection: thread?.projection ?? null,
+        status: get(environmentThreadDetails.statusAtom(ref)),
+        connected: presentation?.connection.phase === "connected",
+        providers: get(providersAtom(ref.environmentId)),
+      },
+      (message) => message,
+    );
   }),
 );
 
@@ -49,6 +58,7 @@ export function useNewThreadTaskParent(threadRef: ScopedThreadRef) {
 
 /** All entry points share the same writable-parent and environment checks. */
 export function useNewThreadTaskAvailability(threadRef: ScopedThreadRef | null) {
+  const messages = useMessages();
   const environmentId = threadRef?.environmentId ?? null;
   const canOperate = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const providers = useAtomValue(providersAtom(environmentId));
@@ -56,6 +66,11 @@ export function useNewThreadTaskAvailability(threadRef: ScopedThreadRef | null) 
   const problem = useAtomValue(problemAtom(threadRef === null ? null : scopedThreadKey(threadRef)));
   return {
     providers,
-    problem: problem ?? (canOperate ? null : "This connection cannot change threads."),
+    problem:
+      problem !== null
+        ? messages(problem)
+        : canOperate
+          ? null
+          : messages(NEW_THREAD_TASK_NO_ACCESS),
   };
 }

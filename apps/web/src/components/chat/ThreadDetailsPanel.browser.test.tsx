@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   folder: "",
   pullRequests: [] as unknown[],
   configLoaded: true,
+  workspaceFile: undefined as string | undefined,
 }));
 
 vi.mock(import("~/state/entities"), async (importOriginal) => ({
@@ -28,6 +29,7 @@ vi.mock(import("~/state/entities"), async (importOriginal) => ({
           environmentId: "environment",
           title: state.workspaceRoot === SCRATCH_ROOT ? "No project" : "plain",
           workspaceRoot: state.workspaceRoot,
+          trackedFolders: state.workspaceFile ? [{ path: "/work/tracked", name: "Tracked" }] : [],
           scripts: [],
         }) as never,
   useProjects: (() => []) as never,
@@ -110,8 +112,10 @@ function setup(input: {
   folder: string;
   pullRequests?: ThreadPullRequestLink[];
   configLoaded?: boolean;
+  workspaceFile?: string;
 }) {
   state.configLoaded = input.configLoaded ?? true;
+  state.workspaceFile = input.workspaceFile;
   state.workspaceRoot = input.workspaceRoot;
   state.folder = input.folder;
   state.pullRequests = input.pullRequests ?? [];
@@ -125,9 +129,27 @@ function setup(input: {
   };
 }
 
-function Panel({ fixture }: { fixture: ReturnType<typeof setup> }) {
+const machines = (["This Mac", "Server"] as const).map((label, index) => ({
+  environmentId: EnvironmentId.make(index === 0 ? "environment" : "other"),
+  projectId: ProjectId.make("project"),
+  label,
+  isPrimary: index === 0,
+  machine: "server" as const,
+}));
+
+function Panel({
+  fixture,
+  draftEnvMode,
+  onMachines = false,
+}: {
+  fixture: ReturnType<typeof setup>;
+  /** Renders an unsent draft in this mode instead of a started thread. */
+  draftEnvMode?: "local" | "worktree";
+  onMachines?: boolean;
+}) {
   const noop = () => {};
   const scriptResult = async () => ({ ok: true }) as never;
+  const detailsPlacement = state.workspaceFile ? { ...placement, height: 1200 } : placement;
   return (
     <ChatCanvasContext
       value={{
@@ -138,8 +160,8 @@ function Panel({ fixture }: { fixture: ReturnType<typeof setup> }) {
         registerTimeline: noop,
         measureDetailsCard: noop,
         detailsCardTopInset: 0,
-        preferredDetailsCard: placement,
-        detailsCardPlacement: placement,
+        preferredDetailsCard: detailsPlacement,
+        detailsCardPlacement: detailsPlacement,
       }}
     >
       <ThreadDetailsPanel
@@ -149,8 +171,17 @@ function Panel({ fixture }: { fixture: ReturnType<typeof setup> }) {
         threadId={threadRef.threadId}
         projectId={ProjectId.make("project")}
         composerDraftTarget={threadRef}
-        worktreePath={state.folder}
-        isServerThread
+        worktreePath={draftEnvMode === undefined && !state.workspaceFile ? state.folder : null}
+        {...(state.workspaceFile
+          ? {
+              workspaceProject: {
+                id: ProjectId.make("project"),
+                workspaceRoot: state.workspaceRoot,
+                workspaceFile: state.workspaceFile,
+              },
+            }
+          : {})}
+        isServerThread={draftEnvMode === undefined}
         activeProjectName={state.workspaceRoot === SCRATCH_ROOT ? "No project" : "plain"}
         activeProjectScripts={undefined}
         preferredScriptId={null}
@@ -161,10 +192,12 @@ function Panel({ fixture }: { fixture: ReturnType<typeof setup> }) {
         gitCwd={state.folder}
         workspaceMutationId={null}
         isGitRepo={false}
-        envLocked
-        availableEnvironments={[]}
+        offersWorkspaceModes={false}
+        envLocked={draftEnvMode === undefined}
+        availableEnvironments={onMachines ? machines : []}
+        {...(onMachines ? { onEnvironmentChange: noop } : {})}
         onEnvModeChange={noop}
-        envMode="local"
+        envMode={draftEnvMode ?? "local"}
         startFromOrigin={false}
         onStartFromOriginChange={noop}
         onComposerFocusRequest={noop}
@@ -191,6 +224,23 @@ it("offers no git controls in a No project thread, but shows its linked pull req
     .not.toBeInTheDocument();
 });
 
+it("shows Current checkout where no worktree can come from, even when New worktree is the default", async () => {
+  using fixture = setup({ workspaceRoot: SCRATCH_ROOT, folder: SCRATCH_ROOT });
+  await using _screen = await render(<Panel fixture={fixture} draftEnvMode="worktree" />);
+  await expect.element(page.getByLabelText("Run context: Current checkout")).toBeVisible();
+  await expect.element(page.getByRole("button", { name: /Run context/ })).not.toBeInTheDocument();
+});
+
+it("offers only machines where no worktree can come from and several machines exist", async () => {
+  using fixture = setup({ workspaceRoot: SCRATCH_ROOT, folder: SCRATCH_ROOT });
+  await using _screen = await render(
+    <Panel fixture={fixture} draftEnvMode="worktree" onMachines />,
+  );
+  await page.getByRole("button", { name: "Run context: This Mac, Current checkout" }).click();
+  await expect.element(page.getByText("Run on")).toBeVisible();
+  await expect.element(page.getByText("New worktree")).not.toBeInTheDocument();
+});
+
 it("shows a linked pull request in a folder that is not a git repository", async () => {
   using fixture = setup({
     workspaceRoot: "/work/plain",
@@ -201,6 +251,18 @@ it("shows a linked pull request in a folder that is not a git repository", async
   await expect.element(page.getByRole("region", { name: "Workspace" })).toBeVisible();
   await expect.element(page.getByText("#27513")).toBeVisible();
   await expect.element(page.getByRole("button", { name: "Initialize Git" })).toBeVisible();
+});
+
+it("keeps tracked repositories visible in a workspace-file project", async () => {
+  using fixture = setup({
+    workspaceRoot: "/work/plain",
+    folder: "/work/plain",
+    workspaceFile: "/work/plain/project.code-workspace",
+  });
+  await using _screen = await render(<Panel fixture={fixture} />);
+  await expect
+    .element(page.getByText("Repositories appear here once this thread changes them."))
+    .toBeVisible();
 });
 
 it("offers no Initialize Git before the server config says where No project lives", async () => {

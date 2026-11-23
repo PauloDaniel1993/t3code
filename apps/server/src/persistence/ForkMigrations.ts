@@ -8,6 +8,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { prepareForkLegacyProjects } from "./ForkLegacyProjects.ts";
 import Settled from "./Migrations/033_ProjectionThreadsSettled.ts";
 import Snoozed from "./Migrations/034_ProjectionThreadsSnoozed.ts";
+import DeferredSlashCommandIndex from "./Migrations/107_DeferredSlashCommandIndex.ts";
 
 import ForkMigration0001 from "./ForkMigrations/001_AttachmentCleanupQueue.ts";
 import ForkMigration0002 from "./ForkMigrations/002_ProjectionThreadSessionRecovery.ts";
@@ -41,6 +42,8 @@ const forkMigrationEntries = [
   [12, "ProjectionProjectsWorkspaceFile", ForkMigration0012],
   [13, "FlowRuns", ForkMigration0013],
   [14, "ScheduledTaskFlow", ForkMigration0014],
+  // Preview databases may have built the original index without the JSON guard.
+  [15, "GuardDeferredSlashCommandIndex", DeferredSlashCommandIndex],
 ] as const;
 
 export const latestForkMigrationId = Math.max(0, ...forkMigrationEntries.map(([id]) => id));

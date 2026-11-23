@@ -1,3 +1,5 @@
+import { msg } from "gt-react";
+import { m, type MessageResolver } from "../i18n/messages";
 import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import {
@@ -18,6 +20,9 @@ export const TASK_PROMPT_MAX_LENGTH = 12_000;
 const TASK_CONTEXT_SUMMARY_MAX_LENGTH = 4_000;
 export { TASK_TITLE_MAX_LENGTH };
 
+export const NEW_THREAD_TASK_NO_PARENT = msg("Open an existing thread to request a task.");
+export const NEW_THREAD_TASK_NO_ACCESS = msg("This connection cannot change threads.");
+
 export interface NewThreadTaskDraft {
   readonly title: string;
   readonly prompt: string;
@@ -28,13 +33,22 @@ export function deriveTaskTitle(draft: NewThreadTaskDraft): string {
   return draft.title.trim() || draft.prompt.trim().split(/\r?\n/, 1)[0]!.slice(0, 80);
 }
 
-export function validateNewThreadTaskDraft(draft: NewThreadTaskDraft): string | null {
-  if (!draft.prompt.trim()) return "Describe what the task should do.";
+export function validateNewThreadTaskDraft(
+  draft: NewThreadTaskDraft,
+  resolve: MessageResolver = m,
+): string | null {
+  if (!draft.prompt.trim()) return resolve(msg("Describe what the task should do."));
   if (draft.prompt.length > TASK_PROMPT_MAX_LENGTH) {
-    return "The task prompt exceeds 12,000 characters. The parent must repeat it in a tool call; put longer context in files the task can read.";
+    return resolve(
+      msg(
+        "The task prompt exceeds 12,000 characters. The parent must repeat it in a tool call; put longer context in files the task can read.",
+      ),
+    );
   }
   if (draft.title.trim().length > TASK_TITLE_MAX_LENGTH) {
-    return `The task title must be at most ${TASK_TITLE_MAX_LENGTH} characters.`;
+    return resolve(
+      msg("The task title must be at most {limit} characters.", { limit: TASK_TITLE_MAX_LENGTH }),
+    );
   }
   return null;
 }
@@ -43,21 +57,34 @@ export function validateNewThreadTaskDraft(draft: NewThreadTaskDraft): string | 
 export function getNewThreadTaskModeNotice(
   thread: Pick<OrchestrationV2AppThread, "interactionMode" | "runtimeMode">,
   driverKind: ServerProvider["driver"] | undefined,
+  resolve: MessageResolver = m,
 ): string | null {
   const notices = [];
   if (thread.interactionMode === "plan") {
     notices.push(
-      "The parent is in Plan mode and may refuse delegation. Any child also inherits Plan mode and only plans. Switch the parent to Default mode before requesting implementation.",
+      resolve(
+        msg(
+          "The parent is in Plan mode and may refuse delegation. Any child also inherits Plan mode and only plans. Switch the parent to Default mode before requesting implementation.",
+        ),
+      ),
     );
   }
   if (thread.runtimeMode === "approval-required" || thread.runtimeMode === "auto-accept-edits") {
     notices.push(
-      "The parent's runtime mode can require approval; the parent will ask for approval when required.",
+      resolve(
+        msg(
+          "The parent's runtime mode can require approval; the parent will ask for approval when required.",
+        ),
+      ),
     );
   }
   if (driverKind === "claudeAgent") {
     notices.push(
-      "In a Claude read-only sandbox, delegation requires approval and may be denied if approvals are disabled.",
+      resolve(
+        msg(
+          "In a Claude read-only sandbox, delegation requires approval and may be denied if approvals are disabled.",
+        ),
+      ),
     );
   }
   return notices.length ? notices.join(" ") : null;
@@ -68,26 +95,31 @@ type ProviderAvailability = Pick<
   "instanceId" | "enabled" | "status" | "availability"
 >;
 
-export function getNewThreadTaskUnavailableReason(input: {
-  readonly projection: OrchestrationV2ThreadProjection | null;
-  readonly status: EnvironmentThreadStatus;
-  readonly connected: boolean;
-  readonly providers: ReadonlyArray<ProviderAvailability>;
-}): string | null {
+export function getNewThreadTaskUnavailableReason(
+  input: {
+    readonly projection: OrchestrationV2ThreadProjection | null;
+    readonly status: EnvironmentThreadStatus;
+    readonly connected: boolean;
+    readonly providers: ReadonlyArray<ProviderAvailability>;
+  },
+  resolve: (message: string) => string = m,
+): string | null {
   if (input.status === "deleted" || (input.projection?.thread.deletedAt ?? null) !== null) {
-    return "This thread is no longer available.";
+    return resolve(msg("This thread is no longer available."));
   }
-  if (!input.connected) return "Connect to this thread's environment to request a task.";
-  if (input.status !== "live" || input.projection === null) return "Wait for the thread to load.";
+  if (!input.connected)
+    return resolve(msg("Connect to this thread's environment to request a task."));
+  if (input.status !== "live" || input.projection === null)
+    return resolve(msg("Wait for the thread to load."));
   const { thread, runtimeRequests } = input.projection;
   if (thread.archivedAt !== null) {
-    return "Reopen this thread to request a task.";
+    return resolve(msg("Reopen this thread to request a task."));
   }
   if (isProviderNativeSubagentThread(thread)) {
-    return "Provider-managed agents cannot receive task requests.";
+    return resolve(msg("Provider-managed agents cannot receive task requests."));
   }
   if (runtimeRequests.some((request) => request.status === "pending")) {
-    return "Resolve this thread's pending request before requesting a task.";
+    return resolve(msg("Resolve this thread's pending request before requesting a task."));
   }
   const provider = input.providers.find(
     (entry) => entry.instanceId === thread.modelSelection.instanceId,
@@ -97,7 +129,7 @@ export function getNewThreadTaskUnavailableReason(input: {
     provider.status !== "ready" ||
     provider.availability === "unavailable"
   ) {
-    return "This thread's provider must be available to request a task.";
+    return resolve(msg("This thread's provider must be available to request a task."));
   }
   return null;
 }
@@ -136,15 +168,19 @@ function buildDelegationMessage(input: {
 export function validateNewThreadTaskRequest(
   draft: NewThreadTaskDraft,
   childModelSelection: ModelSelection,
+  resolve: MessageResolver = m,
+  locale?: string,
 ): string | null {
   return (
-    validateNewThreadTaskDraft(draft) ??
+    validateNewThreadTaskDraft(draft, resolve) ??
     getComposerPromptLengthValidationMessage(
       buildDelegationMessage({
         draft,
         childModelSelection,
         commandId: CommandId.make("00000000-0000-0000-0000-000000000000"),
       }),
+      resolve,
+      locale,
     )
   );
 }

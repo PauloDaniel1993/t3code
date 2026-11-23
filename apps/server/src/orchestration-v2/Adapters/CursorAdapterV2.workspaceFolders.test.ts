@@ -258,7 +258,7 @@ describe("Cursor workspace folders", () => {
       assert.equal(opens.at(-1)?.options.local?.cwd, moved.cwd);
       assert.deepEqual(runtime.providerSession.additionalDirectories, []);
       assert.equal(runtime.providerSession.cwd, moved.cwd);
-      for (const message of messages.slice(0, 3)) {
+      for (const message of [messages[0]!, messages[2]!]) {
         assert.include(message, "<workspace_folders>");
         assert.include(message, quote(fixture.cwd));
         assert.include(message, quote(fixture.additionalDirectories[1]));
@@ -267,6 +267,7 @@ describe("Cursor workspace folders", () => {
         messages[0]!.indexOf(quote(fixture.additionalDirectories[0])),
         messages[0]!.indexOf(quote(fixture.additionalDirectories[1])),
       );
+      assert.notInclude(messages[1]!, "<workspace_folders>");
       assert.notInclude(messages[2]!, quote(fixture.additionalDirectories[0]));
       assert.notInclude(messages[4]!, "<workspace_folders>");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),

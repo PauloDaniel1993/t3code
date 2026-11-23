@@ -1,3 +1,5 @@
+import { msg } from "gt-react";
+import { m, type MessageResolver } from "~/i18n/messages";
 import type { FlowDefinition, FlowEdge, FlowStep, FlowCondition } from "@t3tools/contracts";
 import { parseFlowReference } from "@t3tools/shared/flow";
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
@@ -37,6 +39,7 @@ export function flowGraph(
   definition: FlowDefinition,
   previous: ReadonlyArray<FlowNode> = [],
   rem = 16,
+  resolve: MessageResolver = m,
 ) {
   const { card, pad, top, gap, margin, frame } = geometry(rem);
   const crowds = (a: Rect, b: Rect) =>
@@ -140,7 +143,11 @@ export function flowGraph(
         source: edge.from,
         target: edge.to,
         label:
-          edge.on === "failure" ? "on failure" : edge.when ? conditionLabel(edge.when) : undefined,
+          edge.on === "failure"
+            ? resolve(msg("on failure"))
+            : edge.when
+              ? conditionLabel(edge.when)
+              : undefined,
       }),
     );
   };
@@ -232,8 +239,9 @@ export function updateStep(
 export function renameStep(definition: FlowDefinition, from: string, to: string): FlowDefinition {
   if (from === to) return definition;
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(to))
-    throw new Error("Use a step id with lowercase letters, numbers and hyphens.");
-  if (findStep(definition.steps, to)) throw new Error("A step with that id already exists.");
+    throw new Error(m(msg("Use a step id with lowercase letters, numbers and hyphens.")));
+  if (findStep(definition.steps, to))
+    throw new Error(m(msg("A step with that id already exists.")));
   const reference = (value: string) => {
     try {
       const parsed = parseFlowReference(value);

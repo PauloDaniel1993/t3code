@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/client-runtime/state/shell";
 import { AsyncResult, Atom } from "effect/reactivity";
 import * as Option from "effect/Option";
+import { useGT } from "gt-react-native";
 import { useMemo } from "react";
 import { Pressable, View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -19,6 +20,7 @@ export function WorkspaceFoldersChip(props: {
   readonly thread?: EnvironmentThreadShell;
   readonly project?: EnvironmentProject;
 }) {
+  const gt = useGT();
   const navigation = useNavigation();
   const enabled =
     useEnvironmentServerConfig(props.thread?.environmentId ?? props.project?.environmentId ?? null)
@@ -28,7 +30,7 @@ export function WorkspaceFoldersChip(props: {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Workspace folders, ${count}`}
+      accessibilityLabel={gt("Workspace folders, {count}", { count })}
       hitSlop={10}
       className="flex-row items-center gap-1 px-2"
       onPress={(event) => {
@@ -68,6 +70,7 @@ function ActiveWorkspaceBranchHint(props: {
   readonly thread: EnvironmentThreadShell;
   readonly members: NonNullable<EnvironmentThreadShell["worktrees"]>;
 }) {
+  const gt = useGT();
   const members = props.members;
   const statuses = useAtomValue(
     useMemo(
@@ -100,8 +103,12 @@ function ActiveWorkspaceBranchHint(props: {
           hint.drifted ? "text-xs text-warning-foreground" : "text-xs text-foreground-muted"
         }
       >
-        · {hint.drifted ? hint.total - hint.agreed : hint.agreed}/{hint.total}
-        {hint.drifted ? " drifted" : ""}
+        {hint.drifted
+          ? gt("· {drifted}/{total} drifted", {
+              drifted: hint.total - hint.agreed,
+              total: hint.total,
+            })
+          : `· ${hint.agreed}/${hint.total}`}
       </Text>
     </View>
   );

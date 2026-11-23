@@ -1,3 +1,5 @@
+import { msg, T, useGT } from "gt-react";
+import { m } from "../i18n/messages";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ProjectId, ScopedProjectRef } from "@t3tools/contracts";
 import { useState } from "react";
@@ -17,6 +19,7 @@ export function WorkspaceFileImportDialog(props: {
   readonly onOpenChange: (open: boolean) => void;
   readonly onImported: (ref: ScopedProjectRef) => void | Promise<void>;
 }) {
+  const gt = useGT();
   const importFile = useImportWorkspaceFile();
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   const plainProjects = useProjects().filter(
@@ -27,12 +30,12 @@ export function WorkspaceFileImportDialog(props: {
   return (
     <WorkspaceFilePickerDialog
       {...props}
-      title="Import workspace file"
+      title={gt("Import workspace file")}
       onSelect={async (path) => {
         let projectId: ProjectId;
         if (linkExisting) {
           const existing = plainProjects.find((project) => project.id === linkProjectId);
-          if (!existing) throw new Error("Choose an existing project to link.");
+          if (!existing) throw new Error(m(msg("Choose an existing project to link.")));
           const result = await updateProject({
             environmentId: props.environmentId,
             input: { projectId: existing.id, workspaceFilePath: path },
@@ -50,7 +53,7 @@ export function WorkspaceFileImportDialog(props: {
         } catch (error) {
           toastManager.add({
             type: "error",
-            title: "The project was saved, but could not be opened",
+            title: m(msg("The project was saved, but could not be opened")),
             description: workspaceFileErrorMessage(error),
           });
         }
@@ -59,13 +62,17 @@ export function WorkspaceFileImportDialog(props: {
       {plainProjects.length ? (
         <div className="space-y-2">
           <Button size="sm" variant="link" onClick={() => setLinkExisting(!linkExisting)}>
-            {linkExisting ? "Import as a new project instead" : "Link existing project instead"}
+            {linkExisting
+              ? gt("Import as a new project instead")
+              : gt("Link existing project instead")}
           </Button>
           {linkExisting ? (
             <>
               <p className="text-xs text-muted-foreground">
-                The file must list this project's folder first. Its title, settings, and history are
-                kept.
+                <T>
+                  The file must list this project's folder first. Its title, settings, and history
+                  are kept.
+                </T>
               </p>
               <Select
                 value={linkProjectId}
@@ -75,11 +82,11 @@ export function WorkspaceFileImportDialog(props: {
                   )
                 }
               >
-                <SelectTrigger size="sm" aria-label="Existing project to link">
+                <SelectTrigger size="sm" aria-label={gt("Existing project to link")}>
                   <SelectValue>
                     {() =>
                       plainProjects.find((project) => project.id === linkProjectId)?.title ??
-                      "Choose a project"
+                      gt("Choose a project")
                     }
                   </SelectValue>
                 </SelectTrigger>

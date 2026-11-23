@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Suspense, lazy, useState } from "react";
 
@@ -27,6 +28,7 @@ export function StarMapSurface(props: {
 }
 
 function StarMapFolderSurface(props: Parameters<typeof StarMapSurface>[0]) {
+  const gt = useGT();
   const [folderPath, setFolderPath] = useState<string | null>(null);
   const folder = selectedStarMapFolder(props.workspace, folderPath);
   if (folderPath !== null && (folder?.folder.path ?? folder?.folder.uri) !== folderPath) {
@@ -43,7 +45,11 @@ function StarMapFolderSurface(props: Parameters<typeof StarMapSurface>[0]) {
                 <Button
                   variant="ghost"
                   size="xs"
-                  aria-label={`Wayfinder folder: ${folder?.label ?? "Primary"}`}
+                  aria-label={gt("Wayfinder folder: {folder}", {
+                    folder:
+                      folder?.label ??
+                      gt("Primary", { $context: "adjective, primary workspace folder" }),
+                  })}
                 />
               }
             >
@@ -61,8 +67,8 @@ function StarMapFolderSurface(props: Parameters<typeof StarMapSurface>[0]) {
                     disabled={entry.effectivePath === null}
                   >
                     {entry.label}
-                    {entry.isPrimary ? " · Primary" : ""}
-                    {entry.effectivePath === null ? " · Unavailable" : ""}
+                    {entry.isPrimary ? gt(" · Primary") : ""}
+                    {entry.effectivePath === null ? gt(" · Unavailable") : ""}
                   </MenuRadioItem>
                 ))}
               </MenuRadioGroup>
@@ -72,7 +78,7 @@ function StarMapFolderSurface(props: Parameters<typeof StarMapSurface>[0]) {
       ) : null}
       {cwd === null ? (
         <p role="status" className="px-4 py-3 text-sm text-muted-foreground">
-          This workspace folder is unavailable.
+          <T>This workspace folder is unavailable.</T>
         </p>
       ) : (
         <Suspense fallback={null}>

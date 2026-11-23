@@ -1,5 +1,7 @@
 import type { MessageId, ScopedThreadRef } from "@t3tools/contracts";
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
+import { msg } from "gt-react";
+import { m } from "../../i18n/messages";
 
 import {
   composerDraftHasUserContent,
@@ -24,6 +26,8 @@ export type FailedSendDraft = Pick<
   | "previewAnnotations"
   | "reviewComments"
   | "threadContexts"
+  | "environmentContexts"
+  | "replyTo"
 >;
 
 export function removeFailedOptimisticMessage(messages: ChatMessage[], messageId: MessageId) {
@@ -88,7 +92,9 @@ export function recoverFailedSendDraft(options: {
     options.isOriginalRoute() &&
     !current?.prompt.length &&
     !composerDraftHasUserContent(current) &&
-    failed.images.length + failed.files.length === 0
+    failed.images.length + failed.files.length === 0 &&
+    failed.environmentContexts.length === 0 &&
+    failed.replyTo === null
   ) {
     return false;
   }
@@ -159,6 +165,15 @@ export function recoverFailedSendDraft(options: {
     target,
     mergeById(current?.threadContexts ?? [], failed.threadContexts, (item) => item.contextId),
   );
+  store.setEnvironmentContexts(
+    target,
+    mergeById(
+      current?.environmentContexts ?? [],
+      failed.environmentContexts,
+      (item) => item.contextId,
+    ),
+  );
+  store.setReplyTo(target, current?.replyTo ?? failed.replyTo);
   const draft = store.getComposerDraft(target);
   if (draft && options.isOriginalRoute()) options.onRestored(draft, prompt.length > 0);
   // The mounted composer saves its own images. Offscreen reads must not delay
@@ -196,8 +211,12 @@ export function recoverFailedSendDraft(options: {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Some images could not be saved for reload",
-              description: `${unreadableNames.join(", ")}. Keep this composer open and attach these images again.`,
+              title: m(msg("Some images could not be saved for reload")),
+              description: m(
+                msg("{names}. Keep this composer open and attach these images again.", {
+                  names: unreadableNames.join(", "),
+                }),
+              ),
               data: { threadRef: options.threadRef },
               timeout: 0,
             }),
@@ -210,8 +229,16 @@ export function recoverFailedSendDraft(options: {
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title: "Some failed attachments could not be restored",
-        description: `${dropped.map((name) => `'${name}'`).join(", ")} could not be restored because a message can contain at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments. Attach them again in a separate message.`,
+        title: m(msg("Some failed attachments could not be restored")),
+        description: m(
+          msg(
+            "{names} could not be restored because a message can contain at most {limit} attachments. Attach them again in a separate message.",
+            {
+              names: dropped.map((name) => `'${name}'`).join(", "),
+              limit: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+            },
+          ),
+        ),
         data: { threadRef: options.threadRef },
         timeout: 0,
       }),

@@ -37,6 +37,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
 import * as WorkspaceFolderFiles from "../workspace/WorkspaceFolderFiles.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
@@ -86,6 +87,7 @@ const makeHarness = (handoffOnProjectRead = false) =>
       hasCustomTitle: false,
       workspaceRoot: primary,
       workspaceFile: location("team.code-workspace"),
+      trackedFolders: [],
       folders: [
         { path: primary, name: "Primary" },
         { path: secondary, name: "Secondary" },
@@ -173,6 +175,7 @@ const makeHarness = (handoffOnProjectRead = false) =>
     const threadReads = Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
       getProjectThreadRecords: () => Effect.succeed({ ...projection, thread: { ...thread } }),
+      getRunCount: () => Effect.succeed(projection.runs.length),
       getThreadShell: () => Effect.succeed({ ...thread, activeRunId: null } as never),
       getTimelinePage: () =>
         Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
@@ -242,6 +245,7 @@ const makeHarness = (handoffOnProjectRead = false) =>
               }),
           }),
           Layer.mock(WorktreeSet.WorktreeSetService)({}),
+          Layer.mock(TaskFolders.TaskFolders)({}),
           Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
           Layer.mock(ServerSettings.ServerSettingsService)({}),
           Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),

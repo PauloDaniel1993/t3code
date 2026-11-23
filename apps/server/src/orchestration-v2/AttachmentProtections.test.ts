@@ -33,6 +33,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { issueAssetUrl, resolveAsset } from "../assets/AssetAccess.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as AssetSigner from "../assets/AssetSigner.ts";
+import * as WorkspacePreviewRevisions from "../assets/WorkspacePreviewRevisions.ts";
 import * as PayloadSigner from "../auth/PayloadSigner.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import { base64UrlEncode } from "../auth/utils.ts";
@@ -100,6 +101,7 @@ const testLayer = Layer.mergeAll(
   databaseLayer,
   configLayer,
   WorkspacePaths.layer,
+  WorkspacePreviewRevisions.layer,
   Layer.mock(ProjectFaviconResolver)({ resolvePath: () => Effect.die("unused favicon") }),
   Layer.mock(NativeAppIconResolver)({ resolve: () => Effect.die("unused icon") }),
   AssetSigner.layer.pipe(
@@ -1069,6 +1071,7 @@ describe("attachment pruning through the effect outbox", () => {
           type: "attachment.cleanup",
           attachmentIds: [attachment.id],
           relativePaths: [`${attachment.id}.png`],
+          skipReferenced: true,
         });
         const claimed = yield* outbox.claimNext({ workerId: "test" });
         expect(Option.isSome(claimed)).toBe(true);

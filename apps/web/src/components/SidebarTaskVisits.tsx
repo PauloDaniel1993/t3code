@@ -27,7 +27,7 @@ export function SidebarTaskVisits({ threadRef }: { threadRef: ScopedThreadRef | 
             Date.parse(task.completionDelivery?.deliveredAt ?? "") || 0,
           );
       }
-      if (!isSidebarTaskThread(thread) && deliveredAt === 0) return;
+      if (!isSidebarTaskThread(thread) && thread.delegatedFrom == null && deliveredAt === 0) return;
       useUiStateStore
         .getState()
         .markThreadVisited(key, new Date(Math.max(Date.now(), deliveredAt)).toISOString());

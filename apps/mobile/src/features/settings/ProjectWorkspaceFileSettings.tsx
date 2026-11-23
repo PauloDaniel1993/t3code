@@ -3,6 +3,7 @@ import {
   ensureBrowseDirectoryPath,
 } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import { T, useGT, useMessages } from "gt-react-native";
 import { useState } from "react";
 import { Alert, View } from "react-native";
 import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
@@ -24,6 +25,8 @@ export function ProjectWorkspaceFileSettings(props: {
   readonly project: EnvironmentProject;
   readonly environment: SettingsTarget;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const { project, environment } = props;
   const enabled = environment.serverConfig.workspaceFileProjects === true;
   const linked = project.workspaceFile != null;
@@ -51,11 +54,14 @@ export function ProjectWorkspaceFileSettings(props: {
     setBusy(false);
   };
   const choosePath = () => {
-    const resolved = resolveAddProjectPath({
-      rawPath: path,
-      currentProjectCwd: project.workspaceRoot,
-      platform,
-    });
+    const resolved = resolveAddProjectPath(
+      {
+        rawPath: path,
+        currentProjectCwd: project.workspaceRoot,
+        platform,
+      },
+      m,
+    );
     if (!resolved.ok) {
       setError(resolved.error);
       return;
@@ -80,30 +86,32 @@ export function ProjectWorkspaceFileSettings(props: {
       <View className="flex-row flex-wrap gap-2">
         {linked ? (
           <Button
-            label="Refresh"
+            label={gt("Refresh")}
             disabled={busy || !enabled}
             onPress={() => void changeLink(project.workspaceFile!)}
           />
         ) : null}
         {enabled ? (
           <Button
-            label={linked ? "Relink…" : "Link workspace file…"}
+            label={linked ? gt("Relink…") : gt("Link workspace file…")}
             disabled={busy}
             onPress={startPicker}
           />
         ) : null}
         {linked ? (
           <Button
-            label="Unlink workspace file"
+            label={gt("Unlink workspace file")}
             disabled={busy}
             tone="text"
             onPress={() =>
               Alert.alert(
-                "Unlink workspace file?",
-                "Future threads use only the primary folder. Existing threads keep their folders, and conversation history is kept.",
+                gt("Unlink workspace file?"),
+                gt(
+                  "Future threads use only the primary folder. Existing threads keep their folders, and conversation history is kept.",
+                ),
                 [
-                  { text: "Cancel", style: "cancel" },
-                  { text: "Unlink", onPress: () => void changeLink(null) },
+                  { text: gt("Cancel"), style: "cancel" },
+                  { text: gt("Unlink"), onPress: () => void changeLink(null) },
                 ],
               )
             }
@@ -111,15 +119,17 @@ export function ProjectWorkspaceFileSettings(props: {
         ) : null}
       </View>
       {busy ? (
-        <Text className="text-sm text-foreground-muted">Updating workspace file…</Text>
+        <Text className="text-sm text-foreground-muted">
+          <T>Updating workspace file…</T>
+        </Text>
       ) : null}
       {picking && enabled ? (
         <View className="gap-3">
           <Text className="text-sm text-foreground-muted">
-            Workspace file path on {environment.label}
+            {gt("Workspace file path on {environment}", { environment: environment.label })}
           </Text>
           <AppTextInput
-            accessibilityLabel="Workspace file path on environment"
+            accessibilityLabel={gt("Workspace file path on environment")}
             value={path}
             editable={!busy}
             onChangeText={setPath}
@@ -145,11 +155,16 @@ export function ProjectWorkspaceFileSettings(props: {
           />
           <View className="flex-row gap-2">
             <Button
-              label={linked ? "Relink workspace file" : "Link workspace file"}
+              label={linked ? gt("Relink workspace file") : gt("Link workspace file")}
               disabled={busy || !path.trim()}
               onPress={choosePath}
             />
-            <Button label="Cancel" disabled={busy} tone="text" onPress={() => setPicking(false)} />
+            <Button
+              label={gt("Cancel")}
+              disabled={busy}
+              tone="text"
+              onPress={() => setPicking(false)}
+            />
           </View>
         </View>
       ) : null}

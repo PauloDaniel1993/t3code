@@ -27,9 +27,12 @@ export const resolveClaudeTurnExecutablePath = Effect.fn("resolveClaudeTurnExecu
       const isFile = yield* ClaudeExecutableFileCheck;
       if (isWindowsClaudeLauncherShimPath(executablePath) || !isFile(executablePath)) {
         const resolveExecutable = yield* SpawnExecutableResolution;
+        const attemptedPath = yield* Effect.promise(async () =>
+          resolveExecutable(binaryPath, platform, environment),
+        );
         return yield* new ClaudeSdkExecutableResolutionError({
           binaryPath,
-          attemptedPath: resolveExecutable(binaryPath, platform, environment) ?? executablePath,
+          attemptedPath: attemptedPath ?? executablePath,
         });
       }
     }

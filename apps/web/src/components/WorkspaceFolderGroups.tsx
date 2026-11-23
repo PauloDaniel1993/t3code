@@ -1,5 +1,6 @@
 import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import { useState } from "react";
+import { T, useGT } from "gt-react";
 import {
   ChevronRightIcon,
   CopyIcon,
@@ -9,7 +10,7 @@ import {
   GitBranchIcon,
   TerminalIcon,
 } from "lucide-react";
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useEnvironmentQuery } from "../state/query";
 import { vcsEnvironment } from "../state/vcs";
 import { cn } from "../lib/utils";
@@ -32,6 +33,7 @@ function WorkspaceFolderRowView({
   row,
   ...props
 }: Omit<WorkspaceFolderGroupsProps, "rows"> & { row: WorkspaceFolderRow }) {
+  const gt = useGT();
   const status = useEnvironmentQuery(
     row.isGit && row.branchCwd
       ? vcsEnvironment.branchStatus({
@@ -40,14 +42,27 @@ function WorkspaceFolderRowView({
         })
       : null,
   );
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "workspace folder path" });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget("workspace folder path"),
+  });
   const subline = row.unavailable
-    ? `${row.reason} · ${row.isPrimary ? "blocks this thread" : "skipped"}`
+    ? row.isPrimary
+      ? gt("{reason} · blocks this thread", { reason: String(row.reason) })
+      : gt("{reason} · skipped", { reason: String(row.reason) })
     : row.isGit
-      ? `${status.data?.refName ?? (status.error ? "Status unavailable" : status.data ? "Detached HEAD" : "Loading branch…")} · ${row.isWorktree ? "Worktree" : "Current checkout"}`
+      ? gt("{branch} · {checkout}", {
+          branch:
+            status.data?.refName ??
+            (status.error
+              ? gt("Status unavailable")
+              : status.data
+                ? gt("Detached HEAD")
+                : gt("Loading branch…")),
+          checkout: row.isWorktree ? gt("Worktree") : gt("Current checkout"),
+        })
       : !row.vcsKnown
-        ? "Folder status not available"
-        : "Shared · not checkpointed";
+        ? gt("Folder status not available")
+        : gt("Shared · not checkpointed");
   return (
     <div className="ml-3 flex min-w-0 items-center gap-2 border-l border-border/60 py-1.5 pl-3">
       <Tooltip>
@@ -56,7 +71,7 @@ function WorkspaceFolderRowView({
             <span className="truncate text-xs font-medium">{row.folder.name}</span>
             {row.isPrimary ? (
               <span className="shrink-0 rounded bg-muted px-1 text-3xs text-muted-foreground">
-                Primary
+                <T context="adjective, describes the primary workspace folder">Primary</T>
               </span>
             ) : null}
           </div>
@@ -74,14 +89,20 @@ function WorkspaceFolderRowView({
       <Menu>
         <MenuTrigger
           render={
-            <Button variant="ghost" size="icon-xs" aria-label={`Actions for ${row.folder.name}`} />
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={gt("Actions for {folder}", { folder: row.folder.name })}
+            />
           }
         >
           <EllipsisIcon className="size-3.5" />
         </MenuTrigger>
         <MenuPopup>
           {row.unavailable ? (
-            <MenuItem disabled>Open in…</MenuItem>
+            <MenuItem disabled>
+              <T>Open in…</T>
+            </MenuItem>
           ) : (
             <OpenInPicker
               environmentId={props.environmentId}
@@ -94,14 +115,14 @@ function WorkspaceFolderRowView({
           )}
           <MenuItem onClick={() => copyToClipboard(row.path, undefined)}>
             <CopyIcon className="size-4" />
-            {isCopied ? "Path copied" : "Copy path"}
+            {isCopied ? gt("Path copied") : gt("Copy path")}
           </MenuItem>
           <MenuItem
             disabled={!row.isGit || !props.onShowChanges}
             onClick={() => props.onShowChanges?.(row)}
           >
             <FileDiffIcon className="size-4" />
-            Show changes for this folder
+            <T>Show changes for this folder</T>
           </MenuItem>
           {props.onOpenTerminalHere ? (
             <MenuItem
@@ -111,7 +132,7 @@ function WorkspaceFolderRowView({
               }}
             >
               <TerminalIcon className="size-4" />
-              Open terminal here
+              <T>Open terminal here</T>
             </MenuItem>
           ) : null}
         </MenuPopup>
@@ -121,11 +142,12 @@ function WorkspaceFolderRowView({
 }
 
 function WorkspaceFolderGroup({
-  title,
+  isGit,
   count,
   rows,
   ...props
-}: WorkspaceFolderGroupsProps & { title: string; count: number }) {
+}: WorkspaceFolderGroupsProps & { isGit: boolean; count: number }) {
+  const gt = useGT();
   const [open, setOpen] = useState(true);
   if (rows.length === 0) return null;
   return (
@@ -137,12 +159,10 @@ function WorkspaceFolderGroup({
         className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-2 text-left text-2xs font-medium text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <ChevronRightIcon className={cn("size-3", open && "rotate-90")} />
-        {title === "Git repositories" ? (
-          <GitBranchIcon className="size-3" />
-        ) : (
-          <FolderIcon className="size-3" />
-        )}
-        {title} · {count}
+        {isGit ? <GitBranchIcon className="size-3" /> : <FolderIcon className="size-3" />}
+        {isGit
+          ? gt("Git repositories · {count}", { count })
+          : gt("Other folders · {count}", { count })}
       </button>
       {open
         ? rows.map((row) => <WorkspaceFolderRowView key={row.label} row={row} {...props} />)
@@ -157,13 +177,8 @@ export function WorkspaceFolderGroups(props: WorkspaceFolderGroupsProps) {
   const other = props.rows.filter((row) => !row.isGit);
   return (
     <div className="px-2 py-1">
-      <WorkspaceFolderGroup
-        {...props}
-        rows={git}
-        title="Git repositories"
-        count={workspaceRepositoryCount(git)}
-      />
-      <WorkspaceFolderGroup {...props} rows={other} title="Other folders" count={other.length} />
+      <WorkspaceFolderGroup {...props} rows={git} isGit count={workspaceRepositoryCount(git)} />
+      <WorkspaceFolderGroup {...props} rows={other} isGit={false} count={other.length} />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { listProjectsUsingFolder } from "@t3tools/client-runtime/operations/projects";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, Project } from "@t3tools/contracts";
+import { T, useGT } from "gt-react-native";
 import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { useProjects } from "../../state/entities";
@@ -10,6 +11,7 @@ export function WorkspaceProjectFolders(props: {
   readonly environmentId: EnvironmentId;
   readonly enabled: boolean;
 }) {
+  const gt = useGT();
   const projects = useProjects();
   const status = props.project.workspaceFileStatus;
   const others = projects.filter(
@@ -22,14 +24,14 @@ export function WorkspaceProjectFolders(props: {
       </Text>
       <Text accessibilityRole="text" className="text-sm text-foreground-muted">
         {!props.enabled
-          ? "Workspace-file support is disabled on this environment."
+          ? gt("Workspace-file support is disabled on this environment.")
           : status
             ? status.state === "ok"
-              ? "Up to date"
-              : `Workspace file ${status.state}`
-            : "Checking workspace file…"}
+              ? gt("Up to date")
+              : gt("Workspace file {state}", { state: status.state })
+            : gt("Checking workspace file…")}
         {status?.liveDetection === false
-          ? " · Live detection unavailable. Refresh to check for changes."
+          ? gt(" · Live detection unavailable. Refresh to check for changes.")
           : ""}
       </Text>
       {status?.diagnostics.map((diagnostic) => (
@@ -42,7 +44,9 @@ export function WorkspaceProjectFolders(props: {
       ))}
       {status && status.state !== "ok" ? (
         <Text className="text-sm text-foreground-muted">
-          New threads are blocked until the file recovers. Refresh, relink, or unlink to recover.
+          <T>
+            New threads are blocked until the file recovers. Refresh, relink, or unlink to recover.
+          </T>
         </Text>
       ) : null}
       {props.project.folders?.map((folder, index) => {
@@ -51,31 +55,35 @@ export function WorkspaceProjectFolders(props: {
           <View key={folder.path ?? folder.uri} className="gap-1">
             <Text className="font-t3-medium">
               {folder.name}
-              {index === 0 ? " · Primary" : ""}
+              {index === 0 ? gt(" · Primary") : ""}
             </Text>
             <Text selectable className="text-sm text-foreground-muted">
               {folder.path ?? folder.uri}
             </Text>
             <Text className="text-sm text-foreground-muted">
               {!props.enabled
-                ? "Availability checks are disabled"
+                ? gt("Availability checks are disabled")
                 : folder.uri
-                  ? `Remote (${folder.remoteDescription ?? "remote folder"}), not available here`
+                  ? gt("Remote ({description}), not available here", {
+                      description: folder.remoteDescription ?? gt("remote folder"),
+                    })
                   : folder.availability === "unavailable"
                     ? index === 0
-                      ? "Primary folder unavailable"
+                      ? gt("Primary folder unavailable")
                       : folder.unavailableReason === "missing"
-                        ? "Missing on disk"
+                        ? gt("Missing on disk")
                         : folder.unavailableReason === "not-directory"
-                          ? "Not a folder on disk"
-                          : "Unavailable"
+                          ? gt("Not a folder on disk")
+                          : gt("Unavailable")
                     : folder.availability === "available"
-                      ? "Available"
-                      : "Checking availability…"}
+                      ? gt("Available")
+                      : gt("Checking availability…")}
             </Text>
             {overlaps.length ? (
               <Text className="text-sm text-foreground-muted">
-                This folder is also used by {overlaps.map((project) => project.title).join(", ")}
+                {gt("This folder is also used by {projects}", {
+                  projects: overlaps.map((project) => project.title).join(", "),
+                })}
               </Text>
             ) : null}
           </View>

@@ -17,9 +17,11 @@ import {
   workspaceActionOutcomeText,
 } from "@t3tools/client-runtime/state/vcs";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { T, Var, msg, useGT, useMessages } from "gt-react";
 import { ChevronDownIcon, ChevronRightIcon, GitBranchIcon, FileDiffIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useOpenLink } from "../../browser/useOpenLink";
+import { m } from "../../i18n/messages";
 import { usePaginatedBranches } from "../../state/queries";
 import { useWorkspaceStatuses } from "../../state/workspaceVcs";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -59,6 +61,8 @@ export function WorkspaceVersionControl(props: {
   showChanges?: boolean;
   compact?: boolean;
 }) {
+  const gt = useGT();
+  const resolveMessage = useMessages();
   const {
     environmentId,
     threadId,
@@ -142,13 +146,13 @@ export function WorkspaceVersionControl(props: {
     ) - changed.length;
   const stateMessage =
     props.thread === null
-      ? "Start the thread to run workspace actions."
+      ? gt("Start the thread to run workspace actions.")
       : !ready
-        ? "Waiting for repository status."
+        ? gt("Waiting for repository status.")
         : branch.drifted > 0
-          ? "Batch actions paused. Switch drifted repositories back to their expected branches."
+          ? gt("Batch actions paused. Switch drifted repositories back to their expected branches.")
           : available.some((value) => !value)
-            ? "Unavailable repositories are excluded from batch actions."
+            ? gt("Unavailable repositories are excluded from batch actions.")
             : null;
   const run = async (action: VcsWorkspaceAction) => {
     if (actionDisabled || !appAtomRegistry.get(actionPermissionAtom)) return;
@@ -197,7 +201,9 @@ export function WorkspaceVersionControl(props: {
           setPendingAction(null);
           setMessage("");
         } catch (cause) {
-          setError(cause instanceof Error ? cause.message : "Could not run the workspace action.");
+          setError(
+            cause instanceof Error ? cause.message : m(msg("Could not run the workspace action.")),
+          );
         }
       },
       () => {
@@ -231,13 +237,20 @@ export function WorkspaceVersionControl(props: {
         <ThreadDetailsControl
           disabled={!canSwitchBranch || busy || !thread.worktrees?.length}
           onClick={() => setBranchOpen(true)}
-          aria-label="Switch shared branch"
+          aria-label={gt("Switch shared branch")}
         >
           <GitBranchIcon className="size-3.5" />
           <span className="min-w-0 flex-1 truncate text-left">
             {checkouts.length === 0
-              ? "No Git repositories"
-              : `${ready ? (members.length > 0 ? branch.branch : "No available Git repositories") : "Loading branches…"} · ${checkouts.length} ${checkouts.length === 1 ? "repo" : "repos"}`}
+              ? gt("No Git repositories")
+              : gt("{branch} · {count, plural, one {{count} repo} other {{count} repos}}", {
+                  branch: ready
+                    ? members.length > 0
+                      ? branch.branch
+                      : gt("No available Git repositories")
+                    : gt("Loading branches…"),
+                  count: checkouts.length,
+                })}
           </span>
           <ChevronDownIcon className="size-3" />
         </ThreadDetailsControl>
@@ -249,8 +262,13 @@ export function WorkspaceVersionControl(props: {
         >
           <FileDiffIcon className="size-3.5" />
           <span className="flex-1 text-left">
-            {changed.length} files changed across {changedRepos}{" "}
-            {changedRepos === 1 ? "repo" : "repos"}
+            {gt(
+              "{files} files changed across {repos, plural, one {{repos} repo} other {{repos} repos}}",
+              {
+                files: changed.length,
+                repos: changedRepos,
+              },
+            )}
           </span>
           <span className="font-mono text-2xs">
             <span className="text-success">+{totals.insertions}</span>{" "}
@@ -260,15 +278,19 @@ export function WorkspaceVersionControl(props: {
       ) : null}
       {showChanges && outsideChanges > 0 ? (
         <p className="px-2 py-1 text-2xs text-muted-foreground">
-          +{outsideChanges} changed {outsideChanges === 1 ? "file" : "files"} outside available
-          workspace folders. Commit all includes these files.
+          {gt(
+            "+{count} changed {count, plural, one {file} other {files}} outside available workspace folders. Commit all includes these files.",
+            {
+              count: outsideChanges,
+            },
+          )}
         </p>
       ) : null}
       {showChanges && changesOpen ? (
         <div className="px-3 py-2 text-2xs">
           {changed.length === 0 ? (
             <p className="text-muted-foreground">
-              {ready ? "No working tree changes." : "Loading changes…"}
+              {ready ? gt("No working tree changes.") : gt("Loading changes…")}
             </p>
           ) : (
             changed.map((file) => (
@@ -297,7 +319,7 @@ export function WorkspaceVersionControl(props: {
             }
             onClick={() => setPendingAction("commit")}
           >
-            Commit all
+            <T>Commit all</T>
           </Button>
           <Button
             variant="outline"
@@ -305,7 +327,7 @@ export function WorkspaceVersionControl(props: {
             disabled={actionDisabled}
             onClick={() => setPendingAction("push")}
           >
-            Push all
+            <T>Push all</T>
           </Button>
           <Button
             variant="outline"
@@ -313,12 +335,15 @@ export function WorkspaceVersionControl(props: {
             disabled={actionDisabled}
             onClick={() => setPendingAction("create-prs")}
           >
-            Create PRs ({available.filter(Boolean).length})
+            <T>
+              Create PRs (<Var>{available.filter(Boolean).length}</Var>)
+            </T>
           </Button>
         </div>
       ) : checkouts.length === 0 && (showActions || showChanges) && rows[0]?.effectivePath ? (
         <GitActionsControl
           gitCwd={rows[0].effectivePath}
+          name={rows[0].folder.name}
           activeThreadRef={threadRef}
           compact={compact}
           showActions={showActions}
@@ -353,7 +378,7 @@ export function WorkspaceVersionControl(props: {
         </div>
       ) : null}
       {results.length ? (
-        <ul className="px-2 py-1 text-2xs" aria-label="Workspace action results">
+        <ul className="px-2 py-1 text-2xs" aria-label={gt("Workspace action results")}>
           {results.map((result) => (
             <li
               key={result.repositoryRoot}
@@ -361,7 +386,7 @@ export function WorkspaceVersionControl(props: {
                 result.outcome._tag === "completed" ? "text-muted-foreground" : "text-warning"
               }
             >
-              {result.label}: {workspaceActionOutcomeText(result)}
+              {result.label}: {workspaceActionOutcomeText(result, resolveMessage)}
               {result.outcome._tag === "completed" && result.outcome.result.pr.url ? (
                 <Button
                   variant="link"
@@ -372,7 +397,7 @@ export function WorkspaceVersionControl(props: {
                     )
                   }
                 >
-                  Open PR
+                  <T>Open PR</T>
                 </Button>
               ) : null}
             </li>
@@ -381,7 +406,9 @@ export function WorkspaceVersionControl(props: {
       ) : null}
       <ThreadDetailsControl onClick={() => setBreakdown(!breakdown)} aria-expanded={breakdown}>
         <ChevronRightIcon className={cn("size-3", breakdown && "rotate-90")} />
-        <span className="flex-1 text-left">Per-repo breakdown</span>
+        <span className="flex-1 text-left">
+          <T>Per-repo breakdown</T>
+        </span>
         <Badge variant="secondary" size="sm">
           {checkouts.length}
         </Badge>
@@ -406,23 +433,30 @@ export function WorkspaceVersionControl(props: {
                     )}
                   >
                     {!available[index]
-                      ? "Unavailable · excluded from actions"
+                      ? gt("Unavailable · excluded from actions")
                       : status
                         ? [
-                            ...(showBranch ? [status.refName ?? "Detached HEAD"] : []),
+                            ...(showBranch ? [status.refName ?? gt("Detached HEAD")] : []),
                             ...(showChanges
-                              ? [`${status.workingTree.files.length} files changed`]
+                              ? [
+                                  gt("{files} files changed", {
+                                    files: status.workingTree.files.length,
+                                  }),
+                                ]
                               : []),
-                            ...(showBranch && drifted ? ["Drifted"] : []),
+                            ...(showBranch && drifted
+                              ? [gt("Drifted", { $context: "repository branch status" })]
+                              : []),
                           ].join(" · ")
                         : statuses[index]?.error
-                          ? "Status unavailable"
-                          : "Loading status…"}
+                          ? gt("Status unavailable")
+                          : gt("Loading status…")}
                   </p>
                 ) : null}
                 {(showActions || showChanges) && available[index] && props.thread ? (
                   <GitActionsControl
                     gitCwd={statusCwds[index] ?? checkout.cwd}
+                    name={row?.folder.name ?? checkout.label}
                     activeThreadRef={threadRef}
                     compact={compact}
                     showActions={showActions}
@@ -444,7 +478,9 @@ export function WorkspaceVersionControl(props: {
                         void switchTo(checkout.expectedBranch!, [checkout.repositoryRoot])
                       }
                     >
-                      Switch back to {checkout.expectedBranch}
+                      <T>
+                        Switch back to <Var>{checkout.expectedBranch}</Var>
+                      </T>
                     </Button>
                   </div>
                 ) : null}
@@ -464,9 +500,11 @@ export function WorkspaceVersionControl(props: {
           >
             {row.folder.name} ·{" "}
             <Badge variant={row.unavailable ? "warning" : "secondary"} size="sm">
-              {row.unavailable ? "Unavailable" : "Shared"}
+              {row.unavailable
+                ? gt("Unavailable")
+                : gt("Shared", { $context: "adjective, workspace folder shared with the project" })}
             </Badge>{" "}
-            {row.unavailable ? row.reason : "· not checkpointed"}
+            {row.unavailable ? row.reason : gt("· not checkpointed")}
           </p>
         ))}
       <Dialog
@@ -479,24 +517,28 @@ export function WorkspaceVersionControl(props: {
           <DialogHeader>
             <DialogTitle>
               {pendingAction === "commit"
-                ? "Commit all"
+                ? gt("Commit all")
                 : pendingAction === "push"
-                  ? "Push all"
-                  : "Create PRs"}
+                  ? gt("Push all")
+                  : gt("Create PRs")}
             </DialogTitle>
             <DialogDescription>
               {pendingAction === "commit"
-                ? "Use one commit message for every repository. Each repository commits independently."
+                ? gt(
+                    "Use one commit message for every repository. Each repository commits independently.",
+                  )
                 : pendingAction === "push"
-                  ? "Push each available repository on its own branch."
-                  : "Open existing pull requests and create missing ones. Each repository runs independently."}
+                  ? gt("Push each available repository on its own branch.")
+                  : gt(
+                      "Open existing pull requests and create missing ones. Each repository runs independently.",
+                    )}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             {pendingAction === "commit" ? (
               <Textarea
-                aria-label="Commit message"
-                placeholder="Commit message"
+                aria-label={gt("Commit message")}
+                placeholder={gt("Commit message")}
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 disabled={busy}
@@ -505,7 +547,7 @@ export function WorkspaceVersionControl(props: {
           </DialogPanel>
           <DialogFooter>
             <Button variant="ghost" disabled={busy} onClick={() => setPendingAction(null)}>
-              Cancel
+              <T>Cancel</T>
             </Button>
             <Button
               disabled={actionDisabled || (pendingAction === "commit" && !message.trim())}
@@ -513,7 +555,9 @@ export function WorkspaceVersionControl(props: {
                 if (pendingAction) void run(pendingAction);
               }}
             >
-              {busy ? "Running…" : "Continue"}
+              {busy
+                ? gt("Running…")
+                : gt("Continue", { $context: "verb, proceed with the action" })}
             </Button>
           </DialogFooter>
         </DialogPopup>
@@ -526,14 +570,18 @@ export function WorkspaceVersionControl(props: {
       >
         <DialogPopup>
           <DialogHeader>
-            <DialogTitle>Switch shared branch</DialogTitle>
+            <DialogTitle>
+              <T>Switch shared branch</T>
+            </DialogTitle>
             <DialogDescription>
-              Switch every member of this worktree set. The branch must exist in each repository.
+              <T>
+                Switch every member of this worktree set. The branch must exist in each repository.
+              </T>
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <Input
-              aria-label="Find branch"
+              aria-label={gt("Find branch")}
               value={branchQuery}
               onChange={(event) => setBranchQuery(event.target.value)}
             />
@@ -552,18 +600,18 @@ export function WorkspaceVersionControl(props: {
                     </Button>
                   </div>
                 ))}
-              {branches.isPending ? <p className="text-xs">Loading branches…</p> : null}
+              {branches.isPending ? <p className="text-xs">{gt("Loading branches…")}</p> : null}
               {branches.error ? <p className="text-xs text-destructive">{branches.error}</p> : null}
               {branches.data?.nextCursor != null ? (
                 <Button variant="ghost" size="sm" onClick={branches.loadNext}>
-                  Load more
+                  <T>Load more</T>
                 </Button>
               ) : null}
             </div>
           </DialogPanel>
           <DialogFooter>
             <Button variant="ghost" disabled={busy} onClick={() => setBranchOpen(false)}>
-              Cancel
+              <T>Cancel</T>
             </Button>
           </DialogFooter>
         </DialogPopup>

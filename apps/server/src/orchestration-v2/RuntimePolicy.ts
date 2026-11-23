@@ -25,6 +25,7 @@ import {
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
+import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 
 export class RuntimePolicyResolveError extends Schema.TaggedError<RuntimePolicyResolveError>()(
@@ -51,19 +52,6 @@ export class ProviderWorkspaceFolderAccessError extends Schema.TaggedError<Provi
   override get message(): string {
     return PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE;
   }
-}
-
-/**
- * Whether a provider with this workspace-folder access may run a scope. Only a
- * "supported" provider gets additional directories. A scope whose other
- * folders are all unavailable, or all inside cwd, has none, so any provider
- * runs it.
- */
-function providerMayRunScope(
-  scope: Pick<ProviderAdapter.ProviderAdapterV2RuntimePolicy, "additionalDirectories">,
-  access: ProviderWorkspaceFolderAccess | undefined,
-): boolean {
-  return scope.additionalDirectories.length === 0 || access === "supported";
 }
 
 /**
@@ -124,8 +112,7 @@ export type RuntimePolicyV2Override = typeof RuntimePolicyV2Override.Type;
 
 export interface RuntimePolicyV2Shape {
   /**
-   * The policy a run of this thread hands its provider: the thread's primary
-   * folder as cwd, and its other available folders as additional directories.
+   * Resolves the provider's cwd and workspace scope for a run.
    * `unavailableFolderPaths` is the run's record of snapshot folders it can't
    * reach; a run and its provider read the same record.
    */
@@ -135,14 +122,16 @@ export interface RuntimePolicyV2Shape {
     readonly unavailableFolderPaths?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2RuntimePolicy, RuntimePolicyV2Error>;
   /**
-   * The one eligibility rule, for turn start, provider and model switches and
-   * launches: a scope with additional directories needs a provider instance
-   * whose workspace-folder access is "supported".
+   * A scope with directory grants beyond cwd requires a provider instance that
+   * advertises workspace-folder access.
    */
   readonly requireWorkspaceFolderAccess: (input: {
     readonly threadId: ThreadId;
     readonly providerInstanceId: ProviderInstanceId;
-    readonly scope: Pick<ProviderAdapter.ProviderAdapterV2RuntimePolicy, "additionalDirectories">;
+    readonly scope: Pick<
+      ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+      "additionalDirectories" | "workspace"
+    >;
   }) => Effect.Effect<void, ProviderWorkspaceFolderAccessError>;
 }
 
@@ -150,26 +139,12 @@ export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePol
   "t3/orchestration-v2/RuntimePolicy/RuntimePolicyV2",
 ) {}
 
-export const layer: Layer.Layer<RuntimePolicyV2> = Layer.succeed(RuntimePolicyV2, {
-  resolve: Effect.fn("RuntimePolicyV2.resolve")((input) =>
-    Effect.succeed(
-      ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: input.thread.runtimeMode,
-        interactionMode: input.thread.interactionMode,
-        cwd: input.thread.worktreePath,
-      }),
-    ),
-  ),
-  requireWorkspaceFolderAccess: Effect.fn("RuntimePolicyV2.requireWorkspaceFolderAccess")((input) =>
-    requireAccess(input, undefined),
-  ),
-});
-
 function requireAccess(
   input: Parameters<RuntimePolicyV2Shape["requireWorkspaceFolderAccess"]>[0],
   access: ProviderWorkspaceFolderAccess | undefined,
 ): Effect.Effect<void, ProviderWorkspaceFolderAccessError> {
-  return providerMayRunScope(input.scope, access)
+  return access === "supported" ||
+    ProviderAdapter.runtimeWorkspaceExtraRoots(input.scope).length === 0
     ? Effect.void
     : Effect.fail(
         new ProviderWorkspaceFolderAccessError({
@@ -184,7 +159,7 @@ function requireAccess(
  * (a thread set before it stopped offering it, or a stale client) runs in
  * Supervised rather than having T3 imitate it.
  */
-function providerRuntimeMode(
+export function providerRuntimeMode(
   runtimeMode: RuntimeMode,
   supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined,
 ): RuntimeMode {
@@ -240,10 +215,12 @@ export const layerFromProjectStore: Layer.Layer<
   | ProjectStore.ProjectStoreV2
   | ProviderInstanceRegistry.ProviderInstanceRegistry
   | ServerSettings.ServerSettingsService
+  | WorkspaceFolders.WorkspaceFolders
 > = Layer.effect(
   RuntimePolicyV2,
   Effect.gen(function* () {
     const projects = yield* ProjectStore.ProjectStoreV2;
+    const workspaceFolders = yield* WorkspaceFolders.WorkspaceFolders;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     // The same ceiling the orchestrator enforces, fixed for the server's life.
     const { managedPolicy } = yield* ServerSettings.ServerSettingsService;
@@ -278,22 +255,46 @@ export const layerFromProjectStore: Layer.Layer<
             cause: "Project not found.",
           });
         }
-        const workspace = resolveThreadWorkspace({
-          thread: input.thread,
-          project: project ?? { workspaceRoot: primaryPath },
-          unavailableFolderPaths: input.unavailableFolderPaths,
-        });
+        const legacyWorkspace =
+          input.thread.workspaceFolders !== undefined || project?.workspaceFile != null;
+        if (legacyWorkspace) {
+          const workspace = resolveThreadWorkspace({
+            thread: input.thread,
+            project: project ?? { workspaceRoot: primaryPath },
+            unavailableFolderPaths: input.unavailableFolderPaths,
+          });
+          return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
+            interactionMode: input.thread.interactionMode,
+            cwd: workspace.primaryPath,
+            additionalDirectories: workspaceAdditionalDirectories(workspace),
+            ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
+          });
+        }
+        // The turn can still run in its own cwd, as a single-folder thread does.
+        const workspace = yield* workspaceFolders
+          .forThread({
+            projectId: input.thread.projectId,
+            worktreePath: input.thread.worktreePath,
+          })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not resolve the thread's tracked folders.", cause).pipe(
+                Effect.as(undefined),
+              ),
+            ),
+          );
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
-          cwd: workspace.primaryPath,
-          additionalDirectories: workspaceAdditionalDirectories(workspace),
+          cwd: primaryPath,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
+          ...(workspace === undefined || workspace.folders.length === 0 ? {} : { workspace }),
         });
       }),
       requireWorkspaceFolderAccess: Effect.fn("RuntimePolicyV2.requireWorkspaceFolderAccess")(
         function* (input) {
-          if (input.scope.additionalDirectories.length === 0) return;
+          if (ProviderAdapter.runtimeWorkspaceExtraRoots(input.scope).length === 0) return;
           const instance = yield* providerInstances.getInstance(input.providerInstanceId);
           // An instance that is gone, or doesn't say, is unverified.
           const access =

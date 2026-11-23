@@ -113,6 +113,7 @@ it.effect(
             Layer.succeed(RunFinalizationObserver, {
               refresh: () => Effect.void,
               refreshAfterTurn: () => Effect.void,
+              refreshRepositories: () => Effect.void,
             }),
           ),
         ),

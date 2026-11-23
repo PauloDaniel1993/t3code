@@ -1,3 +1,4 @@
+import { useMessages } from "gt-react";
 import type { SidebarTaskState } from "@t3tools/client-runtime/state/sidebar-task-subthreads";
 import { sidebarTaskStatusWord } from "@t3tools/client-runtime/state/sidebar-task-subthreads";
 import { CheckIcon, ChevronDownIcon, LoaderIcon, CircleHelpIcon, XIcon } from "lucide-react";
@@ -9,6 +10,7 @@ export function SidebarTaskMark({
   state: SidebarTaskState;
   animate?: boolean;
 }) {
+  const resolveMessage = useMessages();
   const running = state === "queued" || state === "running";
   const Icon = running
     ? LoaderIcon
@@ -22,7 +24,7 @@ export function SidebarTaskMark({
   return (
     <span
       role="img"
-      aria-label={sidebarTaskStatusWord(state)}
+      aria-label={sidebarTaskStatusWord(state, resolveMessage)}
       className={
         running
           ? "text-info-foreground"

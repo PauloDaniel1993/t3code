@@ -1,3 +1,4 @@
+import { msg } from "gt-react";
 import { Map as MapIcon } from "lucide-react";
 
 /**
@@ -5,22 +6,22 @@ import { Map as MapIcon } from "lucide-react";
  * here so `RightPanelTabs` only registers the entries instead of owning the copy.
  */
 export const MAP_SURFACE = {
-  title: "Map",
+  title: msg("Map", { $context: "noun, wayfinder map" }),
   icon: MapIcon,
   /** Entry in the empty-state launcher. */
   emptyState: {
-    label: "Map",
-    description: "See this project's tickets and blockers as a star map.",
+    label: msg("Map", { $context: "noun, wayfinder map" }),
+    description: msg("See this project's tickets and blockers as a star map."),
     icon: MapIcon,
     // Device owns M, so the map takes S (for star map).
     shortcut: "S",
-    disabledReason: "Available when a project is open.",
+    disabledReason: msg("Available when a project is open."),
   },
   /** Entry in the add-surface menu. */
   menu: {
-    label: "Map",
+    label: msg("Map", { $context: "noun, wayfinder map" }),
     icon: MapIcon,
     shortcut: "S",
-    disabledReason: "Maps are only available when a project is open.",
+    disabledReason: msg("Maps are only available when a project is open."),
   },
 } as const;

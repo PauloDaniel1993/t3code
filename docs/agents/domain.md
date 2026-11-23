@@ -5,7 +5,7 @@ How the engineering skills should consume this repo's domain documentation when 
 ## Before exploring, read these
 
 - **`CONTEXT.md`** at the repo root — the fork and effort vocabulary.
-- **`docs/internals/glossary.md`** — upstream's product vocabulary. Read both, and don't duplicate a term across them.
+- **`docs/internals/00_glossary.md`** — upstream's product vocabulary. Read both, and don't duplicate a term across them.
 - **`docs/adr/`** — read ADRs that touch the area you're about to work in.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill creates them lazily when terms or decisions actually get resolved.

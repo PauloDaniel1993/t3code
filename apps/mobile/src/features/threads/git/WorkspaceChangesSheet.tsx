@@ -2,6 +2,7 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { isSamePath, owningFolder } from "@t3tools/shared/workspaceFolders";
+import { useGT } from "gt-react-native";
 import { useMemo, useState } from "react";
 import { Pressable, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -18,6 +19,7 @@ type ChangedFile = ReturnType<typeof workspaceGitSummary>["files"][number];
 
 /** Patches load only for expanded files, with the environment and checkout in the cache key. */
 function ChangedFileRow(props: { readonly target: ScopedThreadRef; readonly file: ChangedFile }) {
+  const gt = useGT();
   const [expanded, setExpanded] = useState(false);
   const { file } = props;
   const patch = useEnvironmentQuery(
@@ -37,20 +39,20 @@ function ChangedFileRow(props: { readonly target: ScopedThreadRef; readonly file
       <Pressable
         className="min-h-12 justify-center"
         accessibilityRole="button"
-        accessibilityLabel={`Show diff for ${file.displayPath}`}
+        accessibilityLabel={gt("Show diff for {path}", { path: file.displayPath })}
         accessibilityState={{ expanded }}
         onPress={() => setExpanded(!expanded)}
       >
         <Text className="font-t3-medium">{file.displayPath}</Text>
         <Text className="text-xs text-foreground-muted">
           +{file.insertions} / −{file.deletions}
-          {file.folderLabel === null ? " · Outside workspace folders" : ""}
+          {file.folderLabel === null ? gt(" · Outside workspace folders") : ""}
         </Text>
       </Pressable>
       {expanded ? (
         <Text selectable className="text-xs font-t3-mono">
-          {patch.error ?? source?.diff ?? "Loading diff…"}
-          {source?.truncated ? "\nPreview exceeds the size limit." : ""}
+          {patch.error ?? source?.diff ?? gt("Loading diff…")}
+          {source?.truncated ? gt("\nPreview exceeds the size limit.") : ""}
         </Text>
       ) : null}
     </View>
@@ -60,6 +62,7 @@ function ChangedFileRow(props: { readonly target: ScopedThreadRef; readonly file
 export function WorkspaceChangesSheet({
   route,
 }: StaticScreenProps<ScopedThreadRef & { readonly folderPath?: string }>) {
+  const gt = useGT();
   const navigation = useNavigation();
   const workspace = useThreadWorkspace(route.params);
   const selectedFolder = route.params.folderPath
@@ -86,7 +89,11 @@ export function WorkspaceChangesSheet({
   return (
     <SheetPane surface="screen">
       <AppBar
-        title={selectedFolder ? `${selectedFolder.folder.name} changes` : "Workspace changes"}
+        title={
+          selectedFolder
+            ? gt("{folder} changes", { folder: selectedFolder.folder.name })
+            : gt("Workspace changes")
+        }
         onBack={() => navigation.goBack()}
       />
       <ScreenContent surface="screen">
@@ -110,14 +117,14 @@ export function WorkspaceChangesSheet({
           ListEmptyComponent={
             <Text className="p-4 text-foreground-muted">
               {!workspace.thread
-                ? "Loading workspace…"
+                ? gt("Loading workspace…")
                 : loading
-                  ? "Loading changes…"
+                  ? gt("Loading changes…")
                   : !summary.known
-                    ? "Repository status unavailable. Refresh Version Control and try again."
+                    ? gt("Repository status unavailable. Refresh Version Control and try again.")
                     : selectedFolder?.unavailable
                       ? selectedFolder.reason
-                      : "No working tree changes"}
+                      : gt("No working tree changes")}
             </Text>
           }
         />

@@ -41,7 +41,7 @@ it.effect("keeps upstream and fork histories separate on fresh startup and resta
     const base = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     const fork = yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`;
     assert.lengthOf(base, migrationManifest.length);
-    assert.lengthOf(fork, 14);
+    assert.lengthOf(fork, 15);
     assert.deepEqual(
       yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 78 ORDER BY migration_id`,
       migrationManifest
@@ -63,6 +63,73 @@ it.effect("keeps upstream and fork histories separate on fresh startup and resta
     yield* migrate;
     assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, base);
     assert.deepEqual(yield* sql`SELECT * FROM fork_sql_migrations ORDER BY migration_id`, fork);
+  }).pipe(Effect.provide(Database)),
+);
+
+it.effect("preserves saved workspace, task and flow data when upgrading the previous fork", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const timestamp = "2026-11-13T00:00:00.000Z";
+    const workspaceFile = "/fixture/project.code-workspace";
+    const folders = JSON.stringify([{ path: "/fixture" }]);
+    const task = JSON.stringify({ status: "completed" });
+    const nativeAgents = JSON.stringify([{ id: "native-a" }]);
+    yield* runMigrations({ toMigrationInclusive: 88 });
+    yield* runForkMigrations({ toMigrationInclusive: 14 });
+    yield* sql`
+      INSERT INTO projection_projects (
+        project_id, title, workspace_root, scripts_json, created_at, updated_at,
+        workspace_file, workspace_folders_json
+      ) VALUES ('p', 'Project', '/fixture', '[]', ${timestamp}, ${timestamp}, ${workspaceFile}, ${folders})
+    `;
+    yield* sql`
+      INSERT INTO projection_threads (
+        thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+        created_at, updated_at, parent_thread_id, task_json, native_agents_json
+      ) VALUES (
+        't', 'p', 'Task', '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
+        ${timestamp}, ${timestamp}, 'parent', ${task}, ${nativeAgents}
+      )
+    `;
+    yield* sql`
+      INSERT INTO flow_runs (
+        id, version, project_id, flow_id, run_number, flow_title, flow_run_thread_id,
+        definition_snapshot, inputs, workspace, status, created_at, summary_json
+      ) VALUES ('r', 1, 'p', 'flow', 1, 'Flow', 't', '{}', '{}', '{}', 'running', ${timestamp}, '{}')
+    `;
+    yield* sql`
+      INSERT INTO flow_step_runs (
+        id, flow_run_id, step_path, attempt, status, output, created_at, state_json
+      ) VALUES ('s', 'r', 'prompt', 1, 'completed', 'step output', ${timestamp}, '{}')
+    `;
+
+    yield* migrate;
+    yield* migrate;
+
+    assert.deepEqual(
+      yield* sql`SELECT workspace_file, workspace_folders_json, tracked_folders_json FROM projection_projects`,
+      [
+        {
+          workspace_file: workspaceFile,
+          workspace_folders_json: folders,
+          tracked_folders_json: "[]",
+        },
+      ],
+    );
+    assert.deepEqual(
+      yield* sql`SELECT parent_thread_id, task_json, native_agents_json FROM projection_threads`,
+      [{ parent_thread_id: "parent", task_json: task, native_agents_json: nativeAgents }],
+    );
+    assert.deepEqual(
+      yield* sql`SELECT run.id, run.version, step.output FROM flow_runs run JOIN flow_step_runs step ON step.flow_run_id = run.id`,
+      [{ id: "r", version: 1, output: "step output" }],
+    );
+    assert.deepEqual(yield* sql`SELECT run_id FROM workflow_runs`, []);
+    assert.lengthOf(
+      yield* sql`SELECT migration_id FROM effect_sql_migrations`,
+      migrationManifest.length,
+    );
+    assert.lengthOf(yield* sql`SELECT migration_id FROM fork_sql_migrations`, 15);
   }).pipe(Effect.provide(Database)),
 );
 

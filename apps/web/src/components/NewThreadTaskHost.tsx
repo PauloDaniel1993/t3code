@@ -4,6 +4,8 @@
  * The requested parent stream is mounted only while its dialog is open; it need
  * not be the route thread. Header, palette, shortcut, sidebar and map share this host.
  */
+import { msg, T, useGT } from "gt-react";
+import { m } from "../i18n/messages";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -47,6 +49,8 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { NewThreadTaskDialog } from "./NewThreadTaskDialog";
 import {
   getNewThreadTaskUnavailableReason,
+  NEW_THREAD_TASK_NO_ACCESS,
+  NEW_THREAD_TASK_NO_PARENT,
   type NewThreadTaskDraft,
 } from "./NewThreadTaskDialog.logic";
 import {
@@ -67,7 +71,7 @@ import {
 
 function currentParentProblem(threadRef: ScopedThreadRef) {
   if (!readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope))
-    return "This connection cannot change threads.";
+    return m(NEW_THREAD_TASK_NO_ACCESS);
   const environment = appAtomRegistry.get(
     environmentPresentations.presentationAtom(threadRef.environmentId),
   );
@@ -94,8 +98,8 @@ export function NewThreadTaskHost() {
       onOpenNewThreadTaskDialog((next) => {
         if (openRef.current) {
           toastManager.add({
-            title: "A task draft is already open",
-            description: "Finish or close it before opening another task.",
+            title: m(msg("A task draft is already open")),
+            description: m(msg("Finish or close it before opening another task.")),
             type: "info",
           });
           return;
@@ -151,11 +155,13 @@ export function NewThreadTaskHost() {
       if (command !== "thread.newTask" || document.querySelector('[role="dialog"]')) return;
       event.preventDefault();
       event.stopPropagation();
-      const problem = threadRef
-        ? currentParentProblem(threadRef)
-        : "Open an existing thread to request a task.";
+      const problem = threadRef ? currentParentProblem(threadRef) : m(NEW_THREAD_TASK_NO_PARENT);
       if (problem !== null)
-        toastManager.add({ title: "New task unavailable", description: problem, type: "info" });
+        toastManager.add({
+          title: m(msg("New task unavailable")),
+          description: problem,
+          type: "info",
+        });
       else if (threadRef) openNewThreadTaskDialog({ threadRef });
     };
     window.addEventListener("keydown", handler);
@@ -180,6 +186,7 @@ function NewThreadTaskSession({
   readonly request: OpenNewThreadTaskRequest;
   readonly onClose: () => void;
 }) {
+  const gt = useGT();
   const { threadRef } = request;
   const parent = useNewThreadTaskParent(threadRef);
   const status = useAtomValue(environmentThreadDetails.statusAtom(threadRef));
@@ -194,7 +201,7 @@ function NewThreadTaskSession({
     const problem = currentParentProblem(threadRef);
     const thread = appAtomRegistry.get(environmentThreadDetails.threadAtom(threadRef))?.projection
       .thread;
-    if (problem !== null || !thread) return problem ?? "The thread is unavailable.";
+    if (problem !== null || !thread) return problem ?? m(msg("The thread is unavailable."));
     previous.current = prepareNewThreadTaskRequest(
       previous.current,
       { thread, draft, childModelSelection },
@@ -210,10 +217,10 @@ function NewThreadTaskSession({
     });
     if (result._tag === "Success") return null;
     if (isAtomCommandInterrupted(result))
-      return "The request was interrupted. Retry to check the same request.";
+      return m(msg("The request was interrupted. Retry to check the same request."));
     const error = squashAtomCommandFailure(result);
     previous.current = retainNewThreadTaskRequestForRetry(previous.current, error);
-    return error instanceof Error ? error.message : "Could not request a task.";
+    return error instanceof Error ? error.message : m(msg("Could not request a task."));
   }
 
   const parentUnavailable = status === "deleted" || (parent?.deletedAt ?? null) !== null;
@@ -234,12 +241,14 @@ function NewThreadTaskSession({
     >
       <DialogPopup showCloseButton={!parentUnavailable}>
         <DialogHeader>
-          <DialogTitle>New task</DialogTitle>
-          <DialogDescription>{problem ?? "Loading the parent thread…"}</DialogDescription>
+          <DialogTitle>
+            <T>New task</T>
+          </DialogTitle>
+          <DialogDescription>{problem ?? gt("Loading the parent thread…")}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            <T>Cancel</T>
           </Button>
         </DialogFooter>
       </DialogPopup>

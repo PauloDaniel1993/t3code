@@ -112,6 +112,7 @@ const contentTarget = {
 };
 
 it.each([
+  { query: "", expected: "" },
   { query: "src", expected: "src" },
   { query: "a".repeat(256), expected: "a".repeat(256) },
   {
@@ -135,6 +136,22 @@ it.each([
     expect(result.isPending).toBe(false);
   },
 );
+
+it("loads empty composer results within the selected workspace scope", () => {
+  state.session = { authenticated: true, scopes: [AuthFilesystemReadScope] };
+  const scope = {
+    projectId: ProjectId.make("project"),
+    threadId: ThreadId.make("thread"),
+    folderPath: "/api",
+  };
+  const result = useComposerPathSearch({ ...target, scope, query: "" });
+
+  expect(state.searchRequests).toHaveBeenCalledExactlyOnceWith({
+    environmentId: target.environmentId,
+    input: { scope, query: "", limit: 80 },
+  });
+  expect(result.isPending).toBe(false);
+});
 
 it("explains an overlong content query instead of sending it", () => {
   state.session = { authenticated: true, scopes: [AuthFilesystemReadScope] };

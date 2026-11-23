@@ -17,6 +17,7 @@ import type {
   FlowStepRunState,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { Pressable, TextInput, View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -33,6 +34,7 @@ export function FlowRunStatusChip({
   threadRef: ScopedThreadRef;
   projectId: FlowRunSnapshot["summary"]["projectId"];
 }) {
+  const gt = useGT();
   const lookup = useEnvironmentQuery(
     flowEnvironment.runForThread({
       environmentId: threadRef.environmentId,
@@ -57,16 +59,17 @@ export function FlowRunStatusChip({
   return summary ? (
     <Text
       className="rounded bg-secondary px-2 text-xs text-foreground"
-      accessibilityLabel={`Flow run ${summary.status.replaceAll("_", " ")}`}
+      accessibilityLabel={gt("Flow run {status}", { status: summary.status.replaceAll("_", " ") })}
     >
       {summary.status === "waiting_approval"
-        ? "Needs approval"
+        ? gt("Needs approval")
         : summary.status.replaceAll("_", " ")}
     </Text>
   ) : null;
 }
 
 export function FlowRunCard({ threadRef }: { threadRef: ScopedThreadRef }) {
+  const gt = useGT();
   const lookup = useEnvironmentQuery(
     flowEnvironment.runForThread({
       environmentId: threadRef.environmentId,
@@ -84,7 +87,9 @@ export function FlowRunCard({ threadRef }: { threadRef: ScopedThreadRef }) {
   const openThread = useOpenLinkedThread();
   if (!lookup.data) return null;
   if (!detail.data)
-    return <Text className="p-3 text-foreground-muted">{detail.error ?? "Loading flow run…"}</Text>;
+    return (
+      <Text className="p-3 text-foreground-muted">{detail.error ?? gt("Loading flow run…")}</Text>
+    );
   const snapshot = detail.data;
   if (lookup.data.role === "step_thread")
     return (
@@ -98,7 +103,10 @@ export function FlowRunCard({ threadRef }: { threadRef: ScopedThreadRef }) {
         }
       >
         <Text className="p-3 text-primary-text">
-          Part of {snapshot.summary.flowTitle} · run {snapshot.summary.runNumber}
+          {gt("Part of {title} · run {number}", {
+            title: snapshot.summary.flowTitle,
+            number: snapshot.summary.runNumber,
+          })}
         </Text>
       </Pressable>
     );
@@ -112,6 +120,7 @@ function FlowRunDetails({
   environmentId: EnvironmentId;
   snapshot: FlowRunSnapshot;
 }) {
+  const gt = useGT();
   const stop = useAtomCommand(flowEnvironment.stop);
   const resume = useAtomCommand(flowEnvironment.resume);
   const canStop = useAtomValue(flowEnvironment.stop.permissionAtom(environmentId));
@@ -126,13 +135,15 @@ function FlowRunDetails({
   return (
     <View className="m-3 gap-2 rounded-xl border border-border-subtle bg-secondary p-3">
       <Text className="font-t3-medium text-foreground">
-        {summary.flowTitle} · Flow run {summary.runNumber}
+        {gt("{title} · Flow run {number}", { title: summary.flowTitle, number: summary.runNumber })}
       </Text>
       <Text className="text-sm text-foreground-muted">{summary.status.replaceAll("_", " ")}</Text>
       <Text className="text-xs text-foreground-muted">
-        Started: {summary.startedAt ?? "Not started"}
-        {"\n"}Finished: {summary.finishedAt ?? "Not finished"}
-        {"\n"}Base ref: {snapshot.baseRef ?? "Unavailable"}
+        {gt("Started: {time}", { time: summary.startedAt ?? gt("Not started") })}
+        {"\n"}
+        {gt("Finished: {time}", { time: summary.finishedAt ?? gt("Not finished") })}
+        {"\n"}
+        {gt("Base ref: {ref}", { ref: snapshot.baseRef ?? gt("Unavailable") })}
       </Text>
       {summary.error ? (
         <Text className="text-danger-foreground">{summary.error.message}</Text>
@@ -145,7 +156,7 @@ function FlowRunDetails({
       {(summary.status === "cancelled" && summary.startedAt !== null) ||
       ["starting", "running", "waiting_approval"].includes(summary.status) ? (
         <Button
-          label={summary.status === "cancelled" ? "Resume" : "Stop"}
+          label={summary.status === "cancelled" ? gt("Resume") : gt("Stop")}
           disabled={busy || !(summary.status === "cancelled" ? canResume : canStop)}
           onPress={async () => {
             setBusy(true);
@@ -200,6 +211,7 @@ function FlowStepRow({
   now: number;
 }) {
   const openThread = useOpenLinkedThread();
+  const gt = useGT();
   const retry = useAtomCommand(flowEnvironment.retryStep);
   const answer = useAtomCommand(flowEnvironment.answerApproval);
   const canRetry = useAtomValue(flowEnvironment.retryStep.permissionAtom(environmentId));
@@ -239,16 +251,19 @@ function FlowStepRow({
           {label ? ` · ${label}` : ""}
         </Text>
         <Text className="text-xs text-foreground-muted">
-          {step.status.replaceAll("_", " ")} · attempt {step.attempt} ·{" "}
-          {step.startedAt
-            ? formatDuration(
-                Math.max(
-                  0,
-                  (step.finishedAt ? Date.parse(step.finishedAt) : now) -
-                    Date.parse(step.startedAt),
-                ),
-              )
-            : "Not started"}
+          {gt("{status} · attempt {attempt} · {duration}", {
+            status: step.status.replaceAll("_", " "),
+            attempt: step.attempt,
+            duration: step.startedAt
+              ? formatDuration(
+                  Math.max(
+                    0,
+                    (step.finishedAt ? Date.parse(step.finishedAt) : now) -
+                      Date.parse(step.startedAt),
+                  ),
+                )
+              : gt("Not started"),
+          })}
         </Text>
       </Pressable>
       {step.error ? <Text className="text-danger-foreground">{step.error.message}</Text> : null}
@@ -256,7 +271,7 @@ function FlowStepRow({
       ["failed", "interrupted"].includes(step.status) &&
       ["failed", "running"].includes(snapshot.summary.status) ? (
         <Button
-          label="Retry"
+          label={gt("Retry")}
           disabled={busy || !canRetry}
           onPress={async () => {
             setBusy(true);
@@ -272,8 +287,8 @@ function FlowStepRow({
         <>
           <Text className="text-foreground">{approval.prompt}</Text>
           <TextInput
-            accessibilityLabel="Approval comment (optional)"
-            placeholder="Comment (optional)"
+            accessibilityLabel={gt("Approval comment (optional)")}
+            placeholder={gt("Comment (optional)")}
             className="rounded border border-border-subtle p-2 text-foreground"
             value={comment}
             onChangeText={setComment}
@@ -282,12 +297,12 @@ function FlowStepRow({
           />
           <View className="flex-row flex-wrap gap-2">
             <Button
-              label="Approve"
+              label={gt("Approve")}
               disabled={busy || !canAnswer}
               onPress={() => void answerApproval("approve")}
             />
             <Button
-              label="Reject"
+              label={gt("Reject")}
               tone="danger"
               disabled={busy || !canAnswer}
               onPress={() => void answerApproval("reject")}

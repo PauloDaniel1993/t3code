@@ -1,3 +1,5 @@
+import { T } from "gt-react";
+
 export function ProjectWorkspaceLabel({
   project,
 }: {
@@ -14,6 +16,8 @@ export function ProjectWorkspaceLabel({
     (member) => member.workspaceFile != null && (member.folders?.length ?? 0) > 1,
   );
   return multiple ? (
-    <span className="shrink-0 text-3xs text-muted-foreground">Multi-root</span>
+    <span className="shrink-0 text-3xs text-muted-foreground">
+      <T>Multi-root</T>
+    </span>
   ) : null;
 }

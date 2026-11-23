@@ -1,5 +1,11 @@
-import type { ProjectWorkspaceFolder, ServerProvider } from "@t3tools/contracts";
+import type {
+  ProjectTrackedFolder,
+  ProjectWorkspaceFolder,
+  ServerProvider,
+} from "@t3tools/contracts";
 import {
+  isPathWithin,
+  isSamePath,
   resolveThreadWorkspace,
   threadPrimaryPath,
   workspaceAdditionalDirectories,
@@ -12,33 +18,57 @@ export interface WorkspaceFolderScope {
 }
 
 /**
- * A thread's folder scope as a client knows it before a run: a bound thread's
- * snapshot, or for a new thread (`thread: null`) its project's folders. Folders
- * the server last reported unavailable are left out, as the next run's
- * admission would. A shell carries no snapshot, so it counts as one folder.
+ * A client's estimate of the grants needed by a thread. Legacy threads use
+ * their snapshot when available. Plain threads in a project's own checkout
+ * use the project's tracked paths; the server checks their current realpaths
+ * and availability, including for worktrees in task folders.
  */
 export function workspaceFolderScope(input: {
   readonly thread: WorkspaceThread | null | undefined;
   readonly project:
     | {
         readonly workspaceRoot: string;
+        readonly workspaceFile?: string | null | undefined;
+        readonly trackedFolders?: ReadonlyArray<ProjectTrackedFolder> | undefined;
         readonly folders?: ReadonlyArray<ProjectWorkspaceFolder> | null | undefined;
       }
     | null
     | undefined;
 }): WorkspaceFolderScope {
-  const thread = input.thread ?? {
+  const { project } = input;
+  const thread: WorkspaceThread = input.thread ?? {
     worktreePath: null,
-    workspaceFolders: input.project?.folders ?? undefined,
+    workspaceFolders: project?.folders ?? undefined,
   };
-  const primaryPath = threadPrimaryPath(thread, input.project);
+  const primaryPath = threadPrimaryPath(thread, project);
   if (primaryPath === null) return { additionalDirectories: [] };
+
+  if (
+    project?.trackedFolders !== undefined &&
+    project.workspaceFile == null &&
+    project.folders == null &&
+    thread.workspaceFolders === undefined &&
+    thread.workspacePrimaryPath === undefined &&
+    thread.worktreePath === null
+  ) {
+    const additionalDirectories: string[] = [];
+    for (const { path } of project.trackedFolders) {
+      if (
+        !isPathWithin(primaryPath, path) &&
+        !additionalDirectories.some((directory) => isSamePath(directory, path))
+      ) {
+        additionalDirectories.push(path);
+      }
+    }
+    return { additionalDirectories };
+  }
+
   return {
     additionalDirectories: workspaceAdditionalDirectories(
       resolveThreadWorkspace({
         thread,
-        project: input.project ?? { workspaceRoot: primaryPath },
-        unavailableFolderPaths: input.project?.folders?.flatMap((folder) =>
+        project: project ?? { workspaceRoot: primaryPath },
+        unavailableFolderPaths: project?.folders?.flatMap((folder) =>
           folder.availability === "unavailable" && folder.path !== undefined ? [folder.path] : [],
         ),
       }),

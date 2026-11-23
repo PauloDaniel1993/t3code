@@ -1,3 +1,4 @@
+import { T, useGT } from "gt-react";
 import type { EditorId, EnvironmentId, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import type { WorkspaceThread } from "@t3tools/shared/workspaceFolders";
 import { useState } from "react";
@@ -31,19 +32,23 @@ export function ThreadWorkspaceFolders(props: {
       <WorkspaceFolderGroups {...props} rows={rows} />
       {rows[0]?.unavailable ? (
         <p className="mx-2 my-2 rounded-lg border border-warning/30 p-2 text-2xs text-warning">
-          The primary folder is unavailable. This thread cannot start a turn until it is available
-          again.
+          <T>
+            The primary folder is unavailable. This thread cannot start a turn until it is available
+            again.
+          </T>
         </p>
       ) : null}
       {props.thread && workspaceSnapshotChanged(props.project, props.thread) ? (
         <p className="px-2 py-1 text-2xs text-muted-foreground">
-          This thread keeps the folders it started with. Start a new thread to use the updated
-          workspace.
+          <T>
+            This thread keeps the folders it started with. Start a new thread to use the updated
+            workspace.
+          </T>
         </p>
       ) : null}
       {workspaceAvailabilityPending(rows, props.unavailableFolderPaths) ? (
         <p className="px-2 py-1 text-2xs text-warning">
-          Folder availability changed; applies on the next turn
+          <T>Folder availability changed; applies on the next turn</T>
         </p>
       ) : null}
       {props.project.workspaceFile &&
@@ -66,6 +71,7 @@ function WorkspaceFileRecovery({
   environmentId: EnvironmentId;
   project: WorkspaceFoldersProject;
 }) {
+  const gt = useGT();
   const update = useAtomCommand(projectEnvironment.update, "update workspace file");
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<"relink" | "unlink" | null>(null);
@@ -89,7 +95,7 @@ function WorkspaceFileRecovery({
   return (
     <div className="mx-2 my-2 rounded-lg border border-warning/30 p-2 text-2xs">
       <p className="font-medium text-warning">
-        Workspace file {project.workspaceFileStatus?.state}
+        {gt("Workspace file {state}", { state: project.workspaceFileStatus?.state ?? "" })}
       </p>
       <p className="mt-1 text-muted-foreground">
         {project.workspaceFileStatus?.diagnostics[0]?.message}
@@ -101,13 +107,13 @@ function WorkspaceFileRecovery({
             if (project.workspaceFile) void mutate(project.workspaceFile);
           }}
         >
-          Refresh
+          <T>Refresh</T>
         </InlineButton>
         <InlineButton disabled={busy} onClick={() => setMode("relink")}>
-          Relink…
+          <T>Relink…</T>
         </InlineButton>
         <InlineButton disabled={busy} onClick={() => setMode("unlink")}>
-          Unlink
+          <T>Unlink</T>
         </InlineButton>
       </div>
       {mode === "relink" ? (
@@ -119,20 +125,20 @@ function WorkspaceFileRecovery({
           }}
         >
           <Input
-            aria-label="Workspace file path on this environment"
+            aria-label={gt("Workspace file path on this environment")}
             value={path}
             disabled={busy}
             onChange={(event) => setPath(event.target.value)}
           />
           <p className="text-muted-foreground">
-            Enter the workspace file path on this environment.
+            <T>Enter the workspace file path on this environment.</T>
           </p>
           <div className="flex gap-2">
             <Button size="xs" type="submit" disabled={busy || !path.trim()}>
-              Relink workspace file
+              <T>Relink workspace file</T>
             </Button>
             <Button size="xs" variant="ghost" disabled={busy} onClick={() => setMode(null)}>
-              Cancel
+              <T>Cancel</T>
             </Button>
           </div>
         </form>
@@ -140,8 +146,10 @@ function WorkspaceFileRecovery({
       {mode === "unlink" ? (
         <div className="mt-2 flex flex-col gap-2">
           <p>
-            Future threads use only the primary folder. Existing threads keep their folders, and
-            history is kept.
+            <T>
+              Future threads use only the primary folder. Existing threads keep their folders, and
+              history is kept.
+            </T>
           </p>
           <div className="flex gap-2">
             <Button
@@ -150,10 +158,10 @@ function WorkspaceFileRecovery({
               disabled={busy}
               onClick={() => void mutate(null)}
             >
-              Unlink workspace file
+              <T>Unlink workspace file</T>
             </Button>
             <Button size="xs" variant="ghost" disabled={busy} onClick={() => setMode(null)}>
-              Cancel
+              <T>Cancel</T>
             </Button>
           </div>
         </div>

@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import { runtimeWorkspaceExtraRoots } from "@t3tools/provider-core/server/ProviderAdapter";
 import type { RuntimeMode } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import * as NodeFS from "node:fs";
@@ -10,6 +11,7 @@ export interface AcpRuntimePolicy {
   readonly additionalDirectories?: ReadonlyArray<string>;
   readonly approvalPolicy?: unknown;
   readonly sandboxPolicy?: unknown;
+  readonly workspace?: { readonly extraRoots: ReadonlyArray<string> } | undefined;
 }
 
 export type AcpPermissionDisposition = "allow" | "ask" | "deny";
@@ -112,11 +114,11 @@ function acpWorkspaceWriteAllowsMutation(
     const canonicalCwd = acpCanonicalPathForContainment(cwd);
     if (canonicalCwd !== undefined) roots.push(canonicalCwd);
   }
-  const writableRoots = sandboxPolicy.writableRoots;
-  for (const writableRoot of [
-    ...(runtimePolicy.additionalDirectories ?? []),
-    ...(Array.isArray(writableRoots) ? writableRoots : []),
-  ]) {
+  const writableRoots = [
+    ...(Array.isArray(sandboxPolicy.writableRoots) ? sandboxPolicy.writableRoots : []),
+    ...runtimeWorkspaceExtraRoots(runtimePolicy),
+  ];
+  for (const writableRoot of writableRoots) {
     if (typeof writableRoot !== "string") continue;
     const resolved = resolveAcpPermissionPath(writableRoot, cwd);
     if (resolved === undefined) continue;

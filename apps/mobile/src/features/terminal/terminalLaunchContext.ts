@@ -72,12 +72,14 @@ export function resolveTerminalOpenLocation(input: {
   readonly cwd: string;
   readonly worktreePath: string | null;
 } {
-  const preferredThreadWorktreePath = input.thread
-    ? input.thread.worktreePath
-    : resolvePreferredThreadWorktreePath({
-        threadShellWorktreePath: input.threadShellWorktreePath,
-        threadDetailWorktreePath: input.threadDetailWorktreePath,
-      });
+  const preferredThreadWorktreePath =
+    input.thread?.workspaceFolders !== undefined
+      ? input.thread.worktreePath
+      : resolvePreferredThreadWorktreePath({
+          threadShellWorktreePath: input.threadShellWorktreePath,
+          threadDetailWorktreePath:
+            input.threadDetailWorktreePath ?? input.thread?.worktreePath ?? null,
+        });
 
   const existing = input.terminalLocation ?? input.activeSessionLocation;
   if (existing) return { cwd: existing.cwd, worktreePath: existing.worktreePath };
