@@ -203,6 +203,19 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
 
   return Effect.fn("restoreMissingWorktree")(function* (thread: WorktreeThread) {
     const { worktreePath, branch } = thread;
+    if (worktreePath === null && thread.worktrees === undefined) return;
+    const taskFolder =
+      worktreePath === null
+        ? null
+        : yield* taskFolders
+            .find(worktreePath)
+            .pipe(
+              Effect.mapError(
+                (cause) => new WorktreeRecreateError({ worktreePath, branch: branch ?? "", cause }),
+              ),
+            );
+    // A thread can use another project's checkout, but only its owner can recover it.
+    if (taskFolder !== null && taskFolder.projectId !== thread.projectId) return;
     if (thread.worktrees !== undefined) {
       yield* recreateManagedWorktrees(thread, recreateMissingMembers).pipe(
         Effect.mapError(
@@ -219,24 +232,7 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
     if (worktreePath === null) return;
     if (branch === null) return yield* recreateScratchFolder(thread, worktreePath);
     // A task folder can miss one repository's worktree while the thread's own folder is there.
-    const taskFolder =
-      thread.workspaceFolders !== undefined
-        ? null
-        : yield* taskFolders
-            .find(worktreePath)
-            .pipe(
-              Effect.mapError(
-                (cause) => new WorktreeRecreateError({ worktreePath, branch, cause }),
-              ),
-            );
-    if (taskFolder !== null) {
-      if (taskFolder.projectId !== thread.projectId) {
-        return yield* new WorktreeRecreateError({
-          worktreePath,
-          branch,
-          cause: "The checkout belongs to another task folder.",
-        });
-      }
+    if (taskFolder !== null && thread.workspaceFolders === undefined) {
       return yield* taskFolders
         .restore({
           taskFolder,

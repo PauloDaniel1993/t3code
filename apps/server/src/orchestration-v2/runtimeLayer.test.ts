@@ -74,6 +74,8 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as TaskFolderStore from "../workspace/TaskFolderStore.ts";
+import { SHARED_WORKSPACE_RESTORE_MESSAGE } from "./CheckpointRestoreSafety.ts";
 import { ROLLBACK_FAILED_MESSAGE } from "./CheckpointRollbackService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -358,6 +360,7 @@ const layerTest = Layer.mergeAll(
   ProjectStore.layer,
   ProjectionStore.layer,
   EffectOutbox.layer,
+  TaskFolderStore.layer,
   ThreadCommandExecutor.layer,
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
@@ -1976,6 +1979,45 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         });
 
         if (status === "ready") {
+          const taskFolders = yield* TaskFolderStore.TaskFolderStore;
+          const worktreePath = process.cwd();
+          yield* taskFolders.put({
+            root: worktreePath,
+            projectId: ProjectId.make("runtime-rollback-original-owner"),
+            projectRoot: worktreePath,
+            anchor: worktreePath,
+            projectPath: worktreePath,
+            projectIsWorktree: true,
+            repositories: [],
+          });
+          const foreignCommandId = CommandId.make("runtime-rollback-foreign-task-folder");
+          const foreign = yield* orchestrator
+            .dispatch({
+              type: "checkpoint.rollback",
+              commandId: foreignCommandId,
+              threadId,
+              checkpointId,
+              scopeId: scope.id,
+            })
+            .pipe(Effect.flip);
+          assert.equal(foreign.cause, SHARED_WORKSPACE_RESTORE_MESSAGE);
+          assert.equal(yield* orchestrator.getThreadEventSequence(threadId), previousSequence);
+          assert.deepEqual(yield* outbox.listByCommandId(foreignCommandId), []);
+
+          const foreignConversation = yield* orchestrator.dispatch({
+            type: "checkpoint.rollback",
+            commandId: CommandId.make("runtime-rollback-foreign-conversation"),
+            threadId,
+            checkpointId,
+            scopeId: scope.id,
+            restoreFiles: false,
+          });
+          assert.deepEqual(
+            foreignConversation.storedEvents.map((stored) => stored.event.type),
+            ["thread.metadata-updated", "checkpoint.rollback-requested"],
+          );
+
+          yield* taskFolders.remove(worktreePath);
           const accepted = yield* rollback;
           assert.deepEqual(
             accepted.storedEvents.map((stored) => stored.event.type),

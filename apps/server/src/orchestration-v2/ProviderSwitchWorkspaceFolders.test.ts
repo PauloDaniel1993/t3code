@@ -45,9 +45,25 @@ const adapterFor = (instanceId: ProviderInstanceId) =>
 const runtimePolicyLayer = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(
     Layer.mergeAll(
-      Layer.mock(WorkspaceFolders.WorkspaceFolders)({
-        forThread: () => Effect.succeed({ folders: [], extraRoots: [] }),
-      }),
+      Layer.unwrap(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return Layer.mock(WorkspaceFolders.WorkspaceFolders)({
+            forThread: ({ worktreePath }) =>
+              Effect.gen(function* () {
+                if (worktreePath === null) return { folders: [], extraRoots: [] };
+                const lib = worktreePath + "-lib";
+                if (!(yield* fs.exists(lib).pipe(Effect.orElseSucceed(() => false)))) {
+                  return { folders: [], extraRoots: [] };
+                }
+                return {
+                  folders: [{ name: "lib", path: lib, isGitRepository: true }],
+                  extraRoots: [lib],
+                };
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(NodeServices.layer)),
       Layer.mock(ProjectStore.ProjectStoreV2)({
         get: () =>
           Effect.succeedSome({
@@ -90,58 +106,65 @@ const selection = (instanceId: ProviderInstanceId): ModelSelection => ({
 });
 
 it.layer(testLayer)("provider switches on a thread spanning workspace folders", (it) => {
-  it.effect("move only to a provider that reaches every folder it can reach now", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const projections = yield* ProjectionStore.ProjectionStoreV2;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-switch-folders-" });
-      const app = path.join(root, "app");
-      const lib = path.join(root, "lib");
-      yield* fs.makeDirectory(app);
-      yield* fs.makeDirectory(lib);
-      const threadId = ThreadId.make("thread:switch-folders");
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make("create:switch-folders"),
-        threadId,
-        projectId: ProjectId.make("project:switch-folders"),
-        title: "Switch",
-        modelSelection: selection(supported),
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
-        workspaceFolders: [
-          { path: app, name: "app", label: "app", checkoutRoot: null },
-          { path: lib, name: "lib", label: "lib", checkoutRoot: null },
-        ],
-        createdBy: "user",
-        creationSource: "web",
-      });
-      const switchTo = (name: string, instanceId: ProviderInstanceId) =>
-        orchestrator.dispatch({
-          type: "thread.model-selection.set",
-          commandId: CommandId.make(`switch:${name}`),
+  it.effect.each(["legacy", "tracked"] as const)(
+    "moves only to a provider that reaches all $0 folders",
+    (kind) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-switch-folders-" });
+        const app = path.join(root, "app");
+        const lib = kind === "tracked" ? app + "-lib" : path.join(root, "lib");
+        yield* fs.makeDirectory(app);
+        yield* fs.makeDirectory(lib);
+        const threadId = ThreadId.make("thread:switch-folders:" + kind);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("create:switch-folders:" + kind),
           threadId,
-          modelSelection: selection(instanceId),
+          projectId: ProjectId.make("project:switch-folders"),
+          title: "Switch",
+          modelSelection: selection(unverified),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: kind === "tracked" ? app : null,
+          ...(kind === "legacy"
+            ? {
+                workspaceFolders: [
+                  { path: app, name: "app", label: "app", checkoutRoot: null },
+                  { path: lib, name: "lib", label: "lib", checkoutRoot: null },
+                ],
+              }
+            : {}),
+          createdBy: "user",
+          creationSource: "web",
         });
-      const currentInstance = projections
-        .getThreadShell(threadId)
-        .pipe(Effect.map((shell) => shell?.modelSelection.instanceId));
+        const switchTo = (name: string, instanceId: ProviderInstanceId) =>
+          orchestrator.dispatch({
+            type: "thread.model-selection.set",
+            commandId: CommandId.make(`switch:${kind}:${name}`),
+            threadId,
+            modelSelection: selection(instanceId),
+          });
+        const currentInstance = projections
+          .getThreadShell(threadId)
+          .pipe(Effect.map((shell) => shell?.modelSelection.instanceId));
 
-      const refused = yield* switchTo("unverified", unverified).pipe(Effect.flip);
-      assert.equal(
-        userFacingDispatchErrorMessage(refused),
-        PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
-      );
-      assert.equal(yield* currentInstance, supported);
+        yield* switchTo("supported", supported);
+        const refused = yield* switchTo("unverified", unverified).pipe(Effect.flip);
+        assert.equal(
+          userFacingDispatchErrorMessage(refused),
+          PROVIDER_WORKSPACE_FOLDER_ACCESS_MESSAGE,
+        );
+        assert.equal(yield* currentInstance, supported);
 
-      // Once the other folder is gone, the scope is one folder and any provider runs it.
-      yield* fs.remove(lib, { recursive: true });
-      yield* switchTo("one-folder", unverified);
-      assert.equal(yield* currentInstance, unverified);
-    }),
+        // Once the other folder is gone, the scope is one folder and any provider runs it.
+        yield* fs.remove(lib, { recursive: true });
+        yield* switchTo("one-folder", unverified);
+        assert.equal(yield* currentInstance, unverified);
+      }),
   );
 });

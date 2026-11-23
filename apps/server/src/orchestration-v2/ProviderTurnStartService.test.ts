@@ -51,6 +51,7 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ServerConfig from "../config.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as WorkspaceFolderResolver from "../project/WorkspaceFolderResolver.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
 import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { makeCheckoutLeaseKeys } from "./checkoutLease.ts";
@@ -99,13 +100,16 @@ import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
-function runtimePolicyLayer(workspaceFolderAccess?: ProviderWorkspaceFolderAccess) {
+function runtimePolicyLayer(
+  workspaceFolderAccess?: ProviderWorkspaceFolderAccess,
+  workspace: WorkspaceFolders.ThreadWorkspace = { folders: [], extraRoots: [] },
+) {
   return RuntimePolicy.layerFromProjectStore.pipe(
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(WorkspaceFolders.WorkspaceFolders)({
-          forThread: () => Effect.succeed({ folders: [], extraRoots: [] }),
+          forThread: () => Effect.succeed(workspace),
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
           get: () =>
@@ -550,6 +554,8 @@ function makeLocalCommandHarness(input: {
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
   readonly recreateFailure?: unknown;
+  readonly taskFolders?: Layer.Layer<TaskFolders.TaskFolders>;
+  readonly trackedWorkspace?: WorkspaceFolders.ThreadWorkspace;
   readonly worktrees?: OrchestrationV2ThreadProjection["thread"]["worktrees"];
   readonly workspaceFolders?: OrchestrationV2ThreadProjection["thread"]["workspaceFolders"];
   readonly unavailableFolderPaths?: ReadonlyArray<string>;
@@ -1477,7 +1483,7 @@ function makeLocalCommandHarness(input: {
         IdAllocator.layer,
         Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
         layerWorktreeLocation(input.worktreesDir, input.path),
-        layerNoTaskFolders,
+        input.taskFolders ?? layerNoTaskFolders,
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -1538,12 +1544,12 @@ function makeLocalCommandHarness(input: {
           startRootRun,
           forkBaseline: () => Effect.succeed(Effect.void),
         }),
-        input.workspaceFolders === undefined
+        input.workspaceFolders === undefined && input.trackedWorkspace === undefined
           ? Layer.mock(RuntimePolicy.RuntimePolicyV2)({
               resolve: resolveRuntimePolicy,
               requireWorkspaceFolderAccess: () => Effect.void,
             })
-          : runtimePolicyLayer(input.workspaceFolderAccess),
+          : runtimePolicyLayer(input.workspaceFolderAccess, input.trackedWorkspace),
         Layer.succeed(ProviderUsageAnalytics.ProviderTurnAnalytics, {
           runStarted: () => Effect.void,
           turnCompleted: () => Effect.void,
@@ -3496,6 +3502,39 @@ effectIt.effect("checks the run's status without loading the thread's history", 
   }),
 );
 
+effectIt.effect.each([{ present: true }, { present: false }])(
+  "does not recreate a task folder member owned by another project, present=$present",
+  ({ present }) =>
+    Effect.gen(function* () {
+      const worktreePath = managedWorktreesDir + "/project/foreign";
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        worktreePath,
+        openFailure: "provider offline",
+        fileSystem: FileSystem.makeNoop({ exists: () => Effect.succeed(present) }),
+        taskFolders: Layer.mock(TaskFolders.TaskFolders)({
+          find: () =>
+            Effect.succeed({
+              root: worktreePath,
+              projectId: ProjectId.make("project:original-owner"),
+              projectRoot: "/work/original",
+              projectPath: worktreePath,
+              anchor: "/work/original",
+              projectIsWorktree: true,
+              repositories: [],
+            }),
+        }),
+      });
+
+      yield* harness.start;
+
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.open).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimePolicy: expect.objectContaining({ cwd: worktreePath }) }),
+      );
+    }),
+);
+
 effectIt.effect("fails the run instead of replacing a native thread another client holds", () =>
   Effect.gen(function* () {
     const detail = "This conversation is open in another Codex client.";
@@ -3692,31 +3731,42 @@ const workspaceFolders = [
   { path: "/work/lib", name: "lib", label: "lib", checkoutRoot: "/work/lib" },
 ];
 
-effectIt.effect("settles a run before opening a provider that cannot reach its folders", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      workspaceFolders,
-      workspaceFolderAccess: "unverified",
-    });
+effectIt.effect.each(["legacy", "structured"] as const)(
+  "settles a run before opening a provider that cannot reach its $0 folders",
+  (kind) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        ...(kind === "legacy"
+          ? { workspaceFolders }
+          : {
+              trackedWorkspace: {
+                folders: [{ path: "/work/lib", name: "lib", isGitRepository: true }],
+                extraRoots: ["/work/lib"],
+              },
+            }),
+        workspaceFolderAccess: "unverified",
+      });
 
-    yield* harness.startWithRetry;
+      yield* harness.startWithRetry;
 
-    expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    const projection = harness.projection();
-    const run = projection.runs.at(-1)!;
-    expect(run.status).toBe("failed");
-    expect(projection.attempts.find(({ id }) => id === run.activeAttemptId)?.status).toBe("failed");
-    expect(projection.nodes.find(({ id }) => id === run.rootNodeId)?.status).toBe("failed");
-    expect(projection.turnItems.at(-1)).toMatchObject({
-      runId: run.id,
-      type: "error",
-      title: "Provider can't reach every workspace folder",
-      failure: { class: "validation_error", retryable: false },
-    });
-    expect(harness.settledRuns).toEqual(["failed"]);
-  }),
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      const projection = harness.projection();
+      const run = projection.runs.at(-1)!;
+      expect(run.status).toBe("failed");
+      expect(projection.attempts.find(({ id }) => id === run.activeAttemptId)?.status).toBe(
+        "failed",
+      );
+      expect(projection.nodes.find(({ id }) => id === run.rootNodeId)?.status).toBe("failed");
+      expect(projection.turnItems.at(-1)).toMatchObject({
+        runId: run.id,
+        type: "error",
+        title: "Provider can't reach every workspace folder",
+        failure: { class: "validation_error", retryable: false },
+      });
+      expect(harness.settledRuns).toEqual(["failed"]);
+    }),
 );
 
 effectIt.effect("opens a supported provider with the run's other folders", () =>

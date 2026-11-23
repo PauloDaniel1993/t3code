@@ -216,14 +216,16 @@ export const layer: Layer.Layer<
       const restoreFiles = input.restoreFiles !== false;
       const { worktreePath, branch } = context.thread;
       const recordedTaskFolder =
-        worktreePath === null ||
+        worktreePath === null ? null : yield* taskFolders.find(worktreePath);
+      const foreignTaskFolder =
+        recordedTaskFolder !== null && recordedTaskFolder.projectId !== context.thread.projectId;
+      const taskFolder =
+        foreignTaskFolder ||
         context.thread.worktrees !== undefined ||
         context.thread.workspaceFolders !== undefined ||
         checkpoint?.parts !== undefined
           ? null
-          : yield* taskFolders.find(worktreePath);
-      const taskFolder =
-        recordedTaskFolder?.projectId === context.thread.projectId ? recordedTaskFolder : null;
+          : recordedTaskFolder;
       // A linked project folder is not a repository: it has no snapshot, by design.
       const linkedProjectFolder = taskFolder !== null && !taskFolder.projectIsWorktree;
       const invalidTarget = () =>
@@ -234,7 +236,6 @@ export const layer: Layer.Layer<
           checkpointId: input.checkpointId,
         });
       if (
-        (recordedTaskFolder !== null && taskFolder === null) ||
         providerThread === undefined ||
         providerThread.providerSessionId === null ||
         checkpoint === undefined ||
@@ -261,6 +262,16 @@ export const layer: Layer.Layer<
           threadId: input.threadId,
           providerThreadId: input.providerThreadId,
           checkpointId: input.checkpointId,
+        });
+      }
+
+      if (foreignTaskFolder && restoreFiles) {
+        return yield* new CheckpointRollbackExecutionError({
+          reason: "file-restore-refused",
+          threadId: input.threadId,
+          providerThreadId: input.providerThreadId,
+          checkpointId: input.checkpointId,
+          detail: fileRestoreRefusalMessage({ reason: "shared", folders: [] }),
         });
       }
 
@@ -338,7 +349,7 @@ export const layer: Layer.Layer<
               ),
           });
         }
-      } else {
+      } else if (!foreignTaskFolder) {
         const managedPaths: string[] = [];
         yield* recreateManagedWorktrees(context.thread, (managed) =>
           Effect.sync(() => {
@@ -549,7 +560,13 @@ export const layer: Layer.Layer<
           runtimePolicy:
             folderAccess._tag === "Success"
               ? folderScope
-              : { ...folderScope, additionalDirectories: [] },
+              : {
+                  ...folderScope,
+                  additionalDirectories: [],
+                  ...(folderScope.workspace === undefined
+                    ? {}
+                    : { workspace: { ...folderScope.workspace, extraRoots: [] } }),
+                },
           ...(context.providerSession === undefined
             ? {}
             : { resumeFromSession: context.providerSession }),

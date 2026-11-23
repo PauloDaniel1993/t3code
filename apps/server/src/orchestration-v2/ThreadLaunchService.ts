@@ -16,6 +16,7 @@ import {
   type OrchestrationV2ThreadProjection,
   type ProviderDriverKind,
   type ProviderInteractionMode,
+  type ProviderInstanceId,
   ProjectId,
   type RunId,
   type RuntimeMode,
@@ -150,6 +151,7 @@ type PreparationInput = Pick<
   | "skipSetupScript"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string };
+  readonly taskFolderPlan?: TaskFolders.TaskFolderPlan | null;
 };
 
 export interface ThreadLaunchPreparationInput {
@@ -379,6 +381,49 @@ const make = Effect.gen(function* () {
       .getByCommandId(commandId)
       .pipe(Effect.mapError(mapError(input, "read-receipt", input.threadId)));
 
+  const validateStructuredWorkspace = Effect.fn("ThreadLaunchService.validateStructuredWorkspace")(
+    function* (
+      input: PreparationInput,
+      threadId: ThreadId,
+      providerInstanceId: ProviderInstanceId,
+      worktreePath: string | null,
+    ) {
+      const validateError = mapError(input, "validate-workspace", threadId);
+      const scope = yield* runtimePolicy
+        .resolveWorkspace({
+          thread: { projectId: input.projectId, worktreePath },
+          providerInstanceId,
+        })
+        .pipe(Effect.mapError(validateError));
+      if (scope !== undefined) {
+        yield* runtimePolicy
+          .requireWorkspaceFolderAccess({ threadId, providerInstanceId, scope })
+          .pipe(Effect.mapError(validateError));
+      }
+    },
+  );
+
+  const validateTaskFolderPlan = (
+    input: PreparationInput,
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    plan: TaskFolders.TaskFolderPlan | null,
+  ) =>
+    // Built-in layouts preserve relative paths. A project command may check out a different set.
+    plan === null || plan.usesProjectLayout
+      ? Effect.void
+      : runtimePolicy
+          .requireWorkspaceFolderAccess({
+            threadId,
+            providerInstanceId,
+            scope: {
+              additionalDirectories: plan.repositories
+                .filter((repository) => !isPathWithin(plan.projectRoot, repository.path))
+                .map((repository) => repository.path),
+            },
+          })
+          .pipe(Effect.mapError(mapError(input, "validate-workspace", threadId)));
+
   const validateReusableThread = Effect.fn("ThreadLaunchService.validateReusableThread")(function* (
     input: ThreadLaunchInput,
     threadId: ThreadId,
@@ -401,6 +446,7 @@ const make = Effect.gen(function* () {
         threadId,
       )("Only an empty active thread in the target project can change workspace during launch.");
     }
+    return projection.thread;
   });
 
   const checkWorktreeBase: ThreadLaunchService["Service"]["checkWorktreeBase"] = Effect.fn(
@@ -592,6 +638,7 @@ const make = Effect.gen(function* () {
     let createdWorktreePath: string | null = null;
     let createdBranch: string | null = null;
     let createdTaskFolder: string | null = null;
+    let usedProjectLayout = false;
     let setupTerminalId: string | null = null;
     let runReleased = false;
     // Stop background renames before forgetting worktrees; completed renames record them again.
@@ -687,8 +734,8 @@ const make = Effect.gen(function* () {
         input.workspaceStrategy.type === "existing_worktree"
           ? input.workspaceStrategy.worktreePath
           : null;
-      const { thread } = yield* threads
-        .getThreadRecords(threadId, [])
+      const { thread, runs } = yield* threads
+        .getThreadRecords(threadId, ["runs"], { runIds: runId === null ? [] : [runId] })
         .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       // The set the thread is bound to: one this launch creates, or one it
       // was created to reuse.
@@ -699,6 +746,21 @@ const make = Effect.gen(function* () {
         isSamePath(thread.worktreePath, worktreePath)
           ? { members: thread.worktrees, primaryFolder: thread.workspaceFolders?.[0] }
           : null;
+      const providerInstanceId =
+        runs[0]?.modelSelection.instanceId ?? thread.modelSelection.instanceId;
+      const usesWorkspaceSet =
+        thread.workspaceFolders !== undefined || project.workspaceFile != null;
+      const taskPlan =
+        input.workspaceStrategy.type !== "worktree" || usesWorkspaceSet
+          ? null
+          : input.taskFolderPlan !== undefined
+            ? input.taskFolderPlan
+            : yield* taskFolders
+                .plan({ projectId: project.id, repositories: input.workspaceStrategy.repositories })
+                .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+      if (input.taskFolderPlan === undefined) {
+        yield* validateTaskFolderPlan(input, threadId, providerInstanceId, taskPlan);
+      }
       // The agent waits for this LLM call; start it now so it overlaps fetch, checkout and setup.
       const branchName =
         reused === undefined &&
@@ -713,13 +775,6 @@ const make = Effect.gen(function* () {
           : null;
       if (branchName !== null) stopBranchName = Fiber.interrupt(branchName);
       if (input.workspaceStrategy.type === "worktree") {
-        const usesWorkspaceSet =
-          thread.workspaceFolders !== undefined || project.workspaceFile != null;
-        const taskPlan = usesWorkspaceSet
-          ? null
-          : yield* taskFolders
-              .plan({ projectId: project.id, repositories: input.workspaceStrategy.repositories })
-              .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
         const projectIsRepository = taskPlan === null || taskPlan.projectIsRepository;
         if (runId !== null) {
           yield* threads
@@ -942,10 +997,10 @@ const make = Effect.gen(function* () {
                       }),
                   })
                   .pipe(
-                    Effect.map((created) => ({
-                      path: created.taskFolder.projectPath,
-                      refName: created.branch,
-                    })),
+                    Effect.map((created) => {
+                      usedProjectLayout = created.laidOutByProject;
+                      return { path: created.taskFolder.projectPath, refName: created.branch };
+                    }),
                     Effect.mapError(mapError(input, "provision-worktree", threadId)),
                   );
           worktreePath = worktree.path;
@@ -964,6 +1019,10 @@ const make = Effect.gen(function* () {
           }));
           yield* setupTracker.stageStatus(threadId, "checkout", "done");
         }
+      }
+
+      if (!usesWorkspaceSet && (createdTaskFolder !== null || reused !== undefined)) {
+        yield* validateStructuredWorkspace(input, threadId, providerInstanceId, worktreePath);
       }
 
       const boundSet = set;
@@ -1231,12 +1290,13 @@ const make = Effect.gen(function* () {
       Effect.onError((cause) =>
         Effect.gen(function* () {
           const cancelled = Cause.hasInterruptsOnly(cause);
+          const failure = Cause.squash(cause);
           if (renameFiber !== null) yield* Fiber.interrupt(renameFiber);
           yield* stopBranchName;
           yield* setupTracker.finish(
             threadId,
             cancelled ? "cancelled" : "failed",
-            cancelled ? null : failureDetail(Cause.squash(cause)),
+            cancelled ? null : failureDetail(failure),
           );
           if (cancelled && setupTerminalId)
             yield* terminals
@@ -1297,11 +1357,16 @@ const make = Effect.gen(function* () {
           if (abandonedSet !== null) {
             yield* worktreeSets.discard(abandonedSet);
           } else if (createdTaskFolder !== null) {
+            // A custom layout may have checked out a branch that already existed.
+            const preserveBranch =
+              usedProjectLayout &&
+              isThreadLaunchError(failure) &&
+              failure.operation === "validate-workspace";
             const { kept } = yield* taskFolders.remove({
               root: createdTaskFolder,
               force: true,
               forget: true,
-              deleteBranch: createdBranch ?? undefined,
+              deleteBranch: preserveBranch ? undefined : (createdBranch ?? undefined),
             });
             if (kept.length > 0) {
               return yield* new TaskFolderError({
@@ -1548,9 +1613,10 @@ const make = Effect.gen(function* () {
           }
         }
 
-        if (input.reuseExistingThread === true && Option.isNone(launchReceipt)) {
-          yield* validateReusableThread(input, candidateThreadId);
-        }
+        const reusableThread =
+          input.reuseExistingThread === true && Option.isNone(launchReceipt)
+            ? yield* validateReusableThread(input, candidateThreadId)
+            : undefined;
 
         const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
@@ -1634,6 +1700,36 @@ const make = Effect.gen(function* () {
               },
             })
             .pipe(Effect.mapError(mapError(input, "validate-workspace", candidateThreadId)));
+        }
+        let taskFolderPlan: TaskFolders.TaskFolderPlan | null | undefined;
+        if (
+          Option.isNone(launchReceipt) &&
+          workspaceFolders === undefined &&
+          reusableThread?.workspaceFolders === undefined &&
+          project.workspaceFile == null
+        ) {
+          const providerInstanceId = input.modelSelection.instanceId;
+          if (workspaceStrategy.type === "worktree") {
+            // A planning failure still belongs to workspace preparation for the durable run.
+            taskFolderPlan = yield* taskFolders
+              .plan({ projectId: project.id, repositories: workspaceStrategy.repositories })
+              .pipe(Effect.orElseSucceed(() => undefined));
+            if (taskFolderPlan !== undefined) {
+              yield* validateTaskFolderPlan(
+                input,
+                candidateThreadId,
+                providerInstanceId,
+                taskFolderPlan,
+              );
+            }
+          } else {
+            yield* validateStructuredWorkspace(
+              input,
+              candidateThreadId,
+              providerInstanceId,
+              initialWorktreePath,
+            );
+          }
         }
         const initialBranch =
           reused?.worktrees[0]?.branch ??
@@ -1800,7 +1896,13 @@ const make = Effect.gen(function* () {
                       branch: workspaceStrategy.branch,
                     }
                   : workspaceStrategy;
-            const preparation = { ...input, workspaceStrategy: preparationStrategy };
+            const preparation = {
+              ...input,
+              workspaceStrategy: preparationStrategy,
+              ...(taskFolderPlan === undefined || claimed.replayed === true
+                ? {}
+                : { taskFolderPlan }),
+            };
             if (input.awaitPreparation === true) {
               yield* prepareInBackground(preparation, threadId, runId).pipe(
                 Effect.interruptible,

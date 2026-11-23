@@ -62,6 +62,7 @@ export interface TaskFolderPlan {
   readonly repositories: ReadonlyArray<ProjectTrackedFolder>;
   /** Every tracked Git folder. None is linked into a plain project folder: a link is the original. */
   readonly trackedRepositories: ReadonlyArray<string>;
+  readonly usesProjectLayout: boolean;
 }
 
 interface TaskFolderRemoval {
@@ -425,13 +426,10 @@ const make = Effect.gen(function* () {
     const tracked = classified.filter(
       (folder) => folder.git && !folder.submodule && folder.path !== projectRoot,
     );
+    const usesProjectLayout = (yield* worktreeLayout(projectRoot)) !== null;
     // A project that lays its own thread folder out gets one even with nothing else to check out.
     // An explicit choice still goes through the checks below, so it is refused, not dropped.
-    if (
-      tracked.length === 0 &&
-      (input.repositories ?? []).length === 0 &&
-      (yield* worktreeLayout(projectRoot)) === null
-    )
+    if (tracked.length === 0 && (input.repositories ?? []).length === 0 && !usesProjectLayout)
       return null;
     // A repository on another Windows drive has no place in the folder; only choosing it fails.
     const { anchor, unreachable } = layoutAnchor(
@@ -483,6 +481,7 @@ const make = Effect.gen(function* () {
       anchor,
       repositories: repositories.map(({ name, path: folderPath }) => ({ name, path: folderPath })),
       trackedRepositories: reachable.map((folder) => folder.path),
+      usesProjectLayout,
     };
   });
 

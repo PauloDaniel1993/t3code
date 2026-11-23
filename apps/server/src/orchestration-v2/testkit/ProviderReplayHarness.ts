@@ -342,6 +342,8 @@ export function layerWithRegistry<Error>(
               cwd: input.thread.worktreePath ?? workspace,
             }),
           ),
+        resolveWorkspace: ({ thread }) =>
+          Effect.succeed({ cwd: thread.worktreePath ?? workspace, additionalDirectories: [] }),
         requireWorkspaceFolderAccess: () => Effect.void,
       };
     }),

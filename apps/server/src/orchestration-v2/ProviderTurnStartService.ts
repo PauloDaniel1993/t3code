@@ -47,7 +47,7 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeRestoreMissingWorktree } from "../workspace/restoreMissingWorktree.ts";
 import { makeCheckoutLeaseKeys } from "./checkoutLease.ts";
-import type * as TaskFolders from "../workspace/TaskFolders.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
@@ -313,6 +313,7 @@ export const layer: Layer.Layer<
     const { keys: checkoutLeaseKeys } = yield* makeCheckoutLeaseKeys;
     const recreateManagedWorktrees = yield* makeManagedWorktreeRecreation;
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
+    const taskFolders = yield* TaskFolders.TaskFolders;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
@@ -851,7 +852,13 @@ export const layer: Layer.Layer<
         projection.thread.worktrees === undefined
           ? yield* Effect.result(restoreMissingWorktree(projection.thread))
           : yield* Effect.result(
-              recreateManagedWorktrees(projection.thread, worktreeSets.recreateMissing),
+              Effect.gen(function* () {
+                const { worktreePath, projectId } = projection.thread;
+                const taskFolder =
+                  worktreePath === null ? null : yield* taskFolders.find(worktreePath);
+                if (taskFolder !== null && taskFolder.projectId !== projectId) return;
+                yield* recreateManagedWorktrees(projection.thread, worktreeSets.recreateMissing);
+              }),
             );
       if (recreateResult._tag === "Failure") {
         if (input.willRetry === true) return yield* recreateResult.failure;

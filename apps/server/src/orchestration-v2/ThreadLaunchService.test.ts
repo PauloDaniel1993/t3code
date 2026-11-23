@@ -168,6 +168,7 @@ interface HarnessOptions {
   readonly snapshotWorkspaceFolders?: ProjectService.ProjectService["Service"]["snapshotWorkspaceFolders"];
   /** What every provider instance's snapshot says of its workspace-folder access. */
   readonly workspaceFolderAccess?: ProviderWorkspaceFolderAccess;
+  readonly trackedWorkspace?: WorkspaceFolders.ThreadWorkspace;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
   readonly dispatch?: (
     command: Parameters<ThreadManagement.ThreadManagementService["Service"]["dispatch"]>[0],
@@ -370,7 +371,10 @@ function makeHarness(options: HarnessOptions = {}) {
       Layer.mergeAll(
         layerProjectedProjects,
         layerServerSettings,
-        Layer.mock(WorkspaceFolders.WorkspaceFolders)({}),
+        Layer.mock(WorkspaceFolders.WorkspaceFolders)({
+          forThread: () =>
+            Effect.succeed(options.trackedWorkspace ?? { folders: [], extraRoots: [] }),
+        }),
         Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
           getInstance: () =>
             Effect.succeed({
@@ -1517,11 +1521,12 @@ it.effect.each(["stable", "upstream/release"])(
   (baseRef) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const git = yield* GitVcsDriver.GitVcsDriver;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "launch-remote-base-" });
-      const cwd = `${directory}/repo`;
-      const remote = `${directory}/remote.git`;
-      const worktreePath = `${directory}/worktree`;
+      const cwd = path.join(directory, "repo");
+      const remote = path.join(directory, "remote.git");
+      const worktreePath = path.join(directory, "worktree");
       yield* fs.makeDirectory(cwd);
       const command = (at: string, args: string[]) =>
         git.execute({ operation: "launch-test", cwd: at, args });
@@ -3948,7 +3953,7 @@ it.effect("generates an initial title for an attachment-only message", () =>
       const launched = yield* launches.launch(input);
       yield* layerTitleRegeneration.execute({
         threadId: launched.threadId,
-        requestId: CommandId.make("command:launch:image-only:initial-message"),
+        requestId: input.commandId,
         kind: { type: "initial", messageId },
       });
 
@@ -4018,6 +4023,132 @@ it.effect.each([
         assert.isNull(yield* threads.getThreadShell(ThreadId.make(thread)));
       }).pipe(Effect.provide(harness.layer));
     }),
+);
+
+it.effect.each(["root", "existing_worktree", "worktree"] as const)(
+  "refuses a $0 launch with outside tracked folders before claiming the thread",
+  (strategy) =>
+    Effect.gen(function* () {
+      const lib = "/repos/lib";
+      const create = vi.fn(() => Effect.die("The capability guard must run before checkout"));
+      const harness = makeHarness({
+        workspaceFolderAccess: "unverified",
+        trackedWorkspace: {
+          folders: [{ path: lib, name: "lib", isGitRepository: true }],
+          extraRoots: [lib],
+        },
+        taskFolders: Layer.mock(TaskFolders.TaskFolders)({
+          plan: () =>
+            Effect.succeed({
+              projectId,
+              projectRoot: project.workspaceRoot,
+              projectIsRepository: true,
+              anchor: "/",
+              repositories: [{ name: "lib", path: lib }],
+              trackedRepositories: [lib],
+              usesProjectLayout: false,
+            }),
+          create,
+        }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const request = launchInput({
+          command: "launch:tracked:" + strategy,
+          thread: "thread:tracked:" + strategy,
+          workspace:
+            strategy === "worktree"
+              ? { type: strategy, baseRef: "main" }
+              : strategy === "existing_worktree"
+                ? { type: strategy, worktreePath: "/worktrees/existing" }
+                : { type: strategy },
+        });
+        const error = yield* launches.launch(request).pipe(Effect.flip);
+
+        if (error._tag !== "ThreadLaunchError") assert.fail("Expected a ThreadLaunchError");
+        assert.equal(error.operation, "validate-workspace");
+        assert.instanceOf(error.cause, RuntimePolicy.ProviderWorkspaceFolderAccessError);
+        assert.isNull(yield* threads.getThreadShell(request.threadId));
+        assert.equal(create.mock.calls.length, 0);
+        assert.equal(harness.runSetup.mock.calls.length, 0);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect("validates the realized layout before binding a custom task folder", () =>
+  Effect.gen(function* () {
+    const lib = {
+      name: "lib",
+      repositoryPath: "/repos/lib",
+      worktreePath: "/worktrees/layout/lib",
+    };
+    const taskFolder = {
+      root: "/worktrees/layout",
+      projectId,
+      projectRoot: project.workspaceRoot,
+      anchor: "/",
+      projectPath: "/worktrees/layout/app",
+      projectIsWorktree: false,
+      repositories: [lib],
+    };
+    const remove = vi.fn<TaskFolders.TaskFolders["Service"]["remove"]>(() =>
+      Effect.succeed({ kept: [], removed: [taskFolder.root] }),
+    );
+    const harness = makeHarness({
+      workspaceFolderAccess: "unverified",
+      trackedWorkspace: {
+        folders: [{ path: lib.worktreePath, name: "lib", isGitRepository: true }],
+        extraRoots: [lib.worktreePath],
+      },
+      taskFolders: Layer.mock(TaskFolders.TaskFolders)({
+        plan: () =>
+          Effect.succeed({
+            projectId,
+            projectRoot: project.workspaceRoot,
+            projectIsRepository: false,
+            anchor: "/",
+            repositories: [],
+            trackedRepositories: [lib.repositoryPath],
+            usesProjectLayout: true,
+          }),
+        create: ({ onClaimed }) =>
+          (onClaimed?.(taskFolder, "feature/layout") ?? Effect.void).pipe(
+            Effect.as({
+              taskFolder,
+              branch: "feature/layout",
+              laidOutByProject: true,
+              repositoriesStartedFromOrigin: false,
+            }),
+          ),
+        remove,
+      }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const request = launchInput({
+        command: "launch:custom-layout",
+        thread: "thread:custom-layout",
+        workspace: { type: "worktree", baseRef: "main", branch: "feature/layout" },
+      });
+      const error = yield* launches
+        .launch({ ...request, awaitPreparation: true })
+        .pipe(Effect.flip);
+
+      if (error._tag !== "ThreadLaunchError") assert.fail("Expected a ThreadLaunchError");
+      assert.equal(error.operation, "validate-workspace");
+      assert.instanceOf(error.cause, RuntimePolicy.ProviderWorkspaceFolderAccessError);
+      const shell = yield* threads.getThreadShell(request.threadId);
+      assert.isNotNull(shell);
+      assert.isNull(shell?.worktreePath);
+      assert.equal(harness.runSetup.mock.calls.length, 0);
+      assert.deepEqual(
+        remove.mock.calls.map(([input]) => [input.root, input.deleteBranch]),
+        [[taskFolder.root, undefined]],
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
 );
 
 it.effect("launches on any provider when the other folders were unavailable at binding", () =>

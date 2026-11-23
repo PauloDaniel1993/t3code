@@ -55,23 +55,27 @@ import * as ProjectStore from "./ProjectStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
 import { layerNoTaskFolders } from "./ProviderTurnStartService.testkit.ts";
 
 const unrelatedProject = Option.some({
   workspaceRoot: "/nonexistent/t3-rollback-project",
 } as never);
-const layerCheckpointRollbackService = CheckpointRollbackService.layer.pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      NodeServices.layer,
-      layerNoTaskFolders,
-      Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/synthetic-worktrees" } as never),
-      ServerSettings.layerTest(),
-      Layer.mock(GitWorkflow.GitWorkflowService)({}),
-      Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
+const makeLayerCheckpointRollbackService = (taskFolders = layerNoTaskFolders) =>
+  CheckpointRollbackService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        taskFolders,
+        Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/synthetic-worktrees" } as never),
+        ServerSettings.layerTest(),
+        Layer.mock(GitWorkflow.GitWorkflowService)({}),
+        Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
+      ),
     ),
-  ),
-);
+  );
+
+const layerCheckpointRollbackService = makeLayerCheckpointRollbackService();
 
 it.effect.each(["initial", "waiting"])(
   "rejects a non-ready checkpoint from %s before opening a session or restoring files",
@@ -1454,86 +1458,142 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
   }).pipe(Effect.provide(layerTest));
 });
 
-it.effect("rewinds a provider that can't reach every folder without handing it the others", () => {
-  const threadId = ThreadId.make("thread:rollback-folder-access");
-  const providerThreadId = ProviderThreadId.make("provider-thread:rollback-folder-access");
-  const providerSessionId = ProviderSessionId.make("provider-session:rollback-folder-access");
-  const checkpointId = CheckpointId.make("checkpoint:rollback-folder-access");
-  const scopeId = CheckpointScopeId.make("checkpoint-scope:rollback-folder-access");
-  const providerInstanceId = ProviderInstanceId.make("provider_rollback_folder_access");
-  const projection = {
-    thread: {
-      worktreePath: process.cwd(),
-      activeProviderThreadId: providerThreadId,
-      modelSelection: { instanceId: providerInstanceId, model: "test-model" },
-    },
-    providerThreads: [{ id: providerThreadId, providerSessionId, providerInstanceId }],
-    providerSessions: [],
-    checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: 0 }],
-    checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
-    runs: [{ id: "later-run", ordinal: 2, status: "completed" }],
-    attempts: [],
-    providerTurns: [],
-  } as unknown as OrchestrationV2ThreadProjection;
-  const open = vi.fn((_input: { readonly runtimePolicy: unknown }) =>
-    Effect.fail(new ProviderWorkspaceMissingError({ threadId, cwd: process.cwd() })),
-  );
-  const testLayer = layerCheckpointRollbackService.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(CheckpointService.CheckpointServiceV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({}),
-        IdAllocator.layer,
-        Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getThread: () => Effect.succeed(projection.thread),
-          getCheckpointRollbackContext: (_, target) =>
-            Effect.succeed(rollbackContext(projection, target)),
-        }),
-        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
-          resolve: () =>
-            Effect.succeed({
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              cwd: process.cwd(),
-              additionalDirectories: ["/work/lib"],
-            }),
-          requireWorkspaceFolderAccess: () =>
-            Effect.fail(
-              new RuntimePolicy.ProviderWorkspaceFolderAccessError({
-                threadId,
-                providerInstanceId,
+it.effect.each(["legacy", "structured", "foreign task folder"] as const)(
+  "rewinds with a narrowed $0 scope on a provider that can't reach every folder",
+  (scopeKind) => {
+    const threadId = ThreadId.make("thread:rollback-folder-access");
+    const providerThreadId = ProviderThreadId.make("provider-thread:rollback-folder-access");
+    const providerSessionId = ProviderSessionId.make("provider-session:rollback-folder-access");
+    const checkpointId = CheckpointId.make("checkpoint:rollback-folder-access");
+    const scopeId = CheckpointScopeId.make("checkpoint-scope:rollback-folder-access");
+    const providerInstanceId = ProviderInstanceId.make("provider_rollback_folder_access");
+    const projectId = ProjectId.make("project:rollback-folder-access");
+    const projection = {
+      thread: {
+        projectId,
+        worktreePath: process.cwd(),
+        activeProviderThreadId: providerThreadId,
+        modelSelection: { instanceId: providerInstanceId, model: "test-model" },
+      },
+      providerThreads: [{ id: providerThreadId, providerSessionId, providerInstanceId }],
+      providerSessions: [],
+      checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: 0 }],
+      checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+      runs: [{ id: "later-run", ordinal: 2, status: "completed" }],
+      attempts: [],
+      providerTurns: [],
+    } as unknown as OrchestrationV2ThreadProjection;
+    const rollbackThread = vi.fn<ProviderAdapter.ProviderAdapterV2SessionRuntime["rollbackThread"]>(
+      ({ providerThread }) => Effect.succeed({ providerThread, messages: [], runtimeRequests: [] }),
+    );
+    const open = vi.fn((_input: { readonly runtimePolicy: unknown }) =>
+      scopeKind === "foreign task folder"
+        ? Effect.succeed({ rollbackThread } as never)
+        : Effect.fail(new ProviderWorkspaceMissingError({ threadId, cwd: process.cwd() })),
+    );
+    const workspace =
+      scopeKind === "legacy"
+        ? undefined
+        : {
+            folders: [{ path: "/work/lib", name: "lib", isGitRepository: true }],
+            extraRoots: ["/work/lib"],
+          };
+    const testLayer = makeLayerCheckpointRollbackService(
+      scopeKind === "foreign task folder"
+        ? Layer.mock(TaskFolders.TaskFolders)({
+            find: () =>
+              Effect.succeed({
+                root: process.cwd(),
+                projectId: ProjectId.make("project:original-owner"),
+                projectRoot: process.cwd(),
+                projectPath: process.cwd(),
+                anchor: process.cwd(),
+                projectIsWorktree: true,
+                repositories: [],
               }),
-            ),
-        }),
-      ),
-    ),
-  );
-
-  return Effect.gen(function* () {
-    const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
-    // Session opening fails after its workspace grant has been resolved.
-    yield* service
-      .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false })
-      .pipe(Effect.flip);
-    assert.deepEqual(open.mock.calls[0]?.[0].runtimePolicy, {
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      cwd: process.cwd(),
-      additionalDirectories: [],
-    });
-  }).pipe(
-    Effect.provide(
-      testLayer.pipe(
-        Layer.provide(NodeServices.layer),
-        Layer.provide(ThreadCommandExecutor.layer),
-        Layer.provide(
-          Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
+          })
+        : layerNoTaskFolders,
+    ).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            discardRepositorySnapshots: () => Effect.void,
+          }),
+          Layer.mock(EventSink.EventSinkV2)({ write: () => Effect.succeed([]) }),
+          IdAllocator.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () => Effect.succeed(projection.thread),
+            getCheckpointRollbackContext: (_, target) =>
+              Effect.succeed(rollbackContext(projection, target)),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
+          Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+            resolve: () =>
+              Effect.succeed({
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                cwd: process.cwd(),
+                additionalDirectories: ["/work/lib"],
+                ...(workspace === undefined ? {} : { workspace }),
+              }),
+            requireWorkspaceFolderAccess: () =>
+              Effect.fail(
+                new RuntimePolicy.ProviderWorkspaceFolderAccessError({
+                  threadId,
+                  providerInstanceId,
+                }),
+              ),
+          }),
         ),
       ),
-    ),
-  );
-});
+    );
+
+    return Effect.gen(function* () {
+      const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
+      if (scopeKind === "foreign task folder") {
+        const refused = yield* service
+          .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles: true })
+          .pipe(Effect.flip);
+        assert.equal(refused.reason, "file-restore-refused");
+        assert.equal(refused.detail, SHARED_WORKSPACE_RESTORE_MESSAGE);
+        assert.equal(open.mock.calls.length, 0);
+      }
+      const conversationOnly = service.execute({
+        threadId,
+        providerThreadId,
+        checkpointId,
+        scopeId,
+        restoreFiles: false,
+      });
+      if (scopeKind === "foreign task folder") {
+        yield* conversationOnly;
+        assert.equal(rollbackThread.mock.calls.length, 1);
+      } else {
+        // Session opening fails after its workspace grant has been resolved.
+        yield* conversationOnly.pipe(Effect.flip);
+      }
+      assert.deepEqual(open.mock.calls[0]?.[0].runtimePolicy, {
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+        additionalDirectories: [],
+        ...(workspace === undefined ? {} : { workspace: { ...workspace, extraRoots: [] } }),
+      });
+    }).pipe(
+      Effect.provide(
+        testLayer.pipe(
+          Layer.provide(NodeServices.layer),
+          Layer.provide(ThreadCommandExecutor.layer),
+          Layer.provide(
+            Layer.mock(ProjectStore.ProjectStoreV2)({
+              get: () => Effect.succeed(unrelatedProject),
+            }),
+          ),
+        ),
+      ),
+    );
+  },
+);
 
 it.effect.each([
   { restoreFiles: true, shared: "none" },

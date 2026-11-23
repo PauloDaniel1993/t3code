@@ -110,6 +110,11 @@ export const RuntimePolicyV2Override = Schema.Struct({
 });
 export type RuntimePolicyV2Override = typeof RuntimePolicyV2Override.Type;
 
+type WorkspaceScope = Pick<
+  ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+  "cwd" | "additionalDirectories" | "workspace"
+>;
+
 export interface RuntimePolicyV2Shape {
   /**
    * Resolves the provider's cwd and workspace scope for a run.
@@ -121,6 +126,14 @@ export interface RuntimePolicyV2Shape {
     readonly modelSelection: ModelSelection;
     readonly unavailableFolderPaths?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2RuntimePolicy, RuntimePolicyV2Error>;
+  readonly resolveWorkspace: (input: {
+    readonly thread: Pick<
+      OrchestrationV2AppThread,
+      "projectId" | "worktreePath" | "workspaceFolders" | "worktrees"
+    >;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly unavailableFolderPaths?: ReadonlyArray<string> | undefined;
+  }) => Effect.Effect<WorkspaceScope | undefined, RuntimePolicyResolveError>;
   /**
    * A scope with directory grants beyond cwd requires a provider instance that
    * advertises workspace-folder access.
@@ -201,6 +214,7 @@ export const layerEnforcingCeiling: Layer.Layer<
     const { managedPolicy } = yield* ServerSettings.ServerSettingsService;
     return RuntimePolicyV2.of({
       requireWorkspaceFolderAccess: base.requireWorkspaceFolderAccess,
+      resolveWorkspace: base.resolveWorkspace,
       resolve: Effect.fn("RuntimePolicyV2.resolveWithinCeiling")(function* (input) {
         yield* refuseAboveCeiling(managedPolicy, input.thread);
         return yield* base.resolve(input);
@@ -225,7 +239,53 @@ export const layerFromProjectStore: Layer.Layer<
     // The same ceiling the orchestrator enforces, fixed for the server's life.
     const { managedPolicy } = yield* ServerSettings.ServerSettingsService;
     const maxRuntimeMode = managedPolicy?.limits?.maxRuntimeMode;
+    const resolveWorkspace: RuntimePolicyV2Shape["resolveWorkspace"] = Effect.fn(
+      "RuntimePolicyV2.resolveWorkspace",
+    )(function* (input) {
+      const project = yield* projects.get(input.thread.projectId).pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.mapError(
+          (cause) =>
+            new RuntimePolicyResolveError({
+              projectId: input.thread.projectId,
+              providerInstanceId: input.providerInstanceId,
+              cause,
+            }),
+        ),
+      );
+      const primaryPath = threadPrimaryPath(input.thread, project);
+      if (primaryPath === null) return undefined;
+      if (input.thread.workspaceFolders !== undefined || project?.workspaceFile != null) {
+        const workspace = resolveThreadWorkspace({
+          thread: input.thread,
+          project: project ?? { workspaceRoot: primaryPath },
+          unavailableFolderPaths: input.unavailableFolderPaths,
+        });
+        return {
+          cwd: workspace.primaryPath,
+          additionalDirectories: workspaceAdditionalDirectories(workspace),
+        };
+      }
+      const workspace = yield* workspaceFolders
+        .forThread({
+          projectId: input.thread.projectId,
+          worktreePath: input.thread.worktreePath,
+        })
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not resolve the thread's tracked folders.", cause).pipe(
+              Effect.as(undefined),
+            ),
+          ),
+        );
+      return {
+        cwd: primaryPath,
+        additionalDirectories: [],
+        ...(workspace === undefined || workspace.folders.length === 0 ? {} : { workspace }),
+      };
+    });
     return RuntimePolicyV2.of({
+      resolveWorkspace,
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         yield* refuseAboveCeiling(managedPolicy, input.thread);
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
@@ -233,63 +293,23 @@ export const layerFromProjectStore: Layer.Layer<
           instance === undefined
             ? undefined
             : (yield* instance.snapshot.getSnapshot).supportedRuntimeModes;
-        // Every thread resolves through the one workspace helper with its
-        // project, worktree threads included. Only a thread that names no
-        // folder of its own needs the project to exist.
-        const project = yield* projects.get(input.thread.projectId).pipe(
-          Effect.map(Option.getOrUndefined),
-          Effect.mapError(
-            (cause) =>
-              new RuntimePolicyResolveError({
-                projectId: input.thread.projectId,
-                providerInstanceId: input.modelSelection.instanceId,
-                cause,
-              }),
-          ),
-        );
-        const primaryPath = threadPrimaryPath(input.thread, project);
-        if (primaryPath === null) {
+        const scope = yield* resolveWorkspace({
+          thread: input.thread,
+          providerInstanceId: input.modelSelection.instanceId,
+          unavailableFolderPaths: input.unavailableFolderPaths,
+        });
+        if (scope === undefined) {
           return yield* new RuntimePolicyResolveError({
             projectId: input.thread.projectId,
             providerInstanceId: input.modelSelection.instanceId,
             cause: "Project not found.",
           });
         }
-        const legacyWorkspace =
-          input.thread.workspaceFolders !== undefined || project?.workspaceFile != null;
-        if (legacyWorkspace) {
-          const workspace = resolveThreadWorkspace({
-            thread: input.thread,
-            project: project ?? { workspaceRoot: primaryPath },
-            unavailableFolderPaths: input.unavailableFolderPaths,
-          });
-          return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
-            interactionMode: input.thread.interactionMode,
-            cwd: workspace.primaryPath,
-            additionalDirectories: workspaceAdditionalDirectories(workspace),
-            ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
-          });
-        }
-        // The turn can still run in its own cwd, as a single-folder thread does.
-        const workspace = yield* workspaceFolders
-          .forThread({
-            projectId: input.thread.projectId,
-            worktreePath: input.thread.worktreePath,
-          })
-          .pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning("Could not resolve the thread's tracked folders.", cause).pipe(
-                Effect.as(undefined),
-              ),
-            ),
-          );
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...scope,
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
-          cwd: primaryPath,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
-          ...(workspace === undefined || workspace.folders.length === 0 ? {} : { workspace }),
         });
       }),
       requireWorkspaceFolderAccess: Effect.fn("RuntimePolicyV2.requireWorkspaceFolderAccess")(
@@ -317,6 +337,16 @@ export function layerWithOverride(
       const base = yield* RuntimePolicyV2;
       return {
         requireWorkspaceFolderAccess: base.requireWorkspaceFolderAccess,
+        resolveWorkspace: (input) =>
+          base
+            .resolveWorkspace(input)
+            .pipe(
+              Effect.map((scope) =>
+                scope === undefined || override.cwd === undefined
+                  ? scope
+                  : { ...scope, cwd: override.cwd },
+              ),
+            ),
         resolve: (input) =>
           base.resolve(input).pipe(
             Effect.map((policy) =>

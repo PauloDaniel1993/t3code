@@ -4838,30 +4838,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   }),
               ),
             );
-            // A thread spanning workspace folders switches only to a
-            // provider that reaches them all, judged on the folders it can
-            // reach now. A one-folder thread can switch to any provider.
             const thread = providerContext!.thread;
-            const targetScope =
-              (thread.workspaceFolders?.length ?? 0) < 2
-                ? undefined
-                : yield* admitRunWorkspace(thread).pipe(
-                    Effect.flatMap((workspaceAdmission) =>
-                      runtimePolicy.resolve({
-                        thread,
-                        modelSelection: command.modelSelection,
-                        ...workspaceAdmission,
-                      }),
-                    ),
-                    Effect.tap((scope) =>
-                      runtimePolicy.requireWorkspaceFolderAccess({
-                        threadId: command.threadId,
-                        providerInstanceId: command.modelSelection.instanceId,
-                        scope,
-                      }),
-                    ),
-                    mapDispatchError(command),
-                  );
+            const providerInstanceId = command.modelSelection.instanceId;
+            const targetScope = yield* Effect.gen(function* () {
+              if (thread.workspaceFolders === undefined) {
+                const scope = yield* runtimePolicy.resolveWorkspace({ thread, providerInstanceId });
+                if (
+                  scope === undefined ||
+                  (scope.workspace === undefined && scope.additionalDirectories.length === 0)
+                )
+                  return;
+                return scope;
+              }
+              if (thread.workspaceFolders.length < 2) return;
+              const workspaceAdmission = yield* admitRunWorkspace(thread);
+              return yield* runtimePolicy.resolve({
+                thread,
+                modelSelection: command.modelSelection,
+                ...workspaceAdmission,
+              });
+            }).pipe(
+              Effect.tap((scope) =>
+                scope === undefined
+                  ? Effect.void
+                  : runtimePolicy.requireWorkspaceFolderAccess({
+                      threadId: command.threadId,
+                      providerInstanceId,
+                      scope,
+                    }),
+              ),
+              mapDispatchError(command),
+            );
             const plan = yield* providerSwitchService
               .plan({
                 projection: providerContext!,
@@ -14858,6 +14865,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandId: command.commandId,
           commandType: command.type,
           cause: `Checkpoint ${command.checkpointId} belongs to a tracked repository; roll back to the thread's own checkpoint instead.`,
+        });
+      }
+      if (taskFolder !== null && taskFolder.projectId !== projection.thread.projectId) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: SHARED_WORKSPACE_RESTORE_MESSAGE,
         });
       }
       if (command.restoreFiles !== false) {
