@@ -1,97 +1,51 @@
 # Threads from older T3 Code versions
 
-On your first V2 launch, T3 Code copies the V1 database, `state.sqlite`, into `statev2.sqlite`
-in the same data directory and migrates the copy. Your threads appear automatically, with full
-transcripts imported as needed. You do not need to run an import command.
+On your first V2 launch, T3 Code automatically copies your V1 database (`state.sqlite`) to `statev2.sqlite` in the same data directory and migrates it. V1 and V2 stay independent afterward (changes in one do not sync to the other), while settings, attachments, and workspace files remain shared.
 
-V1 continues using its original database while V2 uses the copy. The database import can run while
-V1 is open. Opening V2 again resumes your V2 history. The copy happens only once: later conversations
-and changes in either version do not sync to the other. Settings, attachments, and workspace files
-remain shared.
+## What migrates
 
-The V2 desktop app uses a separate browser profile, so browser cookies and caches do not carry
-over from V1. You may need to sign in again to websites opened inside the app. On its first launch,
-the V2 desktop app copies stashed prompts, unsent drafts, layout, and theme from V1. Anything you
-change in V2 afterwards stays in V2.
-
-<!-- fork(ticket-28:docs) -->
-
-The migrated thread keeps its title, project, provider and model selection, permission and
-interaction modes, branch or worktree, archive state, settlement state, snooze and pin state, and
-linked pull request. T3 Code also brings over user and assistant messages, reasoning traces, their
-timestamps, and supported attachments. Task threads retain their parent relationships, results and completion
-status. Tasks that were queued or running become cancelled. Large histories
-may appear in stages while the server imports transcripts.
-
-The migration does not recreate the old provider's live session. It also does not convert old run
-records, checkpoints and diffs, tool activity, approval history, or proposed plan history into the
-new format. These items may be absent from a migrated timeline even though the conversation text is
-present.
+- **Included**: Thread metadata (title, project, provider/model, modes, branch/worktree, archive/settle/snooze/pin state, linked PR), user and assistant messages, reasoning traces, timestamps, and supported attachments. Task threads keep their parent links, results, and completion status. Tasks that were queued or running become cancelled. On desktop, first launch also copies V1 stashed prompts, drafts, layout, and theme (browser cookies/caches do not carry over).
+- **Not included**: Live provider sessions, old run records, checkpoints/diffs, tool activity, approvals, and proposed plan history.
 
 ## Continuing a migrated thread
 
-The first new message starts a fresh provider session. T3 Code selects intact user and assistant
-messages using the same [handoff budget](./portable-handoffs.md) as a provider switch. Omitted text
-remains in the thread and can be retrieved by the agent. The migration retains its separate
-32,000-character recovery excerpt; neither that excerpt nor the handoff replaces the full imported
-transcript.
-
-Before continuing a long or important thread, read the recent transcript and include any older
-requirements the agent still needs in your next message. Starting a new thread and pasting a short
-handoff is also a good choice when the old conversation contains conflicting instructions.
+Sending your first message starts a fresh provider session using the [portable handoff budget](./portable-handoffs.md). Omitted text remains saved in the thread and readable by the agent, though for long or critical threads it's worth restating key constraints—or starting a fresh thread with a short summary.
 
 ## Keeping a recovery copy
 
-<!-- fork(ticket-28:docs) -->
+T3 Code does not have a whole-thread export command. Before a major server update, stop the server and back up your `userdata` directory (`~/.t3/userdata` by default, or `<base-dir>/userdata`).
 
-T3 Code will not start on a data directory that an older V2 build already imported without reasoning
-traces and message sources. From a terminal, the server prints "Incompatible V1 import" with these steps.
-The desktop app does not open and keeps restarting its server in the background; the message is in its
-server log, `~/.t3/userdata/logs/server-child.log` for a default install
-(`%USERPROFILE%\.t3\userdata\logs\server-child.log` on Windows).
+If startup reports **Incompatible V1 import**, the V2 database was imported by an earlier build
+that omitted reasoning and message sources. For the desktop app, check
+`userdata/logs/server-child.log` in the T3 home directory.
 
-To recover, quit the app or stop the server. Preserve and move `statev2.sqlite` and its
-`statev2.sqlite-wal` and `statev2.sqlite-shm` siblings (if present) out of the data directory, then start
-again. T3 Code will make a fresh copy from the untouched `state.sqlite`. Keep the moved files: work you
-did in V2 after the earlier import remains there and will not appear in the fresh import. Preserve the
-attachment files too; copying a database cannot restore files that were deleted.
+Stop T3 Code and move `statev2.sqlite` and its `statev2.sqlite-wal` and `statev2.sqlite-shm`
+siblings, if present, to a safe location. Starting T3 Code again imports a fresh copy from the
+original `state.sqlite`. Keep the moved files and your attachment files. Work done since the
+previous import remains in the moved database.
 
-An invalid task parent link leaves that task accessible as a top-level thread. Import warnings in the
-server log identify the affected record; their original values remain in `fork_v1_import_warnings` in
-`statev2.sqlite` for inspection from a stopped recovery copy.
+A task with an invalid parent link remains accessible as a top-level thread. The server log
+identifies the affected record, and the V2 database's `fork_v1_import_warnings` table retains
+the original values for inspection from a recovery copy.
 
-T3 Code does not currently have a whole-thread export command. Before a major server update, stop
-the server and copy its `userdata` directory to a safe location. The default is
-`~/.t3/userdata`; a server started with `--base-dir <path>` uses `<path>/userdata`.
-
-If a migrated transcript is missing from the app, keep that copy unchanged. You can inspect the
-old transcript without starting a server against it:
+If a migrated transcript is missing, inspect your backup read-only without pointing a server at it:
 
 ```sh
 sqlite3 -readonly /path/to/recovery-copy/state.sqlite
 ```
 
-At the SQLite prompt, list recent legacy threads:
-
 ```sql
+-- List legacy threads
 .headers on
 .mode tabs
 SELECT thread_id, title, updated_at
 FROM projection_threads
 ORDER BY updated_at DESC;
-```
 
-Then print one transcript, replacing `<thread-id>` with the value from the first query:
-<!-- fork(ticket-28:docs) -->
-
-```sql
+-- Print one transcript, including reasoning when present
 SELECT role, text, created_at
 FROM projection_thread_messages
 WHERE thread_id = '<thread-id>'
   AND role IN ('user', 'assistant', 'reasoning')
 ORDER BY created_at, message_id;
 ```
-
-Open only the copied database. Do not edit it or point a newer or older server at your recovery
-copy. If the affected environment is remote, make and inspect the copy on the machine that runs
-that environment.

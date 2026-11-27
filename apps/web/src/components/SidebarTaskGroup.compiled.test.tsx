@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
+import { GTProvider, initializeGT } from "gt-react";
 import { makeThreadFixture } from "../test-fixtures";
 import { useUiStateStore } from "../uiStateStore";
 import { sidebarTaskLeaseClock } from "./sidebarTaskLeases";
@@ -37,6 +38,9 @@ vi.mock("./ui/tooltip", () => ({
 import { SidebarTaskGroup } from "./SidebarTaskGroup";
 import { useSidebarTaskPresentationStore } from "./sidebarTaskPresentation";
 
+initializeGT({ defaultLocale: "en", locales: ["en"] });
+
+const translations = {};
 const env = EnvironmentId.make("local");
 const parent = makeThreadFixture({ environmentId: env, id: ThreadId.make("parent") });
 const task = (id: string): EnvironmentThreadShell =>
@@ -81,18 +85,20 @@ const record = (thread: EnvironmentThreadShell): OrchestrationV2Subagent => ({
   updatedAt: DateTime.makeUnsafe("2026-09-29T00:00:00Z"),
 });
 const view = (tasks: ReadonlyArray<EnvironmentThreadShell>) => (
-  <SidebarTaskGroup
-    parent={parent}
-    tasks={tasks}
-    onOpenThread={() => {}}
-    onContextMenu={() => {}}
-    onCommitRename={() => {}}
-    onCancelRename={() => {}}
-    onRenameTitleChange={() => {}}
-    renamingThreadKey={null}
-    renamingTitle=""
-    onNewTask={() => {}}
-  />
+  <GTProvider locale="en" translations={translations}>
+    <SidebarTaskGroup
+      parent={parent}
+      tasks={tasks}
+      onOpenThread={() => {}}
+      onContextMenu={() => {}}
+      onCommitRename={() => {}}
+      onCancelRename={() => {}}
+      onRenameTitleChange={() => {}}
+      renamingThreadKey={null}
+      renamingTitle=""
+      onNewTask={() => {}}
+    />
+  </GTProvider>
 );
 const titles = (tree: ReactTestRenderer) =>
   tree.root.findAll((node) => node.type === "span" && node.props.className?.includes("truncate"));

@@ -86,6 +86,7 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
   const readResponse = {
     wait: Effect.void as Effect.Effect<void, ProjectReadFileError>,
     missing: false,
+    contents: "old",
   };
   const entryResponse: ProjectListEntriesResult = listing ?? {
     entries: [{ path: "api/folder.ts", kind: "directory" }],
@@ -124,7 +125,12 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
                       truncated: false,
                       exists: false,
                     }
-                  : { relativePath, byteLength, contents: "old", truncated: false },
+                  : {
+                      relativePath,
+                      byteLength,
+                      contents: readResponse.contents,
+                      truncated: false,
+                    },
               );
             }),
           [WS_METHODS.projectsWriteFile]: (
@@ -220,6 +226,37 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* (
     fileThreadAtom,
     entryResponse,
   };
+});
+
+describe("readFile", () => {
+  it.effect("reads the file afresh when it is reopened after another client changed it", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const query = h.commands.readFile({
+        environmentId: ENVIRONMENT_ID,
+        input: { cwd: "/repo", relativePath: "foo" },
+      });
+      // Stale-while-revalidate refreshes from a task on the registry scheduler;
+      // queue behind it so the read sees the revalidation instead of racing it.
+      const afterScheduledTasks = Effect.callback<void>((resume) => {
+        h.registry.schedulerAsync.makeDispatcher().scheduleTask(() => resume(Effect.void), 0);
+      });
+      const readContents = afterScheduledTasks.pipe(
+        Effect.andThen(AtomRegistry.getResult(h.registry, query, { suspendOnWaiting: true })),
+        Effect.map((result) => result.contents),
+      );
+
+      const closeFile = h.registry.mount(query);
+      expect(yield* readContents).toBe("old");
+      closeFile();
+      yield* afterScheduledTasks;
+
+      // Saved on another device; this client did not write it.
+      h.readResponse.contents = "saved elsewhere";
+      h.registry.mount(query);
+      expect(yield* readContents).toBe("saved elsewhere");
+    }),
+  );
 });
 
 describe("writeFile metadata", () => {

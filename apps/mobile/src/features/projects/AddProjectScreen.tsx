@@ -68,6 +68,7 @@ import {
 import {
   StackActions,
   useNavigation,
+  useRoute,
   type NavigationState,
   type ParamListBase,
 } from "@react-navigation/native";
@@ -115,11 +116,14 @@ import {
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
 import {
+  chooserDraftKey,
   isMissingCloneParentBrowseFailure,
   resolveAddProjectEnvironment,
 } from "./AddProjectScreen.logic";
+import { readNewTaskFlowState } from "../threads/new-task-flow-state";
 import {
   createNewTaskDraft,
+  retargetSavedNewTaskDraft,
   setComposerDraftText,
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
@@ -687,10 +691,24 @@ function getActiveRoute(navigation: {
   return state?.routes[state.index];
 }
 
+function isActiveRoute(
+  navigation: Parameters<typeof getActiveRoute>[0],
+  originRoute: ReturnType<typeof getActiveRoute>,
+): boolean {
+  const activeRoute = getActiveRoute(navigation);
+  // A warm link can change the task without replacing its native route key.
+  return (
+    originRoute !== undefined &&
+    activeRoute?.key === originRoute.key &&
+    activeRoute.name === originRoute.name &&
+    activeRoute.params === originRoute.params
+  );
+}
+
 function useOpenNewTaskDraft() {
   const navigation = useNavigation<NativeStackNavigationProp<ReactNavigation.RootParamList>>();
   const selectDetail = useSelectWorkspaceDetail();
-  return (
+  return async (
     params: {
       environmentId: EnvironmentId;
       projectId: ProjectId;
@@ -700,16 +718,25 @@ function useOpenNewTaskDraft() {
     },
     originRoute: NavigationState<ParamListBase>["routes"][number] | undefined,
   ) => {
-    const activeRoute = getActiveRoute(navigation);
-    // A warm link can change the task without replacing its native route key.
-    if (
-      !originRoute ||
-      activeRoute?.key !== originRoute.key ||
-      activeRoute.name !== originRoute.name ||
-      activeRoute.params !== originRoute.params
-    )
-      return;
-    selectDetail({ name: "Thread", params: { draft: params } });
+    if (!isActiveRoute(navigation, originRoute)) return;
+    const chooserDraft =
+      params.draftId === undefined
+        ? chooserDraftKey(
+            navigation.getState()?.routes ?? [],
+            (flowKey) => readNewTaskFlowState(flowKey).draftKey,
+          )
+        : null;
+    const carried =
+      chooserDraft !== null &&
+      (await retargetSavedNewTaskDraft(chooserDraft, {
+        environmentId: params.environmentId,
+        projectId: params.projectId,
+      }).catch(() => false));
+    if (!isActiveRoute(navigation, originRoute)) return;
+    selectDetail({
+      name: "Thread",
+      params: { draft: carried ? { ...params, draftId: chooserDraft } : params },
+    });
   };
 }
 
@@ -767,7 +794,7 @@ function useOpenExistingProject(environment: EnvironmentOption | null) {
         ? existing.title
         : m(msg("{title} is still archived. Try again later.", { title: existing.title })),
     );
-    openNewTaskDraft(
+    void openNewTaskDraft(
       {
         environmentId: existing.environmentId,
         projectId: existing.id,
@@ -847,7 +874,7 @@ function useCreateProject(environment: EnvironmentOption | null) {
       );
       return result;
     }
-    openNewTaskDraft(
+    void openNewTaskDraft(
       {
         environmentId: environment.environmentId,
         projectId,
@@ -875,16 +902,22 @@ export function AddProjectRepositoryScreen(props: {
     reportFailure: false,
   });
   const navigation = useNavigation();
+  const originRoute = useRoute();
   const environment = useEnvironmentFromParam(props.environmentId);
   const source = sourceFromParam(props.source);
   const [repositoryInput, setRepositoryInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pendingLookup = useRef<AbortController | null>(null);
   const gt = useGT();
   const messages = useMessages();
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels the repository lookup when its screen unmounts
+  useEffect(() => () => pendingLookup.current?.abort(), []);
+
   const lookupRepository = async () => {
-    if (!environment || repositoryInput.trim().length === 0 || isSubmitting) return;
+    if (!environment || repositoryInput.trim().length === 0 || pendingLookup.current) return;
+    if (!isActiveRoute(navigation, originRoute)) return;
     const incompleteOwnerMessage = githubIncompleteOwnerRepositoryMessage(
       source,
       repositoryInput,
@@ -912,13 +945,22 @@ export function AddProjectRepositoryScreen(props: {
       return;
     }
 
-    const result = await lookupRepositoryQuery({
-      environmentId: environment.environmentId,
-      input: {
-        provider,
-        repository: repositoryInput.trim(),
+    const lookup = new AbortController();
+    pendingLookup.current = lookup;
+    const result = await lookupRepositoryQuery(
+      {
+        environmentId: environment.environmentId,
+        input: {
+          provider,
+          repository: repositoryInput.trim(),
+        },
       },
-    });
+      { signal: lookup.signal },
+    );
+    if (lookup.signal.aborted) return;
+    pendingLookup.current = null;
+    setIsSubmitting(false);
+    if (!isActiveRoute(navigation, originRoute)) return;
     if (AsyncResult.isFailure(result)) {
       setError(errorMessage(Cause.squash(result.cause)));
     } else {
@@ -933,7 +975,6 @@ export function AddProjectRepositoryScreen(props: {
         }),
       );
     }
-    setIsSubmitting(false);
   };
 
   return (
@@ -1241,7 +1282,7 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
       );
       return;
     }
-    openNewTaskDraft(
+    void openNewTaskDraft(
       {
         environmentId: environment.environmentId,
         projectId,
@@ -1743,7 +1784,7 @@ export function AddProjectDestinationScreen(props: {
           ),
         );
       } else {
-        openNewTaskDraft(
+        void openNewTaskDraft(
           {
             environmentId: environment.environmentId,
             projectId,

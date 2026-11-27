@@ -25,6 +25,7 @@ import { ExternalLauncher } from "../../process/externalLauncher.ts";
 import { EnvironmentAuth } from "../../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import { AnalyticsService } from "../../telemetry/AnalyticsService.ts";
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ProjectService } from "../../project/ProjectService.ts";
 import { ThreadLaunchService } from "../ThreadLaunchService.ts";
 import { ThreadManagementService } from "../ThreadManagementService.ts";
@@ -69,6 +70,7 @@ const hostLayer = Layer.mergeAll(
   Layer.mock(ExternalLauncher)({}),
   Layer.mock(EnvironmentAuth)({}),
   Layer.mock(AnalyticsService)({}),
+  Layer.mock(BackgroundPolicy.BackgroundPolicy)({ shouldRunHostWork: Effect.succeed(true) }),
   Layer.mock(ProjectService)({}),
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(ThreadManagementService)({}),

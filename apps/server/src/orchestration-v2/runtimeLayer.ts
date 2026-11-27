@@ -315,6 +315,11 @@ const layerWorktreeSetWithProjectsProvided = layerWorktreeSetProvided.pipe(
   Layer.provide(layerProjectService),
 );
 
+export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe(
+  Layer.provide(layerProjectService),
+  // Whether a thread came from a linked environment, which skips setup.
+  Layer.provide(ProjectionStore.layer),
+);
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -328,26 +333,22 @@ const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pip
       layerRuntimePolicyProvided,
       TurnItemPositionStore.layer,
       layerWorktreeSetProvided,
+      layerThreadWorktreeRestore,
     ),
   ),
 );
 
-export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe(
-  Layer.provide(layerProjectService),
-  // Whether a thread came from a linked environment, which skips setup.
-  Layer.provide(ProjectionStore.layer),
-);
 const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
 );
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      layerProjectSetupScriptRunner,
       layerManagedProjectFoldersProvided,
       layerThreadManagementProvided,
       layerCommandReceiptStoreProvided,
       layerEventSink,
+      ProjectionStore.layer,
       IdAllocator.layer,
       layerRuntimePolicyProvided,
       layerWorktreeSetWithProjectsProvided,
@@ -449,6 +450,7 @@ const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
       layerThreadTitleRegenerationProvided,
       layerThreadManagementProvided,
       ProjectionStore.layer,
+      layerProjectionMaintenanceProvided,
     ),
   ),
 );
@@ -530,6 +532,7 @@ export const layerProduction = Layer.mergeAll(
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(
   Layer.provide(ResourceCleanupService.layer.pipe(Layer.provide(layerScheduledTaskProvided))),
+  Layer.provide(layerProjectSetupScriptRunner),
   Layer.provideMerge(layerProjectService),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),

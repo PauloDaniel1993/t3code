@@ -33,7 +33,7 @@ dist-electron/
 .electron-runtime/
 .showcase/
 apps/mobile/.showcase/
-apps/server/.claude-work-test/
+.claude-work-test/
 apps/mobile/.generated/
 apps/mobile/.android-cache/
 /.generated/

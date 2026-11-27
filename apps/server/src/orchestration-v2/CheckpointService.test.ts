@@ -92,7 +92,7 @@ const mockedService = (store: Partial<CheckpointStore.CheckpointStore["Service"]
         Layer.mock(CheckpointStore.CheckpointStore)({
           isGitRepository: () => Effect.succeed(true),
           hasCheckpointRef: () => Effect.succeed(false),
-          captureCheckpoint: () => Effect.void,
+          captureCheckpoint: () => Effect.succeed(null),
           listAuthoredPaths: () => Effect.succeed(null),
           ...store,
         }),
@@ -139,7 +139,8 @@ it.effect.each([false, true, "interrupt"] as const)(
           Layer.mock(CheckpointStore.CheckpointStore)({
             isGitRepository: () => Effect.succeed(true),
             hasCheckpointRef,
-            captureCheckpoint: () => Effect.void,
+            captureCheckpoint: () =>
+              lookupFails === "interrupt" ? Effect.interrupt : Effect.succeed(null),
             listAuthoredPaths: () => Effect.succeed(null),
           }),
         ),
@@ -316,7 +317,7 @@ it.effect("records each part's outcome and a barrier status without failing the 
                     detail: "fatal: index.lock exists",
                   }),
                 )
-              : Effect.void;
+              : Effect.succeed(null);
           }),
       }),
     ),
@@ -372,6 +373,7 @@ it.effect("holds one lock per checkout, however its path is spelled", () => {
             yield* Deferred.succeed(entered.get(input.cwd)!, undefined);
             if (input.cwd === directories.first) yield* Deferred.await(holdFirst);
             log.push(`end ${label(input.cwd)}`);
+            return null;
           }),
       }),
     ),
@@ -481,7 +483,11 @@ it.effect("captures each missing part baseline, even when another part's fails",
                 }),
               )
             : Effect.succeed(false),
-        captureCheckpoint: (input) => Effect.sync(() => void captured.push(input)),
+        captureCheckpoint: (input) =>
+          Effect.sync(() => {
+            captured.push(input);
+            return null;
+          }),
       }),
     ),
   );
@@ -1141,7 +1147,9 @@ it.effect.each(["legacy", "multipart"] as const)(
                 Ref.get(refs).pipe(Effect.map((current) => current.has(checkpointRef))),
               captureCheckpoint: ({ cwd, checkpointRef }) =>
                 cwd === "/repo/fast"
-                  ? Ref.update(refs, (current) => new Set([...current, checkpointRef]))
+                  ? Ref.update(refs, (current) => new Set([...current, checkpointRef])).pipe(
+                      Effect.as(null),
+                    )
                   : Effect.gen(function* () {
                       const count = yield* Ref.updateAndGet(snapshots, (count) => count + 1);
                       if (count === 1) {
@@ -1152,6 +1160,7 @@ it.effect.each(["legacy", "multipart"] as const)(
                         yield* Deferred.await(releaseBaselineSnapshot);
                       }
                       yield* Ref.update(refs, (current) => new Set([...current, checkpointRef]));
+                      return null;
                     }),
             }),
           ),
@@ -1208,6 +1217,61 @@ it.effect.each(["legacy", "multipart"] as const)(
         assert.strictEqual((yield* Ref.get(refs)).size, layout === "multipart" ? 5 : 1);
       }).pipe(Effect.provide(layerTest));
     }),
+);
+
+it.effect.each([
+  { label: "a reused checkpoint", source: 2, copy: true, calls: ["copy"] },
+  { label: "a declined copy", source: 2, copy: false, calls: ["copy", "snapshot"] },
+  { label: "a copy slower than its budget", source: 2, calls: ["copy", "snapshot"] },
+])("baselines a turn after steered queued messages with $label", (row) =>
+  Effect.gen(function* () {
+    const scope: OrchestrationV2CheckpointScope = {
+      id: CheckpointScopeId.make("checkpoint-scope:queue-gap"),
+      threadId: ThreadId.make("thread:queue-gap"),
+      runId: RunId.make("run:queue-gap:1"),
+      nodeId: NodeId.make("node:queue-gap:1"),
+      parentScopeId: null,
+      providerThreadId: ProviderThreadId.make("provider-thread:queue-gap"),
+      kind: "root_run",
+      ordinalWithinParent: 0,
+      advancesAppRunCount: true,
+      cwd: "/repo/queue-gap",
+      createdAt: DateTime.makeUnsafe("2026-07-28T00:00:00.000Z"),
+    };
+    const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+    const copyStarted = yield* Deferred.make<void>();
+    const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
+    const layerTest = CheckpointService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          layerNoTrackedFolders,
+          Layer.mock(CheckpointStore.CheckpointStore)({
+            isGitRepository: () => Effect.succeed(true),
+            hasCheckpointRef: () => Effect.succeed(false),
+            copyCheckpointRef: () =>
+              record("copy").pipe(
+                Effect.andThen(Deferred.succeed(copyStarted, undefined)),
+                Effect.andThen(row.copy === undefined ? Effect.never : Effect.succeed(row.copy)),
+              ),
+            captureCheckpoint: () => record("snapshot").pipe(Effect.as(null)),
+          }),
+        ),
+      ),
+      Layer.provideMerge(NodeCrypto.layer),
+    );
+
+    yield* Effect.gen(function* () {
+      const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+      const baseline = yield* checkpoints
+        .captureBaseline({ scope, ordinalWithinScope: 4, sourceOrdinalWithinScope: row.source })
+        .pipe(Effect.forkChild);
+      if (row.source !== undefined) yield* Deferred.await(copyStarted);
+      yield* TestClock.adjust("5 seconds");
+      yield* Fiber.join(baseline);
+      assert.deepEqual(yield* Ref.get(calls), row.calls);
+    }).pipe(Effect.provide(layerTest));
+  }),
 );
 
 it.effect(
@@ -1489,7 +1553,9 @@ it.effect("backs off only baseline retries after repeated workspace capture time
             captureCheckpoint: () =>
               Effect.suspend(() => {
                 attempts++;
-                return healthy ? Effect.void : Effect.fail(nonTimeoutFailure ? failure : timeout);
+                return healthy
+                  ? Effect.succeed(null)
+                  : Effect.fail(nonTimeoutFailure ? failure : timeout);
               }),
           }),
         ),
@@ -1595,7 +1661,7 @@ it.effect("skips post-turn captures that waited out another capture's timeout in
                 yield* Effect.sleep("30 seconds");
                 const [next = "timeout", ...rest] = yield* Ref.get(script);
                 yield* Ref.set(script, rest);
-                if (next === "ready") return;
+                if (next === "ready") return null;
                 return yield* new VcsProcessTimeoutError({
                   operation: "GitVcsDriver.checkpoints.captureCheckpoint",
                   command: "git",
@@ -1747,6 +1813,7 @@ it.effect("keeps the pre-rewind snapshot of a folder a failed rewind could not p
               captured.push(input.cwd);
               existing.add(input.checkpointRef);
               preRewindRefs.set(input.cwd, input.checkpointRef);
+              return null;
             }),
           // The second folder's rewind fails, and then so does putting the first one back.
           restoreCheckpoint: (input) =>

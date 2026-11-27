@@ -8,6 +8,8 @@ import * as Settings from "../serverSettings.ts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import {
+  CheckpointScopeId,
+  CommandId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -19,6 +21,7 @@ import {
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -33,7 +36,7 @@ import { attachmentIsPendingUpload } from "../orchestration-v2/AttachmentClaims.
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 
 it.effect(
-  "finds continuations only for the current step message and tolerates a never-launched thread",
+  "matches continuations to the current step and releases checkpoint waits on permanent failure",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -63,12 +66,53 @@ it.effect(
         run("old", "old-message"),
         run("old-continuation", "old-continuation-message", "old"),
         run("current", "current-message"),
+        { ...run("finished", "finished-message"), status: "completed" as const },
       ];
+      let interruptAfterRead = false;
       const program = Effect.gen(function* () {
         const runtime = yield* Runtime.FlowRuntime;
+        const outbox = yield* Outbox.EffectOutboxV2;
         expect(yield* runtime.continuing(threadId, "current-message")).toBeNull();
         expect(yield* runtime.continuing(ThreadId.make("missing"), "message")).toBeNull();
         expect(yield* runtime.settled(ThreadId.make("missing"), "message")).toBeNull();
+        const effectId = "effect:checkpoint.capture:finished";
+        yield* outbox.enqueue([
+          {
+            id: effectId,
+            commandId: CommandId.make("capture-finished"),
+            threadId,
+            request: {
+              type: "checkpoint.capture",
+              runId: RunId.make("finished"),
+              scopeId: CheckpointScopeId.make("scope"),
+            },
+          },
+        ]);
+        expect(yield* runtime.settled(threadId, "current-message")).toMatchObject({
+          turnId: "current",
+          failed: true,
+        });
+        const pending = yield* runtime.settled(threadId, "finished-message");
+        if (!pending || !("awaitCheckpoint" in pending))
+          return yield* Effect.die("Missing checkpoint wait");
+        const waiter = yield* pending.awaitCheckpoint.pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* outbox.claimNext({ workerId: "checkpoint-worker" });
+        expect(
+          yield* outbox.fail({ effectId, workerId: "checkpoint-worker", error: "Capture failed" }),
+        ).toBe(true);
+        yield* Fiber.join(waiter);
+        expect(yield* runtime.settled(threadId, "finished-message")).toMatchObject({
+          turnId: "finished",
+          failed: false,
+        });
+        interruptAfterRead = true;
+        expect(yield* runtime.settled(threadId, "finished-message")).toMatchObject({
+          turnId: "finished",
+          failed: true,
+          interrupted: true,
+        });
         yield* sql`INSERT INTO orchestration_v2_effect_outbox (effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count, available_at, created_at, updated_at) VALUES ('continue', 'continue', ${threadId}, 'provider-runtime.continue', '{"type":"provider-runtime.continue","sourceRunId":"current"}', 'pending', 0, '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z')`;
         expect(yield* runtime.continuing(threadId, "current-message")).toBe(
           "message:restart-continuation:current",
@@ -86,7 +130,7 @@ it.effect(
             Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-flow-runtime-" })),
             Layer.provide(Layer.mock(DocumentText.DocumentText)({})),
             Layer.provide(NodeServices.layer),
-            Layer.provide(
+            Layer.provideMerge(
               Layer.mergeAll(
                 Layer.mock(Launch.ThreadLaunchService)({}),
                 Outbox.layer,
@@ -97,7 +141,16 @@ it.effect(
                 Layer.mock(Registry.ProviderInstanceRegistry)({}),
                 Layer.mock(Threads.ThreadManagementService)({
                   getThreadShell: (id) => Effect.succeed(id === threadId ? shell : null),
-                  getThreadRecords: () => Effect.succeed({ ...idleThreadProjection(shell), runs }),
+                  getThreadRecords: () =>
+                    Effect.sync(() => {
+                      const projection = { ...idleThreadProjection(shell), runs: [...runs] };
+                      if (interruptAfterRead) {
+                        interruptAfterRead = false;
+                        const index = runs.findIndex((run) => run.id === "finished");
+                        runs[index] = { ...runs[index]!, status: "interrupted" };
+                      }
+                      return projection;
+                    }),
                 }),
                 Layer.mock(Sink.EventSinkV2)({
                   latestSequence: () => Effect.succeed(0),

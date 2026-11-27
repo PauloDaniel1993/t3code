@@ -25,6 +25,7 @@ import {
   SourceControlCloneRepositoryResult,
 } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
@@ -196,6 +197,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ManagedProjectFolders.ManagedProjectFolders,
     GitVcsDriver.GitVcsDriver,
     FileSystem.FileSystem,
+    Path.Path,
     ServerConfig.ServerConfig,
     ServerSettings.ServerSettingsService,
     ProviderRegistry.ProviderRegistry,

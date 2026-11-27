@@ -25,9 +25,11 @@ import { useNowMinute } from "../hooks/useNowMinute";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import { useProjects, useServerConfigs, useQuietThreadShells } from "../state/entities";
+import { useConnectedEnvironmentIds, usePrimaryEnvironmentId } from "../state/environments";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
+import { useUiStateStore } from "../uiStateStore";
 import { readLocalApi } from "../localApi";
 import type { Project } from "../types";
 import Sidebar from "./Sidebar";
@@ -40,6 +42,7 @@ vi.mock(import("../state/olderSettledShelf"), async (original) => {
   return { ...actual, useOlderSettledShelf: vi.fn(actual.useOlderSettledShelf) };
 });
 vi.mock("../state/entities", { spy: true });
+vi.mock("../state/environments", { spy: true });
 vi.mock("../hooks/useHandleNewThread", { spy: true });
 vi.mock("../hooks/useNowMinute", { spy: true });
 vi.mock("../hooks/useThreadRouteTarget", { spy: true });
@@ -129,6 +132,65 @@ describe("sidebar header new thread", () => {
       expect(openCommandPalette).not.toHaveBeenCalled();
       expect(startThread).toHaveBeenCalledExactlyOnceWith(currentProjectRef);
     }
+  });
+});
+
+// regression: #41549 a grouped project's folder New thread went to the primary copy
+describe("sidebar project folder new thread", () => {
+  it("starts in the copy of the viewed thread, as the new-thread shortcut does", async () => {
+    using stack = new DisposableStack();
+    const previousSettings = getClientSettings();
+    stack.defer(() => __setClientSettingsForTests(previousSettings));
+    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, boringSidebarEnabled: true });
+    const primary = EnvironmentId.make("local");
+    const dev1 = EnvironmentId.make("dev1");
+    const repositoryIdentity = {
+      canonicalKey: "github.com/acme/demo-repo",
+      locator: {
+        source: "git-remote" as const,
+        remoteName: "origin",
+        remoteUrl: "https://github.com/acme/demo-repo.git",
+      },
+      displayName: "acme/demo-repo",
+    };
+    const primaryCopy = { ...project("demo-primary"), repositoryIdentity };
+    const dev1Copy = {
+      ...project("demo-dev1"),
+      environmentId: dev1,
+      repositoryIdentity,
+    };
+    vi.mocked(usePrimaryEnvironmentId).mockReturnValue(primary);
+    vi.mocked(useConnectedEnvironmentIds).mockReturnValue([primary, dev1]);
+    vi.mocked(useProjects).mockReturnValue([primaryCopy, dev1Copy]);
+    const dev1Thread = makeThreadFixture({
+      environmentId: dev1,
+      id: ThreadId.make("dev1-thread"),
+      projectId: dev1Copy.id,
+      title: "dev1 work",
+    });
+    vi.mocked(useQuietThreadShells).mockReturnValue([dev1Thread]);
+    const threadRef = scopeThreadRef(dev1, dev1Thread.id);
+    vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef });
+    const dev1ProjectRef = scopeProjectRef(dev1, dev1Copy.id);
+    const startThread = vi.fn().mockResolvedValue(null);
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: dev1Thread,
+      defaultProjectRef: dev1ProjectRef,
+      defaultProjectFallbackReady: true,
+      handleNewThread: startThread,
+      routeDraftId: null,
+      routeThreadRef: threadRef,
+    });
+
+    await using screen = await render(
+      <SidebarProvider>
+        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+      </SidebarProvider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "New thread in acme/demo-repo" }));
+
+    expect(startThread).toHaveBeenCalledExactlyOnceWith(dev1ProjectRef);
   });
 });
 
@@ -222,6 +284,9 @@ describe("sidebar shelf collapse", () => {
       const previousSettings = getClientSettings();
       stack.defer(() => __setClientSettingsForTests(previousSettings));
       __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, boringSidebarEnabled });
+      const { projectExpandedById } = useUiStateStore.getState();
+      stack.defer(() => useUiStateStore.setState({ projectExpandedById }));
+      useUiStateStore.setState({ projectExpandedById: {} });
       const workspace = project("workspace");
       const threads = [0, 1].map((index) => ({
         ...threadShell(workspace.id, index),
@@ -264,6 +329,28 @@ describe("sidebar shelf collapse", () => {
       await userEvent.click(toggle);
       await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
       await expect.element(other).toBeInTheDocument();
+
+      if (boringSidebarEnabled) {
+        const folder = screen
+          .getByTestId("sidebar-project-folder")
+          .getByRole("button", { name: /^workspace/ });
+        const firstThread = screen.getByTestId("sidebar-row-folder").first();
+        await expect.element(toggle).toHaveFocus();
+        await userEvent.keyboard("{ArrowRight}");
+        await expect.element(folder).toHaveFocus();
+        await expect.element(folder).toHaveAttribute("aria-expanded", "true");
+        await userEvent.keyboard("{ArrowRight}");
+        await expect.element(firstThread).toHaveFocus();
+        await userEvent.keyboard("{ArrowLeft}");
+        await expect.element(folder).toHaveFocus();
+        await userEvent.keyboard("{ArrowLeft}");
+        await expect.element(folder).toHaveAttribute("aria-expanded", "false");
+        await expect.element(open).toBeInTheDocument();
+        await expect.element(other).not.toBeInTheDocument();
+        await expect.element(folder).toHaveFocus();
+        await userEvent.keyboard("{ArrowLeft}");
+        await expect.element(toggle).toHaveFocus();
+      }
     },
   );
 });

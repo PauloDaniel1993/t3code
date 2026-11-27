@@ -4,6 +4,7 @@ import type {
   NodeId,
   OrchestrationV2Checkpoint,
   OrchestrationV2DomainEvent,
+  OrchestrationV2Run,
   OrchestrationV2ContextHandoff,
   OrchestrationV2StoredEvent,
   OrchestrationV2Subagent,
@@ -301,6 +302,12 @@ export function projectContextHandoffForWire(
   return { ...projected, summaryText: "" };
 }
 
+function projectRunForWire(run: OrchestrationV2Run): OrchestrationV2Run {
+  if (run.checkpointPlan === undefined) return run;
+  const { checkpointPlan: _serverPlan, ...rest } = run;
+  return rest;
+}
+
 export function projectThreadProjectionForWire(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadProjection {
@@ -316,6 +323,7 @@ export function projectThreadProjectionForWire(
   return {
     ...projection,
     checkpoints: projection.checkpoints.map(capCheckpointFiles),
+    runs: projection.runs.map(projectRunForWire),
     contextHandoffs: projection.contextHandoffs.map(projectContextHandoffForWire),
     turnItems: projection.turnItems.map(project),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
@@ -328,6 +336,12 @@ export function projectThreadProjectionForWire(
 export function projectDomainEventForWire(
   event: OrchestrationV2DomainEvent,
 ): OrchestrationV2DomainEvent {
+  if (
+    (event.type === "run.created" || event.type === "run.updated") &&
+    event.payload.checkpointPlan !== undefined
+  ) {
+    return { ...event, payload: projectRunForWire(event.payload) };
+  }
   return event.type === "turn-item.updated"
     ? { ...event, payload: projectTurnItemForWire(event.payload) }
     : event.type === "context-handoff.updated"

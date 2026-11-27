@@ -39,6 +39,8 @@ export function useDirectoryEntries(
   const followUpRefreshes = useRef(new Map<string, Promise<void>>());
   const loaded = useRef(new Set<string>());
   const requested = useRef(new Set<string>());
+  // Listed folders a refresh has not read again yet. `revalidate` reads one once it is on screen.
+  const stale = useRef(new Set<string>());
   const active = useRef(true);
   const generation = useRef(0);
   const running = useRef(0);
@@ -49,6 +51,7 @@ export function useDirectoryEntries(
       const requestGeneration = generation.current;
       loaded.current.add(directoryPath);
       requested.current.add(directoryPath);
+      stale.current.delete(directoryPath);
       const reference = directoryPath ? workspaceFileReference(workspace, directoryPath) : null;
       const scope = reference?.scope ?? workspace?.scope;
       const atom = projectEnvironment.listEntries({
@@ -85,8 +88,23 @@ export function useDirectoryEntries(
           )
             return;
           if (result._tag === "Success") {
-            if (directoryPath === "") setFolders(result.value.folders ?? []);
-            const children =
+            if (directoryPath === "") {
+              const nextFolders = result.value.folders ?? [];
+              setFolders((previous) =>
+                previous.length === nextFolders.length &&
+                previous.every((folder, index) => {
+                  const next = nextFolders[index]!;
+                  return (
+                    folder.folderPath === next.folderPath &&
+                    folder.label === next.label &&
+                    folder.status === next.status
+                  );
+                })
+                  ? previous
+                  : nextFolders,
+              );
+            }
+            const children: readonly ProjectEntry[] =
               directoryPath === "" && result.value.folders && result.value.folders.length > 1
                 ? result.value.folders.map((folder) => ({
                     path: folder.label,
@@ -97,6 +115,7 @@ export function useDirectoryEntries(
                       entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) ===
                       directoryPath,
                   );
+            const listed = listings.current.get(directoryPath);
             const next = new Map(listings.current).set(directoryPath, children);
             const childDirectories = new Set(
               children.filter((entry) => entry.kind === "directory").map((entry) => entry.path),
@@ -111,14 +130,29 @@ export function useDirectoryEntries(
               next.delete(path);
               loaded.current.delete(path);
               requested.current.delete(path);
+              stale.current.delete(path);
               const detachedRequest = requests.current.get(path);
               if (detachedRequest)
                 detachedRequests.current.set(detachedRequest.atom, detachedRequest.request);
               requests.current.delete(path);
               followUpRefreshes.current.delete(path);
             }
-            listings.current = next;
-            setDirectories(next);
+            // A refresh that finds a folder as it was publishes nothing, so the tree is not rebuilt.
+            const unchanged =
+              removed.length === 0 &&
+              listed?.length === children.length &&
+              children.every((entry, index) => {
+                const known = listed[index]!;
+                return (
+                  entry.path === known.path &&
+                  entry.kind === known.kind &&
+                  entry.ignored === known.ignored
+                );
+              });
+            if (!unchanged) {
+              listings.current = next;
+              setDirectories(next);
+            }
             if (removed.length > 0)
               setLoadingDirectories((previous) => {
                 const remaining = new Set(previous);
@@ -126,8 +160,10 @@ export function useDirectoryEntries(
                 return remaining;
               });
             setErrors((previous) => {
+              const cleared = [directoryPath, ...removed].filter((path) => previous.has(path));
+              if (cleared.length === 0) return previous;
               const remaining = new Map(previous);
-              for (const path of [directoryPath, ...removed]) remaining.delete(path);
+              for (const path of cleared) remaining.delete(path);
               return remaining;
             });
           } else {
@@ -203,6 +239,7 @@ export function useDirectoryEntries(
     followUpRefreshes.current.clear();
     loaded.current.clear();
     requested.current.clear();
+    stale.current.clear();
     void startRequest("", false);
     return () => {
       active.current = false;
@@ -234,11 +271,24 @@ export function useDirectoryEntries(
     ...entries.filter((entry) => entry.kind === "directory").map((entry) => entry.path),
   ]);
 
+  // Reads the root again and leaves every other listed folder to `revalidate`, so a refresh costs
+  // what is on screen rather than every folder the tree has listed.
   const refresh = () => {
-    const paths = [...requested.current].filter((path) => reachableDirectories.has(path));
-    for (const path of paths) {
-      if (!active.current) break;
-      void load(path, true);
+    if (!active.current) return;
+    for (const path of requested.current) if (path !== "") stale.current.add(path);
+    void load("", true);
+  };
+
+  /** Reads again the stale listings that put a row on screen: `directoryPath` and its ancestors. */
+  const revalidate = (directoryPath: string) => {
+    if (!active.current) return;
+    for (
+      let end = directoryPath.length;
+      end > 0 && stale.current.size > 0;
+      end = directoryPath.lastIndexOf("/", end - 1)
+    ) {
+      const path = directoryPath.slice(0, end);
+      if (stale.current.delete(path)) void load(path, true);
     }
   };
 
@@ -247,6 +297,7 @@ export function useDirectoryEntries(
     folders,
     load,
     refresh,
+    revalidate,
     isPending: pending > 0,
     loadingDirectories,
     ready: directories.has(""),

@@ -79,13 +79,15 @@ export class FlowRuntime extends Context.Service<
       messageId: string,
       continuationAttempted?: boolean,
     ) => Effect.Effect<
-      {
-        readonly interrupted?: boolean;
-        readonly messageId: string;
-        readonly turnId: string;
-        readonly text: string;
-        readonly failed: boolean;
-      } | null,
+      | {
+          readonly interrupted?: boolean;
+          readonly messageId: string;
+          readonly turnId: string;
+          readonly text: string;
+          readonly failed: boolean;
+        }
+      | { readonly turnId: string; readonly awaitCheckpoint: Effect.Effect<void, FlowError> }
+      | null,
       FlowError
     >;
     readonly continuing: (
@@ -377,20 +379,34 @@ const make = Effect.gen(function* () {
         pending.some((effect) => effect.request.type === "provider-runtime.continue")
       )
         return null;
+      const capture = pending.find(
+        (effect) => effect.request.type === "checkpoint.capture" && effect.request.runId === run.id,
+      );
+      if (capture)
+        return {
+          turnId: run.id,
+          awaitCheckpoint: outbox.awaitSettled(capture.id).pipe(Effect.mapError(failure)),
+        };
+      // Capture may honor a Stop between the first run read and the outbox read.
+      const settled = yield* threads
+        .getThreadRecords(threadId, ["runs", "messages", "turnItems", "providerTurns"], {
+          runIds: [run.id],
+          messageRunIds: [run.id],
+          turnItemRunIds: [run.id],
+        })
+        .pipe(Effect.mapError(failure));
+      const current = settled.runs.find((candidate) => candidate.id === run.id);
+      if (
+        !current ||
+        !["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(current.status)
+      )
+        return null;
       return {
         messageId,
-        turnId: run.id,
-        text: subagentResultForRun(
-          yield* threads
-            .getThreadRecords(threadId, ["messages", "turnItems", "providerTurns"], {
-              messageRunIds: [run.id],
-              turnItemRunIds: [run.id],
-            })
-            .pipe(Effect.mapError(failure)),
-          run,
-        ).text,
-        failed: run.status !== "completed",
-        interrupted: run.status === "cancelled" || run.status === "interrupted",
+        turnId: current.id,
+        text: subagentResultForRun(settled, current).text,
+        failed: current.status !== "completed",
+        interrupted: current.status === "cancelled" || current.status === "interrupted",
       };
     }),
     continuing: Effect.fn("FlowRuntime.continuing")(function* (threadId, messageId) {

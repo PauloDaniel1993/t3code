@@ -292,7 +292,7 @@ describe("checkpointScopeForRun", () => {
     const own = checkpointScopeForRun({
       scope: later,
       thread,
-      run: { unavailableFolderPaths: ["/lib"] },
+      run: { id: RunId.make("run:earlier"), unavailableFolderPaths: ["/lib"] },
     });
 
     assert.deepStrictEqual(
@@ -303,7 +303,7 @@ describe("checkpointScopeForRun", () => {
   });
 
   it("leaves a scope without parts as it is", () => {
-    assert.strictEqual(checkpointScopeForRun({ scope, thread, run: {} }), scope);
+    assert.strictEqual(checkpointScopeForRun({ scope, thread, run: { id: scope.runId } }), scope);
     assert.deepStrictEqual(runFolderPaths({ worktreePath: null }, {}), []);
   });
 });

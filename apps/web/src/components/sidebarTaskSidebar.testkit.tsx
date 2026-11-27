@@ -1,340 +1,169 @@
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from "@tanstack/react-router";
+import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import {
+  DEFAULT_CLIENT_SETTINGS,
+  EnvironmentId,
+  ProjectId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
+import { AsyncResult } from "effect/reactivity";
 import { vi } from "vite-plus/test";
-import { msg } from "gt-react";
-import { m } from "../i18n/messages";
-import type { ReactNode } from "react";
-import type {
-  EnvironmentProject,
-  EnvironmentThreadShell,
-} from "@t3tools/client-runtime/state/models";
-import type { ScopedThreadRef } from "@t3tools/contracts";
-import type { ThreadRouteTarget } from "../threadRoutes";
 
-const sidebarHarness = vi.hoisted(() => ({
-  threads: [] as ReadonlyArray<EnvironmentThreadShell>,
-  projects: [] as ReadonlyArray<EnvironmentProject>,
-  enabled: true,
-  menu: vi.fn(async (_items: unknown, _position: unknown) => "delete"),
-  remove: vi.fn(async () => ({ _tag: "Success" as const })),
-  archive: vi.fn(async () => ({ _tag: "Success" as const })),
-  settle: vi.fn(async (_ref: ScopedThreadRef) => ({ _tag: "Success" as const })),
-  navigate: vi.fn((_options: unknown) => {}),
-  newThread: vi.fn((_project: unknown) => {}),
-  routeTarget: null as ThreadRouteTarget | null,
-  selection: [] as Array<{ threadKey: string; thread: EnvironmentThreadShell }>,
-}));
-vi.mock("./Sidebar.logic", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./Sidebar.logic")>();
-  return {
-    ...actual,
-    selectRenderedSidebarThreads: (
-      ...args: [ReadonlyArray<string>, ReadonlyMap<string, EnvironmentThreadShell>]
-    ) => {
-      const result = actual.selectRenderedSidebarThreads(...args);
-      sidebarHarness.selection = result;
-      return result;
-    },
-  };
-});
-vi.mock("../state/entities", () => ({
-  useThreadShells: () => sidebarHarness.threads,
-  useQuietThreadShells: () => sidebarHarness.threads,
-  useDelegatedUnderParent: () => new Set<string>(),
-  useServerConfigs: () => config,
-  useThreadShell: (ref: ScopedThreadRef) =>
-    sidebarHarness.threads.find(
-      (thread) => thread.environmentId === ref.environmentId && thread.id === ref.threadId,
-    ) ?? null,
-  useProjects: () => sidebarHarness.projects,
-  useAllEnvironmentProjectSnapshotsReady: () => false,
-  readThreadShell: (ref: ScopedThreadRef) =>
-    sidebarHarness.threads.find(
-      (thread) => thread.environmentId === ref.environmentId && thread.id === ref.threadId,
-    ) ?? null,
-}));
-vi.mock("../state/server", () => ({
-  serverEnvironment: { configValueAtom: () => "configs" },
-  environmentServerConfigsAtom: "configs",
-  primaryServerKeybindingsAtom: "bindings",
-}));
-vi.mock("../state/presentation", () => ({
-  environmentPresentations: {
-    providersByEnvironmentAtom: "providers",
-    serverConfigsAtom: "configs",
-  },
-}));
-vi.mock("../state/session", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../state/session")>()),
-  readEnvironmentScope: () => true,
-  useEnvironmentScope: () => true,
-}));
-vi.mock("@effect/atom-react", () => ({
-  useAtomValue: (atom: unknown) =>
-    atom === "configs" ? config : atom === "bindings" ? [] : snapshots,
-}));
-const config = new Map([
-  [
-    "local",
-    {
-      environment: { capabilities: { threadTasks: true, threadSettlement: true } },
-      providers: [],
-      settings: {},
-    },
-  ],
-]);
-const snapshots = new Map();
-vi.mock("../hooks/useSettings", async () => {
-  const { DEFAULT_CLIENT_SETTINGS } = await import("@t3tools/contracts/settings");
-  return {
-    useClientSettings: (selector: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
-      selector({
-        ...DEFAULT_CLIENT_SETTINGS,
-        sidebarTaskSubthreadsEnabled: sidebarHarness.enabled,
-        confirmThreadDelete: false,
-      }),
-  };
-});
-vi.mock("../state/environments", () => ({
-  useEnvironmentIdentities: () => identities,
-  useConnectedEnvironmentIds: () => [],
-  useEnvironmentMachines: () => machines,
-  usePrimaryEnvironmentId: () => "local",
-}));
-const identities = [{ environmentId: "local", label: m(msg("Local")) }];
-const machines = new Map();
-vi.mock("../state/threads", () => ({
-  threadEnvironment: {},
-  environmentThreadDetails: {},
-  useThreadFamily: () => {},
-}));
-vi.mock("../state/vcs", () => ({ vcsEnvironment: {} }));
-vi.mock("../state/query", () => ({
-  useEnvironmentQuery: () => ({ data: null, dataUpdatedAt: 0 }),
-}));
-vi.mock("../state/queries", () => ({
-  useThreadSearch: (_environments: unknown, query: string) => ({
-    matches: [],
-    query,
-    isPending: false,
-  }),
-}));
-vi.mock("../state/olderSettledShelf", () => ({
-  useOlderSettledShelf: () => ({
-    isListed: () => true,
-    unloadedCount: () => 0,
-    loading: false,
-    failed: false,
-    retry: () => {},
-  }),
-  useOlderSettledShelfGrowth: () => {},
-}));
-vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => noop }));
-vi.mock("../state/use-orchestration-command", () => ({ useOrchestrationCommand: () => noop }));
-const noop = () => {};
-vi.mock("../state/terminalSessions", () => ({
-  useThreadRunningTerminalIds: () => emptyIds,
-  useTerminalLabelsByThreadKey: () => emptyTerminalLabels,
-}));
-const emptyTerminalLabels = new Map<string, string>();
-const emptyIds: string[] = [];
-vi.mock("../hooks/useThreadActions", () => ({
-  useThreadActions: () => actions,
-  useAcknowledgeThreadWoke: () => noop,
-}));
-const actions = {
-  archiveThread: sidebarHarness.archive,
-  deleteThread: sidebarHarness.remove,
-  settleThread: sidebarHarness.settle,
-  unsettleThread: noop,
-  snoozeThread: noop,
-  unsnoozeThread: noop,
-  pinThread: noop,
-  unpinThread: noop,
-  confirmAndUnpinThread: noop,
-  setThreadAutoSettle: noop,
-  reorderPinnedThread: noop,
-  reorderActiveThread: noop,
-  moveThreadsToSection: noop,
-  markThreadUnread: noop,
-};
-vi.mock("../hooks/useHandleNewThread", () => ({
-  useHandleNewThread: () => ({ handleNewThread: sidebarHarness.newThread }),
-}));
-vi.mock("../hooks/useCopyToClipboard", () => ({
-  useCopyToClipboard: () => ({ copyToClipboard: noop }),
-}));
-vi.mock("../hooks/useTerminalFocus", () => ({ useTerminalFocus: () => false }));
-vi.mock("../hooks/useNowMinute", () => ({ useNowMinute: () => minute }));
-const minute = 1_800_000_000_000;
-vi.mock("../shortcutModifierState", () => ({
-  useShortcutModifierState: () => ({ alt: false, ctrl: false, meta: false, shift: false }),
-}));
-vi.mock("../hooks/useSupportsMultiplePullRequests", () => ({
-  useSupportsMultiplePullRequests: () => false,
-}));
-vi.mock("../lib/openPullRequestLink", () => ({ useOpenPrLink: () => noop }));
-vi.mock("../lib/composerDraftUploads", () => ({ releaseComposerDraftUploads: noop }));
-vi.mock("../composerDraftStore", () => ({
-  useThreadHasUnsentDraft: () => false,
-  composerDraftHasUserContent: () => false,
-  useComposerDraftStore: (selector: (state: typeof drafts) => unknown) => selector(drafts),
-}));
-const drafts = {
-  draftThreadsByThreadKey: {},
-  draftsByThreadKey: {},
-  clearComposerContent: noop,
-  clearDraftThread: noop,
-};
-vi.mock("../hooks/useShownThreadRouteTarget", () => ({
-  useShownThreadRouteTarget: () => ({ shownTarget: sidebarHarness.routeTarget, modalOpen: false }),
-}));
-vi.mock("@tanstack/react-router", () => ({
-  useParams: (options: {
-    select?: (params: { environmentId?: string; threadId?: string; draftId?: string }) => unknown;
-  }) => {
-    const target = sidebarHarness.routeTarget;
-    const params =
-      target?.kind === "server"
-        ? target.threadRef
-        : target?.kind === "draft"
-          ? { draftId: target.draftId }
-          : {};
-    return options.select ? options.select(params) : params;
-  },
-  useRouter: () => router,
-}));
-const router = {
-  navigate: sidebarHarness.navigate,
-  state: {
-    location: { pathname: "/" },
-    get matches() {
-      const target = sidebarHarness.routeTarget;
-      return [
-        {
-          params:
-            target?.kind === "server"
-              ? target.threadRef
-              : target?.kind === "draft"
-                ? { draftId: target.draftId }
-                : {},
-        },
-      ];
-    },
-  },
-};
-vi.mock("../localApi", () => ({
-  readLocalApi: () => ({
-    contextMenu: { show: sidebarHarness.menu },
-    dialogs: { confirm: async () => true },
-  }),
-}));
-vi.mock("./SidebarTaskPeek", () => ({
-  SidebarTaskPeek: () => null,
-  closeSidebarTaskPeek: noop,
-  leaveSidebarTaskPeek: noop,
-  openSidebarTaskPeek: noop,
-}));
-vi.mock("./sidebarTaskPresentation", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./sidebarTaskPresentation")>()),
-  useSidebarTaskProjection: () => null,
-}));
-vi.mock("./ThreadHoverCard", () => ({
-  ThreadHoverCard: ({ children }: { children: ReactNode }) => children,
-  ThreadHoverCardPopup: () => null,
-}));
-vi.mock("./ThreadStatusIndicators", () => ({
-  threadChangeRequestSnapshotsAtom: "snapshots",
-  setThreadChangeRequestSnapshot: noop,
-  ThreadPullRequestBadgeControl: () => null,
-  ThreadPullRequestsMiniList: () => null,
-  ThreadWorktreeIndicator: () => null,
-  ThreadTerminalStatusButton: () => null,
-  ThreadSearchPullRequestNumber: () => null,
-  nextThreadChangeRequestSnapshot: () => null,
-  prStatusIndicator: () => null,
-  resolveThreadPullRequestBadge: () => null,
-  terminalStatusFromRunningIds: () => null,
-  synchronizeTerminalPulse: noop,
-  useLinkedThreadPullRequest: () => null,
-}));
-vi.mock("./Sidebar.motion", () => ({
-  createSidebarListMotion: () => ({ dispose: noop, update: noop, release: noop, suspend: noop }),
-}));
-vi.mock("./chat/guestShareAvailability", async () => {
-  const { Atom } = await import("effect/reactivity");
-  return { canShareWithGuestAtom: () => Atom.make(false) };
-});
-vi.mock("./chat/ThreadContextDragGhost", () => ({ ThreadContextDragGhost: () => null }));
-vi.mock("./chat/ProviderInstanceIcon", () => ({ ProviderInstanceIcon: () => null }));
-vi.mock("./ProjectFavicon", () => ({ ProjectFavicon: () => null }));
-vi.mock("./WorkspaceFoldersChip", () => ({ WorkspaceFoldersChip: () => null }));
-vi.mock("./ui/sidebar", () => ({
-  useSidebar: () => ({ isMobile: false, setOpenMobile: noop }),
-  SidebarContent: ({ fixedHeader, children }: { fixedHeader: ReactNode; children: ReactNode }) => (
-    <div>
-      {fixedHeader}
-      {children}
-    </div>
-  ),
-  SidebarGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-}));
+import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
+import { useThreadActions } from "../hooks/useThreadActions";
+import { createLocalApi, readLocalApi } from "../localApi";
+import {
+  readThreadShell,
+  useProjects,
+  useQuietThreadShells,
+  useServerConfigs,
+} from "../state/entities";
+import { usePrimaryEnvironmentId } from "../state/environments";
+import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
+import { threadTriagePermitted } from "../state/use-orchestration-command";
+import { useThreadSelectionStore } from "../threadSelectionStore";
+import { useUiStateStore } from "../uiStateStore";
+import Sidebar from "./Sidebar";
+import { SidebarProvider } from "./ui/sidebar";
+
+vi.mock("../hooks/useThreadActions", { spy: true });
+vi.mock("../state/entities", { spy: true });
+vi.mock("../state/environments", { spy: true });
+vi.mock("../state/session", { spy: true });
+vi.mock("../state/use-orchestration-command", { spy: true });
+vi.mock("../hooks/useHandleNewThread", { spy: true });
+vi.mock("../localApi", { spy: true });
 vi.mock("./sidebar/SidebarChrome", () => ({
   SidebarChromeHeader: () => null,
   SidebarChromeFooter: () => null,
 }));
-vi.mock("./sidebar/SidebarThreadHeader", () => ({
-  SidebarHeaderIconButton: ({ children }: { children: ReactNode }) => <button>{children}</button>,
-  SidebarThreadHeader: ({
-    onSearchQueryChange,
-  }: {
-    onSearchQueryChange: (value: string) => void;
-  }) => (
-    <input
-      aria-label={m(msg("Search threads"))}
-      onChange={(event) => onSearchQueryChange(event.target.value)}
-    />
-  ),
-}));
-vi.mock("./ui/combobox", () => ({
-  useComboboxFilter: () => ({ contains: () => true }),
-  Combobox: () => null,
-  ComboboxEmpty: () => null,
-  ComboboxSearchInput: () => null,
-  ComboboxItem: () => null,
-  ComboboxList: () => null,
-  ComboboxPopup: () => null,
-  ComboboxTrigger: () => null,
-}));
-vi.mock("./ui/tooltip", async () => {
-  const { cloneElement } = await import("react");
-  return {
-    Tooltip: ({ children }: { children: ReactNode }) => children,
-    TooltipProvider: ({ children }: { children: ReactNode }) => children,
-    TooltipPopup: () => null,
-    TooltipTrigger: ({
-      render,
-      children,
-    }: {
-      render: React.ReactElement<{ children?: ReactNode }>;
-      children: ReactNode;
-    }) => cloneElement(render, {}, children),
-  };
-});
-vi.mock("./ui/collapsible-section-header", () => ({
-  CollapsibleSectionHeader: ({ label }: { label: string }) => <span>{label}</span>,
-}));
-vi.mock("./ui/menu", () => ({
-  Menu: () => null,
-  MenuItem: () => null,
-  MenuPopup: () => null,
-  MenuSeparator: () => null,
-  MenuShortcut: () => null,
-  MenuTrigger: () => null,
-}));
-vi.mock("./ui/toast", () => ({
-  toastManager: { add: noop },
-  stackedThreadToast: (input: unknown) => input,
-}));
 
-export function getSidebarHarness() {
-  return sidebarHarness;
+export const sidebarTestEnvironmentId = EnvironmentId.make("local");
+
+export function setupTaskSidebar(
+  stack: DisposableStack,
+  threads: ReadonlyArray<EnvironmentThreadShell>,
+  currentThread?: EnvironmentThreadShell,
+) {
+  const environmentId = sidebarTestEnvironmentId;
+  const previousSettings = getClientSettings();
+  const { sidebarTaskGroupsExpandedById, sidebarProjectScopeKeys } = useUiStateStore.getState();
+  const previousSelection = useThreadSelectionStore.getState();
+  stack.defer(() => {
+    __setClientSettingsForTests(previousSettings);
+    useUiStateStore.setState({ sidebarTaskGroupsExpandedById, sidebarProjectScopeKeys });
+    useThreadSelectionStore.setState(previousSelection);
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    sidebarTaskSubthreadsEnabled: true,
+    confirmThreadDelete: false,
+  });
+  useUiStateStore.setState({
+    sidebarTaskGroupsExpandedById: { "local:parent": false },
+    sidebarProjectScopeKeys: ["local:/workspace/shown"],
+  });
+  useThreadSelectionStore.getState().clearSelection();
+
+  vi.mocked(useProjects).mockReturnValue(
+    ["shown", "hidden"].map((id) => ({
+      id: ProjectId.make(id),
+      environmentId,
+      title: id,
+      workspaceRoot: `/workspace/${id}`,
+      repositoryIdentity: null,
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: "2026-09-29T00:00:00Z",
+      updatedAt: "2026-09-29T00:00:00Z",
+    })),
+  );
+  vi.mocked(useQuietThreadShells).mockReturnValue(threads);
+  vi.mocked(readThreadShell).mockImplementation(
+    (ref) =>
+      threads.find(
+        (thread) => thread.environmentId === ref.environmentId && thread.id === ref.threadId,
+      ) ?? null,
+  );
+  vi.mocked(usePrimaryEnvironmentId).mockReturnValue(environmentId);
+  vi.mocked(useServerConfigs).mockReturnValue(
+    new Map([
+      [
+        environmentId,
+        {
+          scratchWorkspaceRoot: null,
+          shellThreadFamilies: false,
+          environment: { capabilities: { threadTasks: true } },
+        } as unknown as EnvironmentServerConfig,
+      ],
+    ]),
+  );
+  vi.mocked(readEnvironmentScope).mockReturnValue(true);
+  vi.mocked(useEnvironmentScope).mockReturnValue(true);
+  vi.mocked(threadTriagePermitted).mockReturnValue(true);
+
+  const localApi = createLocalApi();
+  const menu = vi.spyOn(localApi.contextMenu, "show");
+  vi.mocked(readLocalApi).mockReturnValue(localApi);
+  const newThread = vi.fn().mockResolvedValue(null);
+  vi.mocked(useHandleNewThread).mockReturnValue({
+    activeDraftThread: null,
+    activeThread: null,
+    defaultProjectRef: null,
+    defaultProjectFallbackReady: true,
+    handleNewThread: newThread,
+    routeDraftId: null,
+    routeThreadRef: currentThread ? { environmentId, threadId: currentThread.id } : null,
+  });
+  const deleteThread = vi.fn(async (_ref: ScopedThreadRef, _opts?: unknown) =>
+    AsyncResult.success({ sequence: 1 }),
+  );
+  const settleThread = vi.fn(async (_ref: ScopedThreadRef) => AsyncResult.success({ sequence: 1 }));
+  const unexpectedAction = async () => {
+    throw new Error("Unexpected thread action");
+  };
+  vi.mocked(useThreadActions).mockReturnValue({
+    deleteThread,
+    settleThread,
+    archiveThread: unexpectedAction,
+    unarchiveThread: unexpectedAction,
+    confirmAndDeleteThread: unexpectedAction,
+    unsettleThread: unexpectedAction,
+    snoozeThread: unexpectedAction,
+    unsnoozeThread: unexpectedAction,
+    pinThread: unexpectedAction,
+    unpinThread: unexpectedAction,
+    confirmAndUnpinThread: unexpectedAction,
+    reorderPinnedThread: unexpectedAction,
+    reorderActiveThread: unexpectedAction,
+    markThreadUnread: unexpectedAction,
+    setThreadAutoSettle: unexpectedAction,
+    turnThreadIntoProject: unexpectedAction,
+  });
+
+  const rootRoute = createRootRoute();
+  const threadRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "$environmentId/$threadId",
+    component: () => (
+      <SidebarProvider>
+        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+      </SidebarProvider>
+    ),
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([threadRoute]),
+    history: createMemoryHistory({
+      initialEntries: [`/${environmentId}/${currentThread?.id ?? "unopened"}`],
+    }),
+    disableGlobalCatchBoundary: true,
+  });
+  return { deleteThread, settleThread, menu, newThread, router };
 }

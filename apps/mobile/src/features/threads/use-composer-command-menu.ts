@@ -71,7 +71,7 @@ import type { ModelOption } from "../../lib/modelOptions";
 import { m, type MessageResolver } from "../../i18n/messages";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { pinWorkspaceFileScope, workspaceFileMentionPath } from "../../lib/workspaceFiles";
-import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
+import { scoreSlashSkillQuery } from "./composerSlashSkillSearch";
 
 const idleWorkspaceSnapshotRefreshAtom: Atom.Atom<unknown> = Atom.make<void>(undefined).pipe(
   Atom.withLabel("mobile:provider-workspace-snapshot-refresh:idle"),
@@ -430,8 +430,12 @@ export function useComposerCommandMenu({
       );
 
       const skillItems = visibleSkills
-        .filter((skill) => matchesSlashSkillQuery(skill, q))
-        .map((skill) => ({
+        .flatMap((skill) => {
+          const score = scoreSlashSkillQuery(skill, q);
+          return score === null ? [] : [{ skill, score }];
+        })
+        .sort((left, right) => left.score - right.score)
+        .map(({ skill }) => ({
           id: `skill:${skill.name}`,
           type: "skill" as const,
           skill,

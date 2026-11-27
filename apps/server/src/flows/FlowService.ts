@@ -30,6 +30,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import * as Fiber from "effect/Fiber";
+import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
@@ -231,6 +232,7 @@ const make = Effect.gen(function* () {
   const threadRuns = new Map<ThreadId, FlowRunSummary>();
   const preparationFibers = new Map<FlowRunId, Fiber.Fiber<unknown>>();
   const commandFibers = new Map<FlowStepRunId, Fiber.Fiber<unknown>>();
+  const checkpointWaiters = yield* FiberMap.make<string>();
   let recoveryActions: Map<FlowRunId, Action[]> | undefined;
   const readState = Effect.fn("FlowService.readState")(function* (id: FlowRunId) {
     const state = yield* repository.read(id).pipe(Effect.mapError(mapError));
@@ -434,13 +436,14 @@ const make = Effect.gen(function* () {
     if (!owner) return yield* fail("Step run not found.");
     return owner;
   });
-  const settleThread = Effect.fn("FlowService.settleThread")(function* (
+  const settleThreadSteps = Effect.fn("FlowService.settleThreadSteps")(function* (
     threadId: ThreadId,
     continuationAttempted = false,
     recovering = false,
-  ) {
+  ): Effect.fn.Return<FlowStepRunId[], FlowError> {
+    const awaitingCheckpoint: FlowStepRunId[] = [];
     const link = yield* repository.runForThread(threadId).pipe(Effect.mapError(mapError));
-    if (!link || link.role !== "step_thread") return;
+    if (!link || link.role !== "step_thread") return awaitingCheckpoint;
     const state = yield* readState(link.flowRunId);
     for (const step of state.stepRuns) {
       if (
@@ -455,25 +458,42 @@ const make = Effect.gen(function* () {
         step.expectedMessageId,
         continuationAttempted,
       );
-      if (settled && settled.turnId !== step.lastSettledTurnId)
-        yield* triggerRun(link.flowRunId, {
-          type: "step_thread_settled",
-          stepRunId: step.id,
-          ...settled,
-          ...(settled.failed
-            ? {
-                error: {
-                  code:
-                    settled.interrupted && (recovering || continuationAttempted)
-                      ? ("interrupted" as const)
-                      : ("turn_failed" as const),
-                  message: "Step thread did not complete.",
-                },
-              }
-            : {}),
-          at: "",
-        });
+      if (!settled || settled.turnId === step.lastSettledTurnId) continue;
+      if ("awaitCheckpoint" in settled) {
+        awaitingCheckpoint.push(step.id);
+        // Recovery runs before the worker starts, and continuation callbacks run in its lane.
+        yield* FiberMap.run(
+          checkpointWaiters,
+          settled.turnId,
+          settled.awaitCheckpoint.pipe(
+            Effect.andThen(
+              Effect.suspend(() => settleThreadSteps(threadId, continuationAttempted, recovering)),
+            ),
+            Effect.catchCause(logFailure("Flow checkpoint settlement failed")),
+          ),
+          { onlyIfMissing: true },
+        );
+        continue;
+      }
+      yield* triggerRun(link.flowRunId, {
+        type: "step_thread_settled",
+        stepRunId: step.id,
+        ...settled,
+        ...(settled.failed
+          ? {
+              error: {
+                code:
+                  settled.interrupted && (recovering || continuationAttempted)
+                    ? ("interrupted" as const)
+                    : ("turn_failed" as const),
+                message: "Step thread did not complete.",
+              },
+            }
+          : {}),
+        at: "",
+      });
     }
+    return awaitingCheckpoint;
   });
   const read = Effect.fn("FlowService.read")(function* (projectId: ProjectId, flowId: FlowId) {
     return yield* definitions
@@ -486,7 +506,7 @@ const make = Effect.gen(function* () {
     observing = true;
     yield* runtime.events.pipe(
       Stream.runForEach((id) =>
-        settleThread(id).pipe(Effect.catchCause(logFailure("Flow settlement failed"))),
+        settleThreadSteps(id).pipe(Effect.catchCause(logFailure("Flow settlement failed"))),
       ),
       Effect.catchCause(logFailure("Flow event stream failed")),
       Effect.repeat(Schedule.spaced("1 second")),
@@ -520,8 +540,9 @@ const make = Effect.gen(function* () {
       stop: (id) =>
         stopForThread(id).pipe(Effect.catchCause(logFailure("Flow lifecycle cleanup failed"))),
       continued: (id) =>
-        settleThread(id, true).pipe(
+        settleThreadSteps(id, true).pipe(
           Effect.catchCause(logFailure("Flow continuation settlement failed")),
+          Effect.asVoid,
         ),
     });
   return FlowService.of({
@@ -885,7 +906,9 @@ const make = Effect.gen(function* () {
     runForThread: Effect.fn("FlowService.runForThread")((id) =>
       repository.runForThread(id).pipe(Effect.mapError(mapError)),
     ),
-    settleThread,
+    settleThread: Effect.fn("FlowService.settleThread")((id, continuationAttempted) =>
+      settleThreadSteps(id, continuationAttempted).pipe(Effect.asVoid),
+    ),
     recover: Effect.fn("FlowService.recover")(function* () {
       yield* Effect.gen(function* () {
         // Threads can be deleted while no Flows build is running, so no lifecycle hook saw it.
@@ -906,11 +929,13 @@ const make = Effect.gen(function* () {
         recoveryActions = new Map();
         for (const [id, original] of originals) {
           yield* Effect.gen(function* () {
+            const awaitingCheckpoint = new Set<FlowStepRunId>();
             if (original.run.status !== "starting")
               for (const threadId of new Set(
                 original.stepRuns.flatMap((step) => (step.threadId ? [step.threadId] : [])),
               ))
-                yield* settleThread(threadId, false, true);
+                for (const stepRunId of yield* settleThreadSteps(threadId, false, true))
+                  awaitingCheckpoint.add(stepRunId);
             const state = yield* readState(id);
             if (!["starting", "running", "waiting_approval"].includes(state.run.status)) return;
             const continuingThreadIds: ThreadId[] = [];
@@ -929,13 +954,18 @@ const make = Effect.gen(function* () {
             yield* triggerRun(id, {
               type: "recovered",
               interruptedStepRunIds: original.stepRuns
-                .filter((step) => ["running", "waiting_report"].includes(step.status))
+                .filter(
+                  (step) =>
+                    ["running", "waiting_report"].includes(step.status) &&
+                    !awaitingCheckpoint.has(step.id),
+                )
                 .map((step) => step.id),
               continuingThreadIds,
               continuingMessageIds,
               at: "",
             });
-            for (const threadId of continuingThreadIds) yield* settleThread(threadId, false, true);
+            for (const threadId of continuingThreadIds)
+              yield* settleThreadSteps(threadId, false, true);
           }).pipe(Effect.catchCause(logFailure("Flow recovery failed")));
         }
         const pending = recoveryActions!;

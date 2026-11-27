@@ -11,7 +11,7 @@ import { memo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useGT } from "gt-react";
 import { FolderIcon } from "lucide-react";
 
-import { contextMenuSourceOf } from "../../contextMenuSource";
+import { contextMenuSourceOf, openContextMenuFromKeyboard } from "../../contextMenuSource";
 import { readLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
 import {
@@ -22,8 +22,7 @@ import type { markdownFileCopyPaths } from "../../markdownFileHostPath";
 import { documentChipKindForFileName } from "../../pierre-icons";
 import { ContextChip } from "../ContextChip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { useSharedTooltip, withSharedTooltip } from "../ui/shared-tooltip";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger, useSharedTooltip, withSharedTooltip } from "../ui/shared-tooltip";
 import { FileTagChipContent } from "./FileTagChip";
 import {
   hasMarkdownFilePrimaryAction,
@@ -417,6 +416,7 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
         handleOpenInFilePreview();
       }}
       onContextMenu={handleContextMenu}
+      onKeyDown={openContextMenuFromKeyboard}
     >
       <FileTagChipContent
         icon={
@@ -440,6 +440,7 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
       data-markdown-copy={copyMarkdown}
       onClick={handleContextMenu}
       onContextMenu={handleContextMenu}
+      onKeyDown={openContextMenuFromKeyboard}
     >
       <FileTagChipContent
         icon={
@@ -454,12 +455,12 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   );
   if (sharedTooltip) return withSharedTooltip(chip, sharedTooltip);
   return (
-    <Tooltip>
-      <TooltipTrigger render={chip} />
-      <TooltipPopup side="top" variant="code" className="pointer-events-auto">
-        {tooltipContent}
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={chip}
+      label={tooltipContent}
+      variant="code"
+      className="pointer-events-auto"
+    />
   );
 }, areMarkdownFileLinkPropsEqual);
 

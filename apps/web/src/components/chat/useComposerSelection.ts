@@ -19,7 +19,6 @@ import {
   RuntimeMode,
 } from "@t3tools/contracts";
 import type { deriveThreadStructureRuntime } from "@t3tools/client-runtime/state/thread-execution";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { type SetStateAction } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { toastManager } from "../ui/toast";
@@ -188,8 +187,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       model,
       { preserveUnavailableSelection: true },
     );
-    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
-    const storedDraft = useComposerDraftStore.getState().getComposerDraft(threadRef);
+    const storedDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
     const draft = draftModelSelectionApplies(storedDraft, threadHasStarted(activeThread))
       ? storedDraft
       : null;
@@ -206,7 +204,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
         shownSelection.model === resolvedModel)
     ) {
       // Re-picking the shown model keeps its options and saves it again if that save failed.
-      if (resolvedModel && !isLocalDraftThread) applyThreadModelPick(threadRef);
+      if (resolvedModel && !isLocalDraftThread) applyThreadModelPick(composerDraftTarget);
       if (options?.focusComposer !== false) scheduleComposerFocus();
       return;
     }
@@ -246,12 +244,12 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
       return;
     }
-    setComposerDraftModelSelection(threadRef, nextModelSelection, {
+    setComposerDraftModelSelection(composerDraftTarget, nextModelSelection, {
       explicit: true,
       replaceOptions: true,
     });
     setStickyComposerModelSelection(nextModelSelection);
-    if (!isLocalDraftThread) applyThreadModelPick(threadRef);
+    if (!isLocalDraftThread) applyThreadModelPick(composerDraftTarget);
     if (options?.focusComposer !== false) scheduleComposerFocus();
   };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
@@ -266,6 +264,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     if (isLocalDraftThread) {
       setDraftThreadContext(composerDraftTarget, {
         envMode: mode,
+        workspaceExplicit: true,
         startFromOrigin: resolveNewDraftStartFromOrigin({
           envMode: mode,
           newWorktreesStartFromOrigin: activeProjectSettings.settings.newWorktreesStartFromOrigin,
@@ -293,6 +292,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     if (isLocalDraftThread) {
       setDraftThreadContext(composerDraftTarget, {
         startFromOrigin: nextStartFromOrigin,
+        workspaceExplicit: true,
       });
     }
   };

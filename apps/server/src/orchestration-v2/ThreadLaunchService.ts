@@ -34,8 +34,10 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -68,6 +70,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as Orchestrator from "./Orchestrator.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
@@ -76,6 +79,7 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import { DispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as WorktreeSet from "./WorktreeSetService.ts";
+import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
 
 // The agent waits for its branch name; a rate-limited provider would hold it for minutes.
@@ -149,9 +153,12 @@ type PreparationInput = Pick<
   | "initialMessage"
   | "awaitPreparation"
   | "skipSetupScript"
+  | "linkOrigin"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string };
   readonly taskFolderPlan?: TaskFolders.TaskFolderPlan | null;
+  /** Set when an agent asked for this run, with the thread it asked from if it has one. */
+  readonly askedByAgent?: { readonly threadId: ThreadId | undefined };
 };
 
 export interface ThreadLaunchPreparationInput {
@@ -316,6 +323,9 @@ const make = Effect.gen(function* () {
   const worktreeSets = yield* WorktreeSet.WorktreeSetService;
   const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
   const taskFolders = yield* TaskFolders.TaskFolders;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   // A project-folder launch that names no branch records the folder's checkout, as the composer does.
   const launchBranch = (strategy: ThreadLaunchWorkspaceStrategy, workspaceRoot: string) =>
     strategy.type === "root" && strategy.branch === undefined
@@ -335,6 +345,43 @@ const make = Effect.gen(function* () {
         ...(threadId === undefined ? {} : { threadId }),
         cause,
       });
+
+  // The administrator's limit, fixed for the server's life as it is where turns start.
+  const maxRuntimeMode = serverSettings.managedPolicy?.limits?.maxRuntimeMode;
+  /**
+   * Whether the project's own code may run for this preparation. An agent has it run only from a
+   * thread in Full access: the thread it asked from, or the one being prepared when it named
+   * none, whose modes whoever asked could not set above their own. Asked again before each piece
+   * of the project's code, since fetching and checking out in between can take minutes.
+   */
+  const projectCommandsFor = Effect.fn("ThreadLaunchService.projectCommandsFor")(function* (
+    input: PreparationInput,
+    threadId: ThreadId,
+  ) {
+    if (input.askedByAgent === undefined)
+      return TaskFolders.projectCommandsForLink(input.linkOrigin);
+    const live = (id: ThreadId) =>
+      threads.getThreadShell(id).pipe(
+        Effect.map((shell) => (shell === null || shell.deletedAt !== null ? null : shell)),
+        Effect.orElseSucceed(() => null),
+      );
+    const asker = yield* live(input.askedByAgent.threadId ?? threadId);
+    // A thread that cannot be read might be below Full access, the one that asked included.
+    return TaskFolders.projectCommandsForAgent(
+      input.linkOrigin,
+      asker ?? { runtimeMode: "approval-required", interactionMode: "default" },
+      maxRuntimeMode,
+    );
+  });
+
+  // Who sent a run's message asked for the run; preparing it again asks for the same run.
+  const askedByAgent = (
+    thread: Pick<OrchestrationV2ThreadProjection["thread"], "createdBy">,
+    message: OrchestrationV2ThreadProjection["messages"][number] | undefined,
+  ): Pick<PreparationInput, "askedByAgent"> =>
+    (message?.createdBy ?? thread.createdBy) === "agent"
+      ? { askedByAgent: { threadId: message?.senderThreadId } }
+      : {};
 
   const recordBranchRenameFailure = Effect.fn("ThreadLaunchService.recordBranchRenameFailure")(
     function* (threadId: ThreadId, runId: RunId, branch: string, cause: Cause.Cause<unknown>) {
@@ -613,10 +660,26 @@ const make = Effect.gen(function* () {
       : null;
   });
 
+  const worktreeIsShared = Effect.fn("ThreadLaunchService.worktreeIsShared")(function* (
+    root: string,
+    owner: ThreadId,
+  ) {
+    const realPath = (target: string) =>
+      fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => path.resolve(target)));
+    const checkoutRoot = yield* realPath(root);
+    const bindings = yield* projections.getThreadWorktreePaths({ includeArchived: true });
+    for (const binding of bindings) {
+      if (binding.threadId === owner) continue;
+      if (isWithinRoot(path, yield* realPath(binding.worktreePath), checkoutRoot)) return true;
+    }
+    return false;
+  });
+
   const prepareInBackground = Effect.fn("ThreadLaunchService.prepareInBackground")(function* (
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId | null,
+    releaseWorkspace: Effect.Effect<void>,
   ) {
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
@@ -632,7 +695,6 @@ const make = Effect.gen(function* () {
     const reused = input.reusedWorktree;
     const tracked = input.workspaceStrategy.type === "worktree" || reused !== undefined;
     let createdSet: WorktreeSet.WorktreeSet | null = null;
-    let bindStarted = false;
     let bound = false;
     let renameFiber: Fiber.Fiber<unknown> | null = null;
     let createdWorktreePath: string | null = null;
@@ -640,7 +702,7 @@ const make = Effect.gen(function* () {
     let createdTaskFolder: string | null = null;
     let usedProjectLayout = false;
     let setupTerminalId: string | null = null;
-    let runReleased = false;
+    let workspaceReleased = false;
     // Stop background renames before forgetting worktrees; completed renames record them again.
     let stopBranchName: Effect.Effect<void> = Effect.void;
     if (input.workspaceStrategy.type === "worktree") {
@@ -660,6 +722,7 @@ const make = Effect.gen(function* () {
         fiber: yield* Effect.fiber,
       });
     }
+    const projectCommandsNow = projectCommandsFor(input, threadId);
     yield* Effect.gen(function* () {
       const initialMessage = input.initialMessage;
       const generateBranchNameFor = Effect.fn("ThreadLaunchService.generateBranchNameFor")(
@@ -984,6 +1047,7 @@ const make = Effect.gen(function* () {
                     projectStart: { refName: startRef, baseRefName },
                     baseBranch: input.workspaceStrategy.baseRef,
                     startFromOrigin: input.workspaceStrategy.startFromOrigin === true,
+                    projectCommands: projectCommandsNow,
                     projectProgress: progress,
                     onClaimed: (taskFolder, claimedBranch) =>
                       Effect.sync(() => {
@@ -1029,28 +1093,28 @@ const make = Effect.gen(function* () {
       // A preparation retry keeps the recorded set and its in-flight branch rename.
       // Root launches are bound at creation; late preparation must not undo a handoff.
       if (reused === undefined && input.workspaceStrategy.type !== "root") {
-        bindStarted = true;
-        if (boundSet === null) {
-          yield* threads
-            .dispatch({
+        yield* Effect.gen(function* () {
+          if (boundSet === null) {
+            yield* threads.dispatch({
               type: "thread.metadata.update",
               commandId: CommandId.make(`${input.commandId}:workspace`),
               threadId,
               branch,
               worktreePath,
-            })
-            .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
-        } else {
-          // Plain projects keep today's binding: the worktree root, no tuple.
-          ({ worktreePath, branch } = yield* worktreeSets
-            .bind({
+            });
+          } else {
+            // Plain projects keep today's binding: the worktree root, no tuple.
+            ({ worktreePath, branch } = yield* worktreeSets.bind({
               commandId: CommandId.make(`${input.commandId}:workspace`),
               threadId,
               set: boundSet,
-            })
-            .pipe(Effect.mapError(mapError(input, "update-thread", threadId))));
-        }
-        bound = true;
+            }));
+          }
+          bound = true;
+        }).pipe(
+          Effect.mapError(mapError(input, "update-thread", threadId)),
+          Effect.uninterruptible,
+        );
       }
 
       if (
@@ -1186,14 +1250,18 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
+      // The saved setup script is the project's code too.
+      const projectCwd = thread.workspaceFolders?.[0]?.path ?? project.workspaceRoot;
       const setup =
-        worktreePath === null || input.skipSetupScript === true
+        worktreePath === null ||
+        input.skipSetupScript === true ||
+        (yield* projectCommandsNow) === "agent-below-full-access"
           ? ({ status: "no-script" } as const)
           : yield* setupScripts
               .runForThread({
                 threadId,
                 projectId: input.projectId,
-                projectCwd: thread.workspaceFolders?.[0]?.path ?? project.workspaceRoot,
+                projectCwd,
                 worktreePath,
                 ...(tracked
                   ? {
@@ -1205,7 +1273,7 @@ const make = Effect.gen(function* () {
                   : {}),
                 project: {
                   id: project.id,
-                  workspaceRoot: project.workspaceRoot,
+                  workspaceRoot: projectCwd,
                   scripts: project.scripts,
                 },
               })
@@ -1265,24 +1333,20 @@ const make = Effect.gen(function* () {
       if (renameFiber !== null) yield* Fiber.join(renameFiber);
       yield* setupTracker.markUncancellable(threadId);
       yield* setupTracker.stageStatus(threadId, "agent", "running");
-      if (runId !== null) {
-        yield* threads
-          .dispatch({
-            type: "prepared-run.release",
-            commandId: CommandId.make(`${input.commandId}:release`),
-            threadId,
-            runId,
-          })
-          .pipe(
-            Effect.mapError(mapError(input, "release-run", threadId)),
-            Effect.tap(() =>
-              Effect.sync(() => {
-                runReleased = true;
-              }),
-            ),
-            Effect.uninterruptible,
-          );
-      }
+      yield* Effect.gen(function* () {
+        if (runId !== null) {
+          yield* threads
+            .dispatch({
+              type: "prepared-run.release",
+              commandId: CommandId.make(`${input.commandId}:release`),
+              threadId,
+              runId,
+            })
+            .pipe(Effect.mapError(mapError(input, "release-run", threadId)));
+        }
+        workspaceReleased = true;
+        yield* releaseWorkspace;
+      }).pipe(Effect.uninterruptible);
       yield* setupTracker.stageStatus(threadId, "agent", "done");
       yield* awaitAsyncSetup;
       yield* setupTracker.finish(threadId, "done");
@@ -1307,7 +1371,7 @@ const make = Effect.gen(function* () {
           // so the user can retry.
           if (
             (createdSet === null && createdWorktreePath === null) ||
-            runReleased ||
+            workspaceReleased ||
             (bound && !cancelled)
           )
             return;
@@ -1329,31 +1393,21 @@ const make = Effect.gen(function* () {
                 folder.path !== undefined && paths.some((path) => isPathWithin(path, folder.path!)),
             ),
           );
-          // An interrupted bind may have committed. Never remove a set the
-          // thread could still point at: unbind first, and keep the set if
-          // that fails.
-          if (bound || (bindStarted && cancelled)) {
-            const unbound = yield* threads
-              .dispatch({
-                type: "thread.metadata.update",
-                commandId: CommandId.make(`${input.commandId}:cancel-workspace`),
-                threadId,
-                worktreePath: null,
-                branch: null,
-                expectedWorktreePath: abandonedPath,
-              })
-              .pipe(
-                Effect.as(true),
-                Effect.catchCause(() => Effect.succeed(false)),
-              );
-            if (!unbound) {
-              return yield* Effect.logWarning(
-                "Kept a cancelled launch's worktree the thread may still be bound to",
-                { commandId: input.commandId, threadId },
-              );
-            }
-          }
-          if (sharedThread !== undefined || sharedProject !== undefined) return;
+          const shared =
+            sharedThread !== undefined ||
+            sharedProject !== undefined ||
+            (yield* worktreeIsShared(createdTaskFolder ?? abandonedPath, threadId));
+          const unbind = threads.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${input.commandId}:cancel-workspace`),
+            threadId,
+            worktreePath: null,
+            branch: null,
+            expectedWorktreePath: abandonedPath,
+          });
+          if (shared) return;
+          // Unbind the set before discarding its members so a failed update leaves them intact.
+          if (bound && abandonedSet !== null) yield* unbind;
           if (abandonedSet !== null) {
             yield* worktreeSets.discard(abandonedSet);
           } else if (createdTaskFolder !== null) {
@@ -1366,6 +1420,7 @@ const make = Effect.gen(function* () {
               root: createdTaskFolder,
               force: true,
               forget: true,
+              projectCommands: projectCommandsNow,
               deleteBranch: preserveBranch ? undefined : (createdBranch ?? undefined),
             });
             if (kept.length > 0) {
@@ -1390,6 +1445,7 @@ const make = Effect.gen(function* () {
                 .pipe(Effect.ignoreCause({ log: true }));
             }
           }
+          if (bound && abandonedSet === null) yield* unbind;
         }).pipe(
           Effect.catchCause((cleanupCause) =>
             Effect.logWarning("Failed to clean up an abandoned thread worktree", {
@@ -1496,38 +1552,55 @@ const make = Effect.gen(function* () {
       return next;
     });
 
+  const runPreparation = Effect.fn("ThreadLaunchService.runPreparation")(function* (
+    input: PreparationInput,
+    threadId: ThreadId,
+    runId: RunId | null,
+  ) {
+    const prepare = Effect.acquireUseRelease(
+      input.workspaceStrategy.type === "worktree"
+        ? setupTracker.holdWorkspace(threadId)
+        : Effect.succeed(Effect.void),
+      (release) => prepareInBackground(input, threadId, runId, release),
+      (release) => release,
+    );
+    if (
+      runId === null ||
+      (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined)
+    ) {
+      return yield* prepare;
+    }
+    const mapRunError = mapError(input, "update-thread", threadId);
+    const afterSequence = yield* threads
+      .getThreadEventSequence(threadId)
+      .pipe(Effect.mapError(mapRunError));
+    const projection = yield* threads
+      .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
+      .pipe(Effect.mapError(mapRunError));
+    if (projection.runs.find((run) => run.id === runId)?.status !== "preparing") return;
+    const interruption = threads
+      .streamStoredEventsFrom({ threadId, afterSequence, eventType: "run.updated" })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" &&
+            stored.event.payload.id === runId &&
+            (stored.event.payload.status === "interrupted" ||
+              stored.event.payload.status === "cancelled"),
+        ),
+        Stream.runHead,
+        Effect.mapError(mapRunError),
+        Effect.flatMap((event) => (Option.isSome(event) ? Effect.interrupt : Effect.never)),
+      );
+    yield* Effect.raceFirst(prepare, interruption);
+  });
+
   const schedulePreparation = Effect.fn("ThreadLaunchService.schedulePreparation")(function* (
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId | null,
   ) {
-    const preparation = Effect.gen(function* () {
-      const prepare = prepareInBackground(input, threadId, runId);
-      if (
-        runId === null ||
-        (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined)
-      ) {
-        return yield* prepare;
-      }
-      const afterSequence = yield* threads.getThreadEventSequence(threadId);
-      const projection = yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [runId] });
-      if (projection.runs.find((run) => run.id === runId)?.status !== "preparing") return;
-      const interruption = threads
-        .streamStoredEventsFrom({ threadId, afterSequence, eventType: "run.updated" })
-        .pipe(
-          Stream.filter(
-            (stored) =>
-              stored.event.type === "run.updated" &&
-              stored.event.payload.id === runId &&
-              (stored.event.payload.status === "interrupted" ||
-                stored.event.payload.status === "cancelled"),
-          ),
-          Stream.runHead,
-          Effect.flatMap((event) => (Option.isSome(event) ? Effect.interrupt : Effect.never)),
-        );
-      yield* Effect.raceFirst(prepare, interruption);
-    });
-    yield* preparation.pipe(
+    yield* runPreparation(input, threadId, runId).pipe(
       Effect.onError((cause) =>
         failPreparedRun(
           input,
@@ -1896,15 +1969,42 @@ const make = Effect.gen(function* () {
                       branch: workspaceStrategy.branch,
                     }
                   : workspaceStrategy;
-            const preparation = {
-              ...input,
+            // The thread's link decides, as it does when preparation is retried: a request
+            // that reuses a thread names none.
+            const { linkOrigin: _requestLinkOrigin, ...preparationInput } = input;
+            // The accepted run's message says who asked, as it does when preparation is
+            // retried: a request that repeats the launch may name someone else.
+            const acceptedRun = current?.runs.find((run) => run.id === runId);
+            const acceptedMessages =
+              acceptedRun === undefined
+                ? null
+                : (yield* threads
+                    .getThreadRecords(threadId, ["messages"], {
+                      messageIds: [acceptedRun.userMessageId],
+                    })
+                    .pipe(Effect.mapError(mapError(input, "update-thread", threadId)))).messages;
+            const askedBy =
+              current === null || acceptedRun === undefined || acceptedMessages === null
+                ? input.createdBy === "agent"
+                  ? { askedByAgent: { threadId: input.initialMessage?.senderThreadId } }
+                  : {}
+                : askedByAgent(
+                    current.thread,
+                    acceptedMessages.find((message) => message.id === acceptedRun.userMessageId),
+                  );
+            const preparation: PreparationInput = {
+              ...preparationInput,
+              ...askedBy,
               workspaceStrategy: preparationStrategy,
+              ...(committedThread.linkOrigin === undefined
+                ? {}
+                : { linkOrigin: committedThread.linkOrigin }),
               ...(taskFolderPlan === undefined || claimed.replayed === true
                 ? {}
                 : { taskFolderPlan }),
             };
             if (input.awaitPreparation === true) {
-              yield* prepareInBackground(preparation, threadId, runId).pipe(
+              yield* runPreparation(preparation, threadId, runId).pipe(
                 Effect.interruptible,
                 Effect.ensuring(releasePreparation(input.commandId)),
               );
@@ -2002,6 +2102,8 @@ const make = Effect.gen(function* () {
         commandId: input.commandId,
         projectId: thread.projectId,
         workspaceStrategy: reuse?.strategy ?? workspacePreparation,
+        ...(thread.linkOrigin === undefined ? {} : { linkOrigin: thread.linkOrigin }),
+        ...askedByAgent(thread, message),
         ...(reuse === null ? {} : { reusedWorktree: reuse.reusedWorktree }),
         ...(message === undefined
           ? {}

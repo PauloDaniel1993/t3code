@@ -140,7 +140,7 @@ describe("workspace file addresses", () => {
   it("keeps primary mentions relative and secondary mentions concrete, including escaping", () => {
     expect(workspaceFileMention(workspace, "api/src/main.ts")).toBe("[main.ts](src/main.ts)");
     expect(workspaceFileMention(workspace, "ui/src/a [b]#.ts")).toBe(
-      "[a \\[b\\]#.ts](/session/ui/src/a%20%5Bb%5D%23.ts)",
+      "[a &#91;b&#93;#.ts](/session/ui/src/a%20%5Bb%5D%23.ts)",
     );
     expect(workspaceFileMention(workspace, "remote/main.ts")).toBeNull();
     expect(workspaceFileMention(undefined, "src/main.ts")).toBe("[main.ts](src/main.ts)");

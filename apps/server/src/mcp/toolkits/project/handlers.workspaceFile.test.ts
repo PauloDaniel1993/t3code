@@ -102,6 +102,7 @@ const testLayer = Layer.mergeAll(
   Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
     namedProjectsRoot: "/unused-projects",
     createNamedProject: () => Effect.die("A file import must not create a named project."),
+    isScratchProject: () => Effect.succeed(false),
   }),
 ).pipe(Layer.provideMerge(dependencies));
 

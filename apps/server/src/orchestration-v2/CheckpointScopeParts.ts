@@ -1,4 +1,5 @@
 import type {
+  OrchestrationV2AppThread,
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointFolder,
   OrchestrationV2CheckpointPart,
@@ -184,23 +185,43 @@ export function checkpointScopeParts(input: {
   });
 }
 
-/**
- * The scope as `run` planned it. A queued run's dispatch rewrites the thread's
- * one root scope, so the row can hold a later run's plan. A run's own parts
- * come from its thread and the folder facts it recorded, so one run never sees
- * two folder sets.
- */
+export function checkpointPlanForRun(
+  scope: OrchestrationV2CheckpointScope,
+  thread: Pick<
+    OrchestrationV2AppThread,
+    "projectId" | "worktreePath" | "workspaceFolders" | "worktrees"
+  >,
+): NonNullable<OrchestrationV2Run["checkpointPlan"]> {
+  return {
+    cwd: scope.cwd,
+    ...(scope.parts === undefined ? {} : { parts: scope.parts }),
+    ...(scope.parts === undefined &&
+    thread.workspaceFolders === undefined &&
+    thread.worktrees === undefined
+      ? { repositoryWorkspace: { projectId: thread.projectId, worktreePath: thread.worktreePath } }
+      : {}),
+  };
+}
+
+/** The root scope is shared across runs; use the scope and repository locations admitted for this one. */
 export function checkpointScopeForRun(input: {
   readonly scope: OrchestrationV2CheckpointScope;
-  readonly thread: WorkspaceThread;
-  readonly run: Pick<OrchestrationV2Run, "unavailableFolderPaths">;
+  readonly thread?: WorkspaceThread;
+  readonly run: Pick<OrchestrationV2Run, "checkpointPlan" | "unavailableFolderPaths"> &
+    Partial<Pick<OrchestrationV2Run, "id">>;
 }): OrchestrationV2CheckpointScope {
-  if (input.scope.parts === undefined) return input.scope;
+  const { scope, thread, run } = input;
+  if (run.checkpointPlan !== undefined) {
+    const { parts: _latestParts, ...root } = scope;
+    const { cwd, parts } = run.checkpointPlan;
+    return { ...root, cwd, ...(parts === undefined ? {} : { parts }) };
+  }
+  if (scope.parts === undefined || thread === undefined || scope.runId === run.id) return scope;
   const parts = checkpointScopeParts({
-    thread: input.thread,
-    unavailableFolderPaths: input.run.unavailableFolderPaths,
+    thread,
+    unavailableFolderPaths: run.unavailableFolderPaths,
   });
-  return parts?.[0] === undefined ? input.scope : { ...input.scope, cwd: parts[0].cwd, parts };
+  return parts?.[0] === undefined ? scope : { ...scope, cwd: parts[0].cwd, parts };
 }
 
 /** Where a run of a thread with several snapshot folders works: each folder it can reach. */

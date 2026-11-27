@@ -85,6 +85,8 @@ const makeProjection = (overrides: ThreadFixture = {}) => {
     ...liveThreadShell(threadId, { activeRunId: null }),
     projectId,
     title: "Worktree test thread",
+    runtimeMode: "full-access",
+    interactionMode: "default",
     providerInstanceId,
     modelSelection: { instanceId: providerInstanceId, model: "claude-test" },
     ...binding,

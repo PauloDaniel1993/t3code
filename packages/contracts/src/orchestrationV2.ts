@@ -80,6 +80,7 @@ import {
 import {
   ProviderApprovalDecision,
   ProviderApprovalFullAccessOverride,
+  ProviderApprovalPushHooks,
   ProviderApprovalOption,
   ProviderInteractionMode,
   ProviderRequestKind,
@@ -807,6 +808,8 @@ export type OrchestrationV2DelegatedCompletionDelivery =
 
 export const OrchestrationV2DelegatedCompletionCohort = Schema.Struct({
   disposition: Schema.Literals(["open", "stopped", "disposed"]),
+  /** Reopened for a follow-up after a Stop; the tasks that Stop interrupted still need the Stop note. */
+  reopenedAfterStop: Schema.optionalKey(Schema.Literal(true)),
   nextGeneration: PositiveInt,
   delivery: Schema.NullOr(OrchestrationV2DelegatedCompletionDelivery),
 });
@@ -867,6 +870,32 @@ export const OrchestrationV2RunOutput = Schema.Struct({
 });
 export type OrchestrationV2RunOutput = typeof OrchestrationV2RunOutput.Type;
 
+/** A workspace folder inside one checkpoint part, with the label it had at capture. */
+export const OrchestrationV2CheckpointFolder = Schema.Struct({
+  /** The folder's original path, its identity. */
+  folderPath: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  /** The folder below the part's cwd, `/`-separated; empty at the cwd itself. */
+  relativePath: Schema.String,
+});
+export type OrchestrationV2CheckpointFolder = typeof OrchestrationV2CheckpointFolder.Type;
+
+/**
+ * One git checkout of a multi-folder checkpoint scope, or one folder outside
+ * git, which is recorded but not checkpointed.
+ */
+export const OrchestrationV2CheckpointScopePart = Schema.Struct({
+  /** "primary" for the part holding the primary folder, else a hash of its source location. */
+  key: TrimmedNonEmptyString,
+  /** The checkout top this run: the member's worktree root in a worktree thread. */
+  cwd: TrimmedNonEmptyString,
+  vcs: Schema.NullOr(Schema.Literal("git")),
+  /** The member folders, then `:(exclude,literal)<path>` for each nested checkout. */
+  pathspecs: Schema.Array(Schema.String),
+  folders: Schema.Array(OrchestrationV2CheckpointFolder),
+});
+export type OrchestrationV2CheckpointScopePart = typeof OrchestrationV2CheckpointScopePart.Type;
+
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
   threadId: ThreadId,
@@ -880,6 +909,8 @@ export const OrchestrationV2Run = Schema.Struct({
   status: OrchestrationV2RunStatus,
   queuePosition: Schema.optional(Schema.NullOr(PositiveInt)),
   queueHeld: Schema.optional(Schema.Boolean),
+  /** The sender asked for a separate turn; it is not an ordering barrier for a later auto send. */
+  explicitQueue: Schema.optional(Schema.Literal(true)),
   steerWhenReadyRunId: Schema.optional(RunId),
   requestedAt: Schema.DateTimeUtc,
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
@@ -906,6 +937,16 @@ export const OrchestrationV2Run = Schema.Struct({
    * every step of the run sees one folder set. Multi-folder snapshots only.
    */
   unavailableFolderPaths: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  /** Where this run captures checkpoints, even if the thread moves or the root scope changes. */
+  checkpointPlan: Schema.optional(
+    Schema.Struct({
+      cwd: TrimmedNonEmptyString,
+      parts: Schema.optional(Schema.Array(OrchestrationV2CheckpointScopePart)),
+      repositoryWorkspace: Schema.optional(
+        Schema.Struct({ projectId: ProjectId, worktreePath: Schema.NullOr(TrimmedNonEmptyString) }),
+      ),
+    }),
+  ),
   /** How a launch prepares this run's workspace; prepared-run.retry repeats it. */
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
@@ -954,6 +995,10 @@ export const OrchestrationV2RunAttempt = Schema.Struct({
   ]),
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
+  /** The thread's modes when this attempt's turn started. A later change reaches only the next turn. */
+  startedModes: Schema.optional(
+    Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
+  ),
 });
 export type OrchestrationV2RunAttempt = typeof OrchestrationV2RunAttempt.Type;
 
@@ -1133,32 +1178,6 @@ export function isOrchestrationV2WorkActive(
   return status === "pending" || status === "running" || status === "waiting";
 }
 
-/** A workspace folder inside one checkpoint part, with the label it had at capture. */
-export const OrchestrationV2CheckpointFolder = Schema.Struct({
-  /** The folder's original path, its identity. */
-  folderPath: TrimmedNonEmptyString,
-  label: TrimmedNonEmptyString,
-  /** The folder below the part's cwd, `/`-separated; empty at the cwd itself. */
-  relativePath: Schema.String,
-});
-export type OrchestrationV2CheckpointFolder = typeof OrchestrationV2CheckpointFolder.Type;
-
-/**
- * One git checkout of a multi-folder checkpoint scope, or one folder outside
- * git, which is recorded but not checkpointed.
- */
-export const OrchestrationV2CheckpointScopePart = Schema.Struct({
-  /** "primary" for the part holding the primary folder, else a hash of its source location. */
-  key: TrimmedNonEmptyString,
-  /** The checkout top this run: the member's worktree root in a worktree thread. */
-  cwd: TrimmedNonEmptyString,
-  vcs: Schema.NullOr(Schema.Literal("git")),
-  /** The member folders, then `:(exclude,literal)<path>` for each nested checkout. */
-  pathspecs: Schema.Array(Schema.String),
-  folders: Schema.Array(OrchestrationV2CheckpointFolder),
-});
-export type OrchestrationV2CheckpointScopePart = typeof OrchestrationV2CheckpointScopePart.Type;
-
 export const OrchestrationV2CheckpointScope = Schema.Struct({
   id: CheckpointScopeId,
   threadId: ThreadId,
@@ -1212,6 +1231,8 @@ export const OrchestrationV2ProviderSession = Schema.Struct({
    * clients already released reject a literal they do not know; they show the ones they do.
    */
   startupPhase: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(64))),
+  /** Set by a session that serves several threads: the one thread whose start the phase describes. */
+  startupPhaseThreadId: Schema.optionalKey(ThreadId),
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
   lastError: Schema.NullOr(Schema.String),
@@ -1315,6 +1336,8 @@ export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
   claudeAttachmentBudget: Schema.optional(
     Schema.Struct({ bytesUsed: NonNegativeInt, pagesUsed: NonNegativeInt }),
   ),
+  /** MCP app notes already in the Claude session's history: note key to a digest of its text. */
+  claudeDeliveredAppContext: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type OrchestrationV2ProviderThreadNativeMetadata =
   typeof OrchestrationV2ProviderThreadNativeMetadata.Type;
@@ -1837,13 +1860,21 @@ const OrchestrationV2ProviderFailureMessage = TrimmedNonEmptyString.check(
 );
 const OrchestrationV2ProviderFailureCode = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 
-/** Producers must redact credentials before construction. */
+export const GoogleAccountVerificationUrl = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(4_096),
+  Schema.isPattern(
+    /^https:\/\/accounts\.google\.com\/(?:v3\/)?signin\/continue\?[^\s\p{Cc}\\#]+$/u,
+  ),
+);
+
+/** Producers must redact credentials from diagnostic text before construction. */
 export const OrchestrationV2ProviderFailure = Schema.Struct({
   class: OrchestrationV2ProviderFailureClass,
   message: OrchestrationV2ProviderFailureMessage,
   code: Schema.NullOr(OrchestrationV2ProviderFailureCode),
   retryable: Schema.NullOr(Schema.Boolean),
   resetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  verificationUrl: Schema.optionalKey(GoogleAccountVerificationUrl),
 });
 export type OrchestrationV2ProviderFailure = typeof OrchestrationV2ProviderFailure.Type;
 
@@ -2034,6 +2065,8 @@ export const OrchestrationV2TurnItem = Schema.Union([
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("assistant_message"),
     phase: Schema.optional(AssistantMessagePhase),
+    /** The provider sent this mid-turn, apart from the turn's answer. */
+    delivery: Schema.optional(Schema.Literal("async")),
     messageId: MessageId,
     text: Schema.String,
     textOmitted: DedupedBodyMarker,
@@ -2114,6 +2147,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     reason: Schema.optional(Schema.String),
     fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride),
     appName: Schema.optional(Schema.String),
+    pushHooks: Schema.optional(ProviderApprovalPushHooks),
     options: Schema.optional(Schema.Array(ProviderApprovalOption)),
   }),
   Schema.Struct({
@@ -2948,6 +2982,8 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("assistant_message"),
     phase: Schema.optional(AssistantMessagePhase),
+    /** The provider sent this mid-turn, apart from the turn's answer. */
+    delivery: Schema.optional(Schema.Literal("async")),
     messageId: MessageId,
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
@@ -3027,6 +3063,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     reason: Schema.optional(Schema.String),
     fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride),
     appName: Schema.optional(Schema.String),
+    pushHooks: Schema.optional(ProviderApprovalPushHooks),
     options: Schema.optional(Schema.Array(ProviderApprovalOption)),
   }),
   Schema.Struct({
@@ -3753,6 +3790,7 @@ export const OrchestrationV2Command = Schema.Union([
     steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
+    explicitQueue: Schema.optional(Schema.Literal(true)),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
         parentRunId: RunId,
@@ -3851,6 +3889,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("queued-run.edit"),
+    modelSelection: Schema.optional(ModelSelection),
     context: Schema.optional(OrchestrationMessageContext),
     commandId: CommandId,
     threadId: ThreadId,

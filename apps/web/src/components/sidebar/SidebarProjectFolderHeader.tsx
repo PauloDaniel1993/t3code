@@ -13,7 +13,7 @@ import { resolveSidebarFolderDot, resolveThreadLastVisitedAt } from "../Sidebar.
 import { ProjectFavicon } from "../ProjectFavicon";
 import { ProjectWorkspaceLabel } from "../ProjectWorkspaceLabel";
 import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const FOLDER_DOT_CLASS_NAME = {
   attention: "bg-warning",
@@ -69,6 +69,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
         })),
       )
     : null;
+  const hasCount = collapsed && hiddenThreads.length > 0;
   return (
     <li
       data-testid="sidebar-project-folder"
@@ -77,6 +78,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
       <button
         type="button"
         data-sidebar-row={rowId}
+        data-sidebar-parent="shelf:active"
         aria-expanded={!collapsed}
         onClick={() => props.onToggle(group)}
         onContextMenu={(event) => {
@@ -99,11 +101,20 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
             <span className="sr-only">{m(FOLDER_DOT_LABEL[dot])}</span>
           </span>
         ) : null}
-        {collapsed && hiddenThreads.length > 0 ? (
-          <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible group-has-[[data-sidebar-action-for]:focus]/project-folder:invisible pointer-coarse:invisible">
-            {hiddenThreads.length}
-          </span>
-        ) : null}
+        {/* Widens to the new-thread button while it shows; empty, it also gives back its flex gap. */}
+        <span
+          className={cn(
+            "flex min-w-0 shrink-0 justify-end group-hover/project-folder:min-w-4 group-has-[[data-sidebar-action-for]:focus]/project-folder:min-w-4 pointer-coarse:min-w-4",
+            !hasCount &&
+              "-ml-2.5 group-hover/project-folder:ml-0 group-has-[[data-sidebar-action-for]:focus]/project-folder:ml-0 pointer-coarse:ml-0",
+          )}
+        >
+          {hasCount ? (
+            <span className="text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible group-has-[[data-sidebar-action-for]:focus]/project-folder:invisible pointer-coarse:invisible">
+              {hiddenThreads.length}
+            </span>
+          ) : null}
+        </span>
         <ChevronDownIcon
           aria-hidden
           className={cn(
@@ -114,26 +125,26 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
       </button>
       {/* Sits over the count, which hides on hover or focus, and left of the chevron. */}
       <span className="absolute inset-y-0 right-6 flex items-center opacity-0 focus-within:opacity-100 group-hover/project-folder:opacity-100 pointer-coarse:opacity-100">
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                data-sidebar-action-for={rowId}
-                size="icon-xs"
-                variant="ghost-muted"
-                aria-label={gt("New thread in {project}", { project: group.displayName })}
-                onClick={() => props.onNewThread(group)}
-              />
-            }
-          >
-            <SquarePenIcon aria-hidden />
-          </TooltipTrigger>
-          <TooltipPopup>
-            <T>
-              New thread in <Var>{group.displayName}</Var>
-            </T>
-          </TooltipPopup>
-        </Tooltip>
+        <SharedTooltipTrigger
+          render={
+            <Button
+              data-sidebar-action-for={rowId}
+              size="icon-xs"
+              variant="ghost-muted"
+              aria-label={gt("New thread in {project}", { project: group.displayName })}
+              onClick={() => props.onNewThread(group)}
+            />
+          }
+          label={
+            <>
+              <T>
+                New thread in <Var>{group.displayName}</Var>
+              </T>
+            </>
+          }
+        >
+          <SquarePenIcon aria-hidden />
+        </SharedTooltipTrigger>
       </span>
     </li>
   );

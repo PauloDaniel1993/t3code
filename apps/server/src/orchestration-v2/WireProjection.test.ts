@@ -11,6 +11,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2DomainEvent,
@@ -487,6 +488,39 @@ describe("live body deduper", () => {
       [4, { ...reply(4, "ab").event.payload, text: "", textOmitted: true }],
     ]);
   });
+
+  it.each(["run.created", "run.updated"] as const)(
+    "keeps the server checkpoint plan out of %s",
+    (type) => {
+      const instanceId = ProviderInstanceId.make("codex");
+      const run = {
+        id: RunId.make("run-checkpoint-plan"),
+        threadId: base.threadId,
+        ordinal: 1,
+        userMessageId: MessageId.make("message"),
+        providerInstanceId: instanceId,
+        modelSelection: { instanceId, model: "codex" },
+        providerThreadId: null,
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "completed" as const,
+        requestedAt: at,
+        startedAt: at,
+        completedAt: at,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      const withPlan = event(1, {
+        type,
+        payload: { ...run, checkpointPlan: { cwd: "/workspace", parts: [] } },
+      });
+      expect(projectDomainEventForWire(withPlan.event)).toEqual({
+        ...withPlan.event,
+        payload: run,
+      });
+      expect(withPlan.event.payload).toHaveProperty("checkpointPlan");
+    },
+  );
 
   it("caps a large checkpoint's files for the wire and still dedupes its item", () => {
     const files = Array.from({ length: 250 }, (_, index) => ({

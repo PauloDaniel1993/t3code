@@ -42,6 +42,13 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
 
+// `git -C <cwd> -c <config> log ...` reads as `log`.
+const gitSubcommand = (args: ReadonlyArray<string>) => {
+  let index = 0;
+  while (args[index] === "-C" || args[index] === "-c") index += 2;
+  return args[index] ?? "";
+};
+
 const layerProjectionStoreTest = Layer.mergeAll(
   ThreadCommandExecutor.layer,
   ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
@@ -104,10 +111,10 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           userMessageId: MessageId.make("message:checkpoint-capture-user"),
           rootNodeId,
           activeAttemptId: null,
-          status: "waiting",
+          status: "completed",
           requestedAt: now,
           startedAt: now,
-          completedAt: null,
+          completedAt: now,
           checkpointId: null,
           contextHandoffId: null,
           delegatedCompletion: staleDelegatedCompletion,
@@ -119,7 +126,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           parentNodeId: null,
           rootNodeId,
           kind: "root_turn" as const,
-          status: "waiting" as const,
+          status: "completed" as const,
           countsForRun: true,
           providerThreadId,
           providerTurnId: null,
@@ -127,7 +134,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           runtimeRequestId: null,
           checkpointScopeId: scopeId,
           startedAt: now,
-          completedAt: null,
+          completedAt: now,
         };
         const scope = {
           id: scopeId,
@@ -299,7 +306,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                         Layer.mock(CheckpointStore.CheckpointStore)({
                           listAuthoredPaths: () => Effect.succeed(null),
                           isGitRepository: () => Effect.succeed(true),
-                          captureCheckpoint: () => Effect.void,
+                          captureCheckpoint: () => Effect.succeed(null),
                           hasCheckpointRef: () =>
                             Effect.fail(
                               new VcsProcessTimeoutError({
@@ -352,7 +359,10 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           if (runUpdated?.type !== "run.updated") {
             return;
           }
+          // The run completed when its provider turn ended; capture only attaches the checkpoint.
           assert.equal(runUpdated.payload.status, "completed");
+          assert.deepEqual(runUpdated.payload.completedAt, now);
+          assert.isFalse(events.some((event) => event.type === "node.updated"));
           const capturedEvent = events.find((event) => event.type === "checkpoint.captured");
           assert.equal(
             runUpdated.payload.checkpointId,
@@ -499,6 +509,251 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
       assert.equal(projected.run?.status, "rolled_back");
       assert.isNull(projected.run?.checkpointId ?? null);
     }),
+  );
+
+  // Stop can be accepted while the provider's successful terminal is being written: the run is
+  // then `waiting` with a stored request and no result, and capture is what settles it.
+  it.effect("ends a waiting run as interrupted when Stop was accepted before capture", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const stopThreadId = ThreadId.make("thread:checkpoint-capture-stop-race");
+      const stopRunId = RunId.make("run:checkpoint-capture-stop-race");
+      const stopScopeId = CheckpointScopeId.make("scope:checkpoint-capture-stop-race");
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-stop-race:thread"),
+        type: "thread.created",
+        threadId: stopThreadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: stopThreadId,
+          projectId,
+          title: "Stop accepted before capture",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: stopThreadId,
+          },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-stop-race:run"),
+        type: "run.updated",
+        threadId: stopThreadId,
+        runId: stopRunId,
+        nodeId: rootNodeId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          id: stopRunId,
+          threadId: stopThreadId,
+          ordinal: 1,
+          providerInstanceId,
+          modelSelection,
+          providerThreadId,
+          userMessageId: MessageId.make("message:checkpoint-capture-stop-race"),
+          rootNodeId,
+          activeAttemptId: null,
+          status: "waiting",
+          requestedAt: now,
+          startedAt: now,
+          completedAt: null,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-stop-race:node"),
+        type: "node.updated",
+        threadId: stopThreadId,
+        runId: stopRunId,
+        nodeId: rootNodeId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          id: rootNodeId,
+          threadId: stopThreadId,
+          runId: stopRunId,
+          parentNodeId: null,
+          rootNodeId,
+          kind: "root_turn",
+          status: "waiting",
+          countsForRun: true,
+          providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          runtimeRequestId: null,
+          checkpointScopeId: stopScopeId,
+          startedAt: now,
+          completedAt: null,
+        },
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-stop-race:provider-thread"),
+        type: "provider-thread.updated",
+        threadId: stopThreadId,
+        nodeId: rootNodeId,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          id: providerThreadId,
+          driver,
+          providerInstanceId,
+          providerSessionId: null,
+          appThreadId: stopThreadId,
+          ownerNodeId: rootNodeId,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-stop-race:scope"),
+        type: "checkpoint-scope.created",
+        threadId: stopThreadId,
+        runId: stopRunId,
+        nodeId: rootNodeId,
+        occurredAt: now,
+        payload: {
+          id: stopScopeId,
+          threadId: stopThreadId,
+          runId: stopRunId,
+          nodeId: rootNodeId,
+          parentScopeId: null,
+          providerThreadId,
+          kind: "root_run",
+          ordinalWithinParent: 0,
+          advancesAppRunCount: true,
+          cwd: "/repo",
+          createdAt: now,
+        },
+      });
+      const baseline = {
+        id: CheckpointId.make("checkpoint:stop-race-baseline-0"),
+        threadId: stopThreadId,
+        scopeId: stopScopeId,
+        runId: null,
+        nodeId: rootNodeId,
+        parentCheckpointId: null,
+        ordinalWithinScope: 0,
+        appRunOrdinal: null,
+        ref: CheckpointRef.make("checkpoint-ref:stop-race-baseline-0"),
+        status: "ready" as const,
+        files: [],
+        capturedAt: now,
+      };
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-stop-race:baseline"),
+        type: "checkpoint.captured",
+        threadId: stopThreadId,
+        nodeId: rootNodeId,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: baseline,
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-stop-race:interrupt-request"),
+        type: "turn-item.updated",
+        threadId: stopThreadId,
+        runId: stopRunId,
+        nodeId: rootNodeId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          id: ids.derive.runSignalTurnItem({ runId: stopRunId, signal: "interrupt-request" }),
+          threadId: stopThreadId,
+          runId: stopRunId,
+          nodeId: rootNodeId,
+          providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "completed",
+          title: "Interrupt requested",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "run_interrupt_request",
+          message: "Stopped by user",
+        },
+      });
+
+      const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+      const layerCapture = CheckpointCaptureService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              capturesSoFar: () => Effect.succeed(0),
+              repositoryScopes: () => Effect.succeed([]),
+              materializeBaselineCheckpoint: () => Effect.die("the baseline is already ready"),
+              capture: () =>
+                Effect.succeed({
+                  ...baseline,
+                  id: CheckpointId.make("checkpoint:stop-race-captured-1"),
+                  runId: stopRunId,
+                  parentCheckpointId: baseline.id,
+                  ordinalWithinScope: 1,
+                  appRunOrdinal: 1,
+                  ref: CheckpointRef.make("checkpoint-ref:stop-race-captured-1"),
+                }),
+            }),
+            Layer.mock(EventSink.EventSinkV2)({
+              commitCommand: (input) =>
+                Ref.set(committed, input.events).pipe(Effect.as({ committed: true } as never)),
+            }),
+          ),
+        ),
+      );
+
+      yield* CheckpointCaptureService.CheckpointCaptureServiceV2.pipe(
+        Effect.flatMap((service) =>
+          service.execute({ threadId: stopThreadId, runId: stopRunId, scopeId: stopScopeId }),
+        ),
+        Effect.provide(layerCapture),
+      );
+
+      const events = yield* Ref.get(committed);
+      const runUpdated = events.find((event) => event.type === "run.updated");
+      assert.equal(
+        runUpdated?.type === "run.updated" ? runUpdated.payload.status : undefined,
+        "interrupted",
+      );
+      assert.isTrue(
+        events.some(
+          (event) =>
+            event.type === "turn-item.updated" && event.payload.type === "run_interrupt_result",
+        ),
+        "the accepted Stop request must be paired with a result",
+      );
+    }).pipe(Effect.provide(IdAllocator.layer)),
   );
 
   // A stopped run is captured after it ends; by then the next root run, dispatched or queued, may
@@ -667,7 +922,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                     Layer.mock(CheckpointStore.CheckpointStore)({
                       isGitRepository: () => Effect.succeed(true),
                       hasCheckpointRef: () => Effect.succeed(true),
-                      captureCheckpoint: () => Effect.void,
+                      captureCheckpoint: () => Effect.succeed(null),
                       diffCheckpoints: () => Effect.succeed(""),
                       listAuthoredPaths: () => Effect.succeed(null),
                     }),
@@ -987,18 +1242,22 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
   );
   // A queued run's dispatch rewrites the root scope before an active run
   // captures, so capture plans parts from the captured run's own folder facts.
-  it.effect(
-    "captures a run's parts from its own folder facts and keeps them on the checkpoint",
-    () =>
+  it.effect.each([false, true])(
+    "keeps a run's checkpoint parts on capture and retry after workspace bind=%s",
+    (rebindWorkspace) =>
       Effect.gen(function* () {
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const now = yield* DateTime.now;
-        const partsThreadId = ThreadId.make("thread:checkpoint-capture-parts");
-        const partsRunId = RunId.make("run:checkpoint-capture-parts");
-        const partsScopeId = CheckpointScopeId.make("scope:checkpoint-capture-parts");
-        const partsRootNodeId = NodeId.make("node:checkpoint-capture-parts-root");
+        const partsThreadId = ThreadId.make(`thread:checkpoint-capture-parts:${rebindWorkspace}`);
+        const partsRunId = RunId.make(`run:checkpoint-capture-parts:${rebindWorkspace}`);
+        const partsScopeId = CheckpointScopeId.make(
+          `scope:checkpoint-capture-parts:${rebindWorkspace}`,
+        );
+        const partsRootNodeId = NodeId.make(
+          `node:checkpoint-capture-parts-root:${rebindWorkspace}`,
+        );
         const partsProviderThreadId = ProviderThreadId.make(
-          "provider-thread:checkpoint-capture-parts",
+          `provider-thread:checkpoint-capture-parts:${rebindWorkspace}`,
         );
         const folder = (path: string, label: string) => ({
           path,
@@ -1041,6 +1300,13 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             deletedAt: null,
           },
         });
+        const part = (folderPath: string, key: string, cwd = folderPath) => ({
+          key,
+          cwd,
+          vcs: "git" as const,
+          pathspecs: ["."],
+          folders: [{ folderPath, label: folderPath.slice(5), relativePath: "" }],
+        });
         // This run couldn't reach lib.
         yield* projectionStore.apply({
           id: EventId.make("event:checkpoint-capture-parts:run"),
@@ -1060,11 +1326,14 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             userMessageId: MessageId.make("message:checkpoint-capture-parts"),
             rootNodeId: partsRootNodeId,
             activeAttemptId: null,
-            status: "waiting",
+            status: rebindWorkspace ? "completed" : "waiting",
             unavailableFolderPaths: ["/srv/lib"],
+            ...(rebindWorkspace
+              ? { checkpointPlan: { cwd: "/srv/app", parts: [part("/srv/app", "primary")] } }
+              : {}),
             requestedAt: now,
             startedAt: now,
-            completedAt: null,
+            completedAt: rebindWorkspace ? now : null,
             checkpointId: null,
             contextHandoffId: null,
           },
@@ -1084,7 +1353,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             parentNodeId: null,
             rootNodeId: partsRootNodeId,
             kind: "root_turn",
-            status: "waiting",
+            status: rebindWorkspace ? "completed" : "waiting",
             countsForRun: true,
             providerThreadId: partsProviderThreadId,
             providerTurnId: null,
@@ -1092,7 +1361,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             runtimeRequestId: null,
             checkpointScopeId: partsScopeId,
             startedAt: now,
-            completedAt: null,
+            completedAt: rebindWorkspace ? now : null,
           },
         });
         yield* projectionStore.apply({
@@ -1121,41 +1390,56 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             updatedAt: now,
           },
         });
-        // A run queued after lib came back planned both folders into the shared scope.
-        const part = (cwd: string, key: string) => ({
-          key,
-          cwd,
-          vcs: "git" as const,
-          pathspecs: ["."],
-          folders: [{ folderPath: cwd, label: cwd.slice(5), relativePath: "" }],
-        });
+        if (rebindWorkspace) {
+          const thread = yield* projectionStore.getThread(partsThreadId);
+          yield* projectionStore.apply({
+            id: EventId.make("event:checkpoint-capture-parts:bound"),
+            type: "thread.metadata-updated",
+            threadId: partsThreadId,
+            occurredAt: now,
+            payload: {
+              ...thread,
+              branch: "worktree",
+              worktreePath: "/worktrees/app",
+              worktrees: [
+                { repositoryRoot: "/srv/app", path: "/worktrees/app", branch: "worktree" },
+                { repositoryRoot: "/srv/lib", path: "/worktrees/lib", branch: "worktree-lib" },
+              ],
+            },
+          });
+        }
+
+        // A later run reaches lib again. Its plan replaces the shared scope.
+        const nextApp = part("/srv/app", "primary", rebindWorkspace ? "/worktrees/app" : undefined);
+        const nextLib = part("/srv/lib", "lib", rebindWorkspace ? "/worktrees/lib" : undefined);
         yield* projectionStore.apply({
           id: EventId.make("event:checkpoint-capture-parts:scope"),
           type: "checkpoint-scope.created",
           threadId: partsThreadId,
-          runId: RunId.make("run:checkpoint-capture-parts-queued"),
+          runId: RunId.make(`run:checkpoint-capture-parts-queued:${rebindWorkspace}`),
           nodeId: partsRootNodeId,
           occurredAt: now,
           payload: {
             id: partsScopeId,
             threadId: partsThreadId,
-            runId: RunId.make("run:checkpoint-capture-parts-queued"),
+            runId: RunId.make(`run:checkpoint-capture-parts-queued:${rebindWorkspace}`),
             nodeId: partsRootNodeId,
             parentScopeId: null,
             providerThreadId: partsProviderThreadId,
             kind: "root_run",
             ordinalWithinParent: 0,
             advancesAppRunCount: true,
-            cwd: "/srv/app",
-            parts: [part("/srv/app", "primary"), part("/srv/lib", "lib")],
+            cwd: nextApp.cwd,
+            parts: [nextApp, nextLib],
             createdAt: now,
           },
         });
 
         const plannedScopes: Array<OrchestrationV2CheckpointScope> = [];
-        const secondRunId = RunId.make("run:checkpoint-capture-parts-2");
+        let failCommit = rebindWorkspace;
+        const secondRunId = RunId.make(`run:checkpoint-capture-parts-2:${rebindWorkspace}`);
         const checkpointOf = (scope: OrchestrationV2CheckpointScope, ordinal: number) => ({
-          id: CheckpointId.make(`checkpoint:capture-parts-${ordinal}`),
+          id: CheckpointId.make(`checkpoint:capture-parts-${rebindWorkspace}-${ordinal}`),
           threadId: partsThreadId,
           scopeId: partsScopeId,
           runId: ordinal === 0 ? null : ordinal === 1 ? partsRunId : secondRunId,
@@ -1192,10 +1476,18 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
               }),
               Layer.mock(EventSink.EventSinkV2)({
                 commitCommand: (input) =>
-                  Effect.forEach(input.events, (event) => projectionStore.apply(event)).pipe(
-                    Effect.as({ committed: true } as never),
-                    Effect.orDie,
-                  ),
+                  Effect.gen(function* () {
+                    if (failCommit) {
+                      failCommit = false;
+                      return yield* new EventSink.EventSinkWriteError({
+                        eventCount: input.events.length,
+                      });
+                    }
+                    yield* Effect.forEach(input.events, (event) =>
+                      projectionStore.apply(event),
+                    ).pipe(Effect.orDie);
+                    return { committed: true } as never;
+                  }),
               }),
             ),
           ),
@@ -1212,11 +1504,17 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             ),
             Effect.provide(captureLayer),
           );
+        if (rebindWorkspace) {
+          const failure = yield* Effect.flip(execute(partsRunId));
+          assert.instanceOf(failure.cause, EventSink.EventSinkWriteError);
+        }
+        yield* execute(partsRunId);
         yield* execute(partsRunId);
 
+        const expectedCaptures = rebindWorkspace ? 4 : 2;
         assert.deepEqual(
           plannedScopes.map((scope) => scope.parts?.map((planned) => planned.cwd)),
-          [["/srv/app"], ["/srv/app"]],
+          Array.from({ length: expectedCaptures }, () => ["/srv/app"]),
         );
         const { checkpoints } = yield* projectionStore.getThreadRecords(partsThreadId, [
           "checkpoints",
@@ -1234,7 +1532,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
 
         // Turn 2 reaches lib again. It must not replace turn 1's checkpoint with
         // a baseline: that checkpoint's healthy parts still diff.
-        const secondNodeId = NodeId.make("node:checkpoint-capture-parts-root-2");
+        const secondNodeId = NodeId.make(`node:checkpoint-capture-parts-root-2:${rebindWorkspace}`);
         const firstRun = (yield* projectionStore.getCheckpointCaptureContext(partsThreadId, {
           runId: partsRunId,
           scopeId: partsScopeId,
@@ -1255,6 +1553,14 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             rootNodeId: secondNodeId,
             status: "waiting",
             unavailableFolderPaths: [],
+            ...(rebindWorkspace
+              ? {
+                  checkpointPlan: {
+                    cwd: nextApp.cwd,
+                    parts: [nextApp, nextLib],
+                  },
+                }
+              : {}),
             completedAt: null,
             checkpointId: null,
           },
@@ -1288,8 +1594,10 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
         yield* execute(secondRunId);
 
         assert.deepEqual(
-          plannedScopes.slice(2).map((scope) => scope.parts?.map((planned) => planned.cwd)),
-          [["/srv/app", "/srv/lib"]],
+          plannedScopes
+            .slice(expectedCaptures)
+            .map((scope) => scope.parts?.map((planned) => planned.cwd)),
+          [rebindWorkspace ? ["/worktrees/app", "/worktrees/lib"] : ["/srv/app", "/srv/lib"]],
         );
         const kept = (yield* projectionStore.getThreadRecords(partsThreadId, [
           "checkpoints",
@@ -1513,6 +1821,8 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
       readonly threadId: ThreadId;
       readonly ids: IdAllocator.IdAllocatorV2["Service"];
       readonly diffs: CheckpointDiffQuery.CheckpointDiffQuery["Service"];
+      /** The git commands run since the last call, each as its subcommand and arguments. */
+      readonly takeGitCommands: Effect.Effect<ReadonlyArray<ReadonlyArray<string>>>;
     }) => Effect.Effect<A, E, R>,
   ) =>
     Effect.gen(function* () {
@@ -1526,7 +1836,19 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
       const labels = new Map<string, string>([[repositoryRootScopeId, "root"]]);
       const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
       const layerNode = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
-      const layerVcsProcess = VcsProcess.layer.pipe(Layer.provide(layerNode));
+      let gitCommands: Array<ReadonlyArray<string>> = [];
+      const layerVcsProcess = Layer.effect(
+        VcsProcess.VcsProcess,
+        Effect.map(VcsProcess.VcsProcess, (inner) =>
+          VcsProcess.VcsProcess.of({
+            run: (input) =>
+              Effect.suspend(() => {
+                gitCommands.push(input.args);
+                return inner.run(input);
+              }),
+          }),
+        ),
+      ).pipe(Layer.provide(VcsProcess.layer), Layer.provide(layerNode));
       const layerCheckpointStore = CheckpointStore.layer.pipe(
         Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(layerVcsProcess))),
         Layer.provide(layerNode),
@@ -1793,9 +2115,82 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           threadId: repositoryThreadId,
           ids: yield* IdAllocator.IdAllocatorV2,
           diffs: yield* CheckpointDiffQuery.CheckpointDiffQuery,
+          takeGitCommands: Effect.sync(() => {
+            const taken = gitCommands;
+            gitCommands = [];
+            return taken;
+          }),
         });
       }).pipe(Effect.provide(layer), Effect.scoped);
     });
+
+  it.effect("captures a turn without re-reading the previous checkpoint", () =>
+    withTrackedRepositories("capture-git-commands", (thread) =>
+      Effect.gen(function* () {
+        const { root } = thread;
+        yield* thread.initRepository(root);
+        yield* thread.turn(1, thread.write(`${root}/README.md`, "# one\n"));
+        // Counted from after the turn's edits, so only the capture itself.
+        const capture = (ordinal: number, edits: Effect.Effect<void>) =>
+          Effect.gen(function* () {
+            const recorded = yield* thread.turn(
+              ordinal,
+              edits.pipe(Effect.andThen(thread.takeGitCommands)),
+            );
+            return {
+              files: recorded.flatMap((entry) => entry.files ?? []),
+              commands: (yield* thread.takeGitCommands).map(gitSubcommand),
+            };
+          });
+        // Turn 1 kept the scope's index, so no read-tree or ls-files rebuilds it. diff-tree
+        // lists where it differs from HEAD, cat-file checks its blobs survived gc, and the
+        // second diff-tree checks no .gitattributes changed under it.
+        const snapshot = [
+          "rev-parse",
+          "log",
+          "config",
+          "diff-tree",
+          "cat-file",
+          "add",
+          "write-tree",
+          "diff-tree",
+          "log",
+          "commit-tree",
+          "update-ref",
+        ];
+
+        assert.deepEqual(yield* capture(2, thread.write(`${root}/README.md`, "# two\n")), {
+          files: ["README.md"],
+          commands: [...snapshot, "diff"],
+        });
+        // Nothing changed, so there is nothing to diff.
+        assert.deepEqual(yield* capture(3, Effect.void), { files: [], commands: snapshot });
+        // A commit moves HEAD; its paths are read without resolving the range again.
+        const committed = yield* capture(
+          4,
+          thread
+            .write(`${root}/README.md`, "# four\n")
+            .pipe(Effect.andThen(thread.git(root, "commit", "-am", "four")), Effect.asVoid),
+        );
+        assert.deepEqual(committed.files, ["README.md"]);
+        // The summary's reads run side by side, so only which commands ran is fixed.
+        assert.deepEqual(
+          committed.commands.toSorted(),
+          [
+            ...snapshot,
+            "diff",
+            "version",
+            "rev-list",
+            "diff",
+            "diff",
+            "log",
+            "log",
+            "log",
+          ].toSorted(),
+        );
+      }),
+    ),
+  );
 
   it.effect("checkpoints the repositories a folder that is not a repository holds", () =>
     withTrackedRepositories("capture-wrapper", (thread) =>

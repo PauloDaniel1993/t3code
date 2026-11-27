@@ -21,7 +21,6 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "~/components/ui/menu";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 import { isHostPath } from "@t3tools/shared/path";
@@ -35,6 +34,7 @@ import {
   isListableHostFolder,
 } from "./filePath";
 import { useProjectEntriesQuery } from "./projectFilesQueryState";
+import { SharedTooltipTrigger } from "~/components/ui/shared-tooltip";
 
 interface FileBreadcrumbsProps {
   readonly cwd: string;
@@ -61,21 +61,19 @@ function BreadcrumbLabel(props: {
   readonly pathLabel: string;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            className={cn(
-              "block max-w-40 truncate rounded-sm px-0.5",
-              props.current ? "font-medium text-foreground" : "text-muted-foreground",
-            )}
-          />
-        }
-      >
-        {props.label}
-      </TooltipTrigger>
-      <TooltipPopup side="top">{props.pathLabel}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <span
+          className={cn(
+            "block max-w-40 truncate rounded-sm px-0.5",
+            props.current ? "font-medium text-foreground" : "text-muted-foreground",
+          )}
+        />
+      }
+      label={props.pathLabel}
+    >
+      {props.label}
+    </SharedTooltipTrigger>
   );
 }
 
@@ -181,21 +179,20 @@ function BreadcrumbMenuContent(props: {
               const row = (
                 <>
                   <PierreEntryIcon pathValue={entry.path} kind={entry.kind} theme={resolvedTheme} />
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <span
-                          className={cn(
-                            "min-w-0 flex-1 truncate",
-                            entry.ignored && "text-muted-foreground",
-                          )}
-                        />
-                      }
-                    >
-                      {entry.label}
-                    </TooltipTrigger>
-                    <TooltipPopup side="right">{entry.path}</TooltipPopup>
-                  </Tooltip>
+                  <SharedTooltipTrigger
+                    render={
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 truncate",
+                          entry.ignored && "text-muted-foreground",
+                        )}
+                      />
+                    }
+                    label={entry.path}
+                    side="right"
+                  >
+                    {entry.label}
+                  </SharedTooltipTrigger>
                 </>
               );
               return entry.kind === "directory" ? (
@@ -301,23 +298,21 @@ function FolderBreadcrumb(props: {
   readonly projectName: string;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            onClick={() => props.onNavigate(props.crumb.path)}
-            className={cn(
-              "relative block max-w-40 cursor-pointer rounded-sm px-0.5 text-left outline-none pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-              props.descendant ? "text-muted-foreground/70" : "text-muted-foreground",
-            )}
-          />
-        }
-      >
-        <span className="block truncate">{props.crumb.label}</span>
-      </TooltipTrigger>
-      <TooltipPopup side="top">{props.crumb.path || props.projectName}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <button
+          type="button"
+          onClick={() => props.onNavigate(props.crumb.path)}
+          className={cn(
+            "relative block max-w-40 cursor-pointer rounded-sm px-0.5 text-left outline-none pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+            props.descendant ? "text-muted-foreground/70" : "text-muted-foreground",
+          )}
+        />
+      }
+      label={props.crumb.path || props.projectName}
+    >
+      <span className="block truncate">{props.crumb.label}</span>
+    </SharedTooltipTrigger>
   );
 }
 

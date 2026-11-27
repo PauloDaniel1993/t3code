@@ -119,6 +119,7 @@ import {
   compatibleRuntimeModeForChoices,
   runtimeModeChoicesForSupportedModes,
   withManagedRuntimeModeLimits,
+  withProviderRuntimeModeLimits,
   type RuntimeModeChoice,
   selectableChoices,
 } from "./thread-settings-options";
@@ -559,9 +560,22 @@ function ThreadSettingsSessionProvider(
     pendingModel ??
     props.providerGroups.flatMap((group) => group.models).find((option) => isApplied(option)) ??
     null;
-  const runtimeModeChoices = withManagedRuntimeModeLimits(
-    runtimeModeChoicesForSupportedModes(displayedModel?.supportedRuntimeModes),
-    [config?.managedPolicy],
+  // The sheet mounts when it opens, which asks again once the last answer is a few seconds old.
+  const runtimeModeLimits = useEnvironmentQuery(
+    props.environmentId && props.cwd && displayedModel
+      ? serverEnvironment.providerRuntimeModeLimits({
+          environmentId: props.environmentId,
+          input: { instanceId: displayedModel.selection.instanceId, cwd: props.cwd },
+        })
+      : null,
+  ).data?.limits;
+  const runtimeModeChoices = withProviderRuntimeModeLimits(
+    withManagedRuntimeModeLimits(
+      runtimeModeChoicesForSupportedModes(displayedModel?.supportedRuntimeModes),
+      [config?.managedPolicy],
+      messages,
+    ),
+    runtimeModeLimits,
     messages,
   );
   const compatibleRuntimeMode = compatibleRuntimeModeForChoices(
@@ -1550,10 +1564,11 @@ export function ExistingThreadSettingsRouteScreen({
       : null,
   );
   const threadKey = scopedThreadKey(route.params.environmentId, route.params.threadId);
-  const draftSettings = useComposerDraftSettings(threadKey);
   const queuedRunEdit = useQueuedRunEdit(threadKey);
   // A queued edit can end while the sheet is open; the prompt then belongs to the thread's draft.
   const draftKey = activeComposerDraftKey(threadKey, route.params.draftKey, queuedRunEdit);
+  const draftSettings = useComposerDraftSettings(draftKey);
+  const threadDraftSettings = useComposerDraftSettings(threadKey);
   const prompt = useComposerDraft(draftKey).text;
 
   if (!selectedThread) {
@@ -1625,7 +1640,7 @@ export function ExistingThreadSettingsRouteScreen({
         rememberModelOptions(modelSelection.instanceId, modelSelection.model, options ?? []);
         updateModelSelection({ ...modelSelection, options });
       }}
-      runtimeMode={draftSettings.runtimeMode ?? selectedThread.runtimeMode}
+      runtimeMode={threadDraftSettings.runtimeMode ?? selectedThread.runtimeMode}
       onUpdateRuntimeMode={(runtimeMode) => updateComposerDraftSettings(threadKey, { runtimeMode })}
       onClose={() => navigation.goBack()}
     />

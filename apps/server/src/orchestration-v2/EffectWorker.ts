@@ -28,6 +28,7 @@ import {
   deferAttachmentCleanup,
 } from "./AttachmentReferenceIndex.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -108,6 +109,7 @@ export const layerExecutor: Layer.Layer<
   | ThreadTitleRegenerationService.ThreadTitleRegenerationService
   | ThreadManagementService.ThreadManagementService
   | ProjectionStore.ProjectionStoreV2
+  | ProjectionMaintenance.ProjectionMaintenanceV2
   | ServerSettings.ServerSettingsService
 > = Layer.effect(
   OrchestrationEffectExecutorV2,
@@ -125,6 +127,7 @@ export const layerExecutor: Layer.Layer<
     const flowLifecycle = yield* Effect.serviceOption(FlowLifecycle.FlowLifecycle);
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const projectionMaintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
     const settings = yield* ServerSettings.ServerSettingsService;
     const startRun = (
       effect: EffectOutbox.OrchestrationEffectV2,
@@ -724,6 +727,18 @@ export const layerExecutor: Layer.Layer<
               ),
             );
           }
+          case "thread-content.purge":
+            return projectionMaintenance.purgeDeletedThread(effect.threadId).pipe(
+              Effect.asVoid,
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "thread-title.generate":
             return threadTitleRegeneration
               .execute({

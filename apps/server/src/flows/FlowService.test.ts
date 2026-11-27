@@ -31,6 +31,7 @@ import FlowMigration from "../persistence/ForkMigrations/013_FlowRuns.ts";
 import * as Definitions from "./FlowDefinitions.ts";
 import * as Repository from "./FlowRunRepository.ts";
 import * as Runtime from "./FlowRuntime.ts";
+import * as Lifecycle from "./FlowLifecycle.ts";
 import * as Commands from "./FlowCommandRunner.ts";
 import * as Lock from "./FlowRunLock.ts";
 import * as Service from "./FlowService.ts";
@@ -104,7 +105,7 @@ const setup = Effect.fn("test.setup")(function* (
   const continuing = new Map<ThreadId, string>();
   const settled = new Map<
     string,
-    { messageId: string; turnId: string; text: string; failed: boolean }
+    Effect.Success<ReturnType<Runtime.FlowRuntime["Service"]["settled"]>>
   >();
   const commands: Parameters<Commands.FlowCommandRunner["Service"]["run"]>[0][] = [];
   const attention: string[] = [];
@@ -196,6 +197,7 @@ const setup = Effect.fn("test.setup")(function* (
       }),
     ).pipe(Layer.provide(Repository.layer)),
     Lock.layer,
+    Lifecycle.layer,
     NodeCrypto.layer,
   );
   const context = yield* Layer.build(Service.layer.pipe(Layer.provideMerge(services)));
@@ -211,6 +213,7 @@ const setup = Effect.fn("test.setup")(function* (
   });
   return {
     service,
+    lifecycle: Context.get(context, Lifecycle.FlowLifecycle),
     launches,
     messages,
     continuing,
@@ -478,11 +481,11 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(database)),
 );
 
-it.effect(
-  "restart catches a persisted terminal turn and starts its newly reached command once",
-  () =>
+it.effect.each(["recovery", "restart continuation"] as const)(
+  "waits for the preceding turn's checkpoint before starting a command during %s",
+  (source) =>
     Effect.gen(function* () {
-      const { service, launches, settled, commands } = yield* setup({
+      const { service, lifecycle, launches, settled, commands } = yield* setup({
         version: 1,
         title: "Catch up",
         workspace: "root",
@@ -502,10 +505,32 @@ it.effect(
         inputs: {},
       });
       yield* awaitStatus(service, run.id, "running");
-      const messageId = launches[1]!.messageId!;
+      const { threadId, messageId } = launches[1]!;
       expect((yield* service.snapshot(run.id)).baseRef).toBeNull();
-      settled.set(messageId, { messageId, turnId: "persisted-turn", text: "done", failed: false });
-      yield* service.recover();
+      const waiting = yield* Deferred.make<void>();
+      const captured = yield* Deferred.make<void>();
+      const result = {
+        messageId: messageId!,
+        turnId: "persisted-turn",
+        text: "done",
+        failed: false,
+      };
+      settled.set(result.messageId, {
+        turnId: result.turnId,
+        awaitCheckpoint: Deferred.succeed(waiting, undefined).pipe(
+          Effect.andThen(Deferred.await(captured)),
+        ),
+      });
+      if (source === "recovery") yield* service.recover();
+      else yield* lifecycle.continued(threadId);
+      const snapshot = yield* service.snapshot(run.id);
+      expect(snapshot.stepRuns.find((step) => step.stepPath[0] === "agent")?.status).toBe(
+        "running",
+      );
+      expect(commands).toHaveLength(0);
+      yield* Deferred.await(waiting);
+      settled.set(result.messageId, result);
+      yield* Deferred.succeed(captured, undefined);
       yield* awaitStatus(service, run.id, "waiting_approval");
       expect(commands).toHaveLength(1);
       yield* service.recover();

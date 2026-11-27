@@ -1,6 +1,7 @@
 import {
   CommandId,
   MessageId,
+  type ModelSelection,
   ThreadId,
   OrchestratorMcpFailure,
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
@@ -15,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import { outputRequestProblem } from "../../../orchestration-v2/runOutput.ts";
@@ -29,7 +31,7 @@ import {
   expectedProjectMutationFailure,
   mutateProjectWithClone,
 } from "../../../project/ProjectMutation.ts";
-import { isPathWithin, projectFolders } from "@t3tools/shared/workspaceFolders";
+import { isSamePath, projectFolders, relativePathWithin } from "@t3tools/shared/workspaceFolders";
 import { launchRefusal } from "../../threadAccess.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -42,7 +44,11 @@ import {
 } from "@t3tools/shared/projectSettings";
 import { resolveProjectScripts } from "@t3tools/shared/projectScripts";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
-import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
+import {
+  providerOptionDescriptors,
+  refuseAgentModePick,
+  resolveRuntimeMode,
+} from "../../delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
@@ -104,33 +110,67 @@ function worktreeCheckHint(
   }`;
 }
 
-/** Require project worktrees so launches cannot target arbitrary host directories. */
-const assertProjectWorktree = Effect.fn("mcp.assertProjectWorktree")(function* (
+/**
+ * Require project worktrees so launches cannot target arbitrary host directories. Returns the
+ * Git-registered spelling, including a subfolder when the caller selects one.
+ */
+const projectWorktreePath = Effect.fn("mcp.assertProjectWorktree")(function* (
   project: ProjectRecord,
   worktreePath: string,
 ) {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const fileSystem = yield* FileSystem.FileSystem;
-  const real = (path: string) => fileSystem.realPath(path).pipe(Effect.orElseSucceed(() => path));
-  const worktrees = (yield* Effect.forEach(projectFolders(project), (folder) =>
-    folder.path === undefined
-      ? Effect.succeed([])
-      : git.listWorktreePaths(folder.path).pipe(
-          Effect.flatMap((paths) => Effect.forEach(paths, real)),
-          Effect.orElseSucceed((): ReadonlyArray<string> => []),
-        ),
-  )).flat();
-  const target = yield* real(worktreePath);
-  const isDirectory = yield* fileSystem.stat(worktreePath).pipe(
-    Effect.map((stat) => stat.type === "Directory"),
-    Effect.orElseSucceed(() => false),
-  );
-  if (!isDirectory || !worktrees.some((checkout) => isPathWithin(checkout, target)))
-    return yield* new OrchestratorMcpFailure({
+  const path = yield* Path.Path;
+  const real = (location: string) => fileSystem.realPath(location).pipe(Effect.option);
+  const invalidWorktree = () =>
+    new OrchestratorMcpFailure({
       code: "invalid_request",
       message:
-        "worktreePath must be one of the project's git worktrees. t3_worktree_list shows them.",
+        "worktreePath must belong to the project's primary Git repository. t3_worktree_list shows its worktrees.",
     });
+  const [primaryDirectory, directory] = yield* Effect.all([
+    real(project.workspaceRoot),
+    real(worktreePath),
+  ]);
+  if (Option.isNone(primaryDirectory) || Option.isNone(directory)) return yield* invalidWorktree();
+
+  // Older Git echoes --path-format, and a Git path can contain a newline.
+  const readGitPath = (cwd: string, flag: "--git-common-dir" | "--show-toplevel") =>
+    git.execute({ operation: "mcp.assertProjectWorktree", cwd, args: ["rev-parse", flag] }).pipe(
+      Effect.flatMap(({ stdout }) => {
+        const location = stdout.replace(/\n$/, "");
+        return location === "" ? Effect.succeedNone : real(path.resolve(cwd, location));
+      }),
+      Effect.orElseSucceed(() => Option.none<string>()),
+    );
+  const [primaryIdentity, requestedIdentity, checkout] = yield* Effect.all([
+    readGitPath(primaryDirectory.value, "--git-common-dir"),
+    readGitPath(directory.value, "--git-common-dir"),
+    readGitPath(directory.value, "--show-toplevel"),
+  ]);
+  if (
+    Option.isNone(primaryIdentity) ||
+    Option.isNone(requestedIdentity) ||
+    !isSamePath(primaryIdentity.value, requestedIdentity.value) ||
+    Option.isNone(checkout)
+  ) {
+    return yield* invalidWorktree();
+  }
+
+  const relative = relativePathWithin(checkout.value, directory.value);
+  if (relative === null) return yield* invalidWorktree();
+  const registered = yield* git
+    .listWorktreePaths(project.workspaceRoot)
+    .pipe(Effect.orElseSucceed((): string[] => []));
+  const candidate = yield* Effect.findFirst(registered, (location) =>
+    real(location).pipe(
+      Effect.map(
+        (resolved) => Option.isSome(resolved) && isSamePath(resolved.value, checkout.value),
+      ),
+    ),
+  );
+  if (Option.isNone(candidate)) return yield* invalidWorktree();
+  return relative === "" ? candidate.value : path.join(candidate.value, relative);
 });
 
 /** The composer falls back to the project's t3.json when no setting picks the mode. */
@@ -333,28 +373,55 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   }),
                 ),
               );
-        if (project !== undefined && input.workspaceStrategy?.type === "existing_worktree")
-          yield* assertProjectWorktree(project, input.workspaceStrategy.worktreePath);
+        const workspaceStrategy =
+          project !== undefined && input.workspaceStrategy?.type === "existing_worktree"
+            ? {
+                ...input.workspaceStrategy,
+                worktreePath: yield* projectWorktreePath(
+                  project,
+                  input.workspaceStrategy.worktreePath,
+                ),
+              }
+            : input.workspaceStrategy;
+        let validatedModelSelection = input.modelSelection;
         if (!replaying && input.modelSelection !== undefined) {
-          const { instanceId, model } = input.modelSelection;
+          const requestedSelection = input.modelSelection;
+          const { instanceId, model } = requestedSelection;
           const registry = yield* ProviderRegistry.ProviderRegistry;
           // The thread runs in this folder, whose own provider config can add models.
           const cwd =
-            input.workspaceStrategy?.type === "existing_worktree"
-              ? input.workspaceStrategy.worktreePath
+            workspaceStrategy?.type === "existing_worktree"
+              ? workspaceStrategy.worktreePath
               : project?.workspaceRoot;
-          const requireModel = (
+          const validateSelection = Effect.fn("mcp.validateLaunchModelSelection")(function* (
             providers: ReadonlyArray<ServerProvider>,
-          ): Effect.Effect<void, OrchestratorMcpFailure> => {
+          ): Effect.fn.Return<ModelSelection, OrchestratorMcpFailure> {
             const provider = OrchestrationMcp.withWorkspaceModels(providers, cwd).find(
               (candidate) => candidate.instanceId === instanceId,
             );
-            return provider === undefined
-              ? Effect.void
-              : OrchestrationMcp.requireAdvertisedModel(provider, model);
-          };
-          const checked = requireModel(yield* registry.getProviders);
-          yield* cwd === undefined
+            // Checked with the same provider snapshot that validates the options below.
+            yield* refuseAgentModePick({
+              callerRuntimeMode: context.limits.runtimeMode,
+              picked: requestedSelection.options,
+              descriptors: providerOptionDescriptors(provider),
+              held:
+                caller?.modelSelection.instanceId === instanceId
+                  ? caller.modelSelection.options
+                  : undefined,
+            });
+            if (provider === undefined) return requestedSelection;
+            yield* OrchestrationMcp.requireAdvertisedModel(provider, model);
+            const options = yield* OrchestrationMcp.validateModelOptions(
+              provider,
+              model,
+              requestedSelection.options,
+            );
+            return options === undefined || options === requestedSelection.options
+              ? requestedSelection
+              : { ...requestedSelection, options };
+          });
+          const checked = validateSelection(yield* registry.getProviders);
+          validatedModelSelection = yield* cwd === undefined
             ? checked
             : checked.pipe(
                 Effect.catchIf(
@@ -365,7 +432,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                       Effect.flatMap((scanCwd) =>
                         registry.refreshWorkspaceSnapshot({ instanceId, cwd, scanCwd }),
                       ),
-                      Effect.flatMap(requireModel),
+                      Effect.flatMap(validateSelection),
                     ),
                 ),
               );
@@ -383,14 +450,14 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // An outside caller that names no workspace follows the new-threads-in-a-worktree
         // default, as the composer does.
         const requestedStrategy =
-          input.workspaceStrategy === undefined &&
+          workspaceStrategy === undefined &&
           caller === undefined &&
           project !== undefined &&
           projectSettings !== undefined &&
           (projectSettings.defaultThreadEnvMode ??
             (yield* projectFileThreadEnvMode(project.workspaceRoot))) === "worktree"
             ? yield* defaultWorktreeStrategy(project.workspaceRoot)
-            : input.workspaceStrategy;
+            : workspaceStrategy;
         // An omitted startFromOrigin follows the new-worktree setting, as the composer and
         // t3_worktree_handoff do. Otherwise a stale local branch silently becomes the base.
         const strategy =
@@ -421,7 +488,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // within the ceiling it was approved with.
         const projectDefaults = caller === undefined ? projectSettings : undefined;
         const modelSelection =
-          input.modelSelection ??
+          validatedModelSelection ??
           launchedModel ??
           caller?.modelSelection ??
           (projectDefaults
